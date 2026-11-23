@@ -277,3 +277,46 @@ added_by = "CorpusPopC2"
 added_on = "2026-11-23"
 reason = "small allocator (segment caches), current, branch main3"
 notice_present_upstream = false
+
+[[project]]
+name = "opencv"
+language = "cpp"
+url = "https://github.com/opencv/opencv"
+rev = "fb6166e54b495496bb76d721295fe277f850cec0"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["modules/core/**", "modules/core/*/**", "modules/core/*/*/**", "modules/core/*/*/*/**", "modules/core/*/*/*/*/**", "modules/core/*/*/*/*/*/**", "modules/core/*/*/*/*/*/*/**", "modules/core/*/*/*/*/*/*/*/**", "modules/core/*/*/*/*/*/*/*/*/**", "modules/core/*/*/*/*/*/*/*/*/*/**", "modules/core/*/*/*/*/*/*/*/*/*/*/**", "modules/core/*/*/*/*/*/*/*/*/*/*/*/**", "modules/core/*/*/*/*/*/*/*/*/*/*/*/*/**", "modules/core/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "modules/core/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "modules/core/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "modules/core/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "hal/**", "hal/*/**", "hal/*/*/**", "hal/*/*/*/**", "hal/*/*/*/*/**", "hal/*/*/*/*/*/**", "hal/*/*/*/*/*/*/**", "hal/*/*/*/*/*/*/*/**", "hal/*/*/*/*/*/*/*/*/**", "hal/*/*/*/*/*/*/*/*/*/**", "hal/*/*/*/*/*/*/*/*/*/*/**", "hal/*/*/*/*/*/*/*/*/*/*/*/**", "hal/*/*/*/*/*/*/*/*/*/*/*/*/**", "hal/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "hal/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "hal/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "hal/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**"]
+tree_hash = "sha256:774d0bafec103f9953efbcc4be9e4c4c55b4ce1a193709dd70bbf220a0b63ce1"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "large vision subset (core plus HAL intrinsics), current, branch 5.x"
+notice_present_upstream = false
+
+[[project]]
+name = "bitcoin"
+language = "cpp"
+url = "https://github.com/bitcoin/bitcoin"
+rev = "19128e8b77553e4362fcbf3cb8f3f7dc5a2e4253"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+exclude = ["test/**", "test/*/**", "test/*/*/**", "test/*/*/*/**", "test/*/*/*/*/**", "test/*/*/*/*/*/**", "test/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "leveldb/**", "leveldb/*/**", "leveldb/*/*/**", "leveldb/*/*/*/**", "leveldb/*/*/*/*/**", "leveldb/*/*/*/*/*/**", "leveldb/*/*/*/*/*/*/**", "leveldb/*/*/*/*/*/*/*/**", "leveldb/*/*/*/*/*/*/*/*/**", "leveldb/*/*/*/*/*/*/*/*/*/**", "leveldb/*/*/*/*/*/*/*/*/*/*/**", "leveldb/*/*/*/*/*/*/*/*/*/*/*/**", "leveldb/*/*/*/*/*/*/*/*/*/*/*/*/**", "leveldb/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "leveldb/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "leveldb/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "leveldb/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "secp256k1/**", "secp256k1/*/**", "secp256k1/*/*/**", "secp256k1/*/*/*/**", "secp256k1/*/*/*/*/**", "secp256k1/*/*/*/*/*/**", "secp256k1/*/*/*/*/*/*/**", "secp256k1/*/*/*/*/*/*/*/**", "secp256k1/*/*/*/*/*/*/*/*/**", "secp256k1/*/*/*/*/*/*/*/*/*/**", "secp256k1/*/*/*/*/*/*/*/*/*/*/**", "secp256k1/*/*/*/*/*/*/*/*/*/*/*/**", "secp256k1/*/*/*/*/*/*/*/*/*/*/*/*/**", "secp256k1/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "secp256k1/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "secp256k1/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "secp256k1/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "univalue/**", "univalue/*/**", "univalue/*/*/**", "univalue/*/*/*/**", "univalue/*/*/*/*/**", "univalue/*/*/*/*/*/**", "univalue/*/*/*/*/*/*/**", "univalue/*/*/*/*/*/*/*/**", "univalue/*/*/*/*/*/*/*/*/**", "univalue/*/*/*/*/*/*/*/*/*/**", "univalue/*/*/*/*/*/*/*/*/*/*/**", "univalue/*/*/*/*/*/*/*/*/*/*/*/**", "univalue/*/*/*/*/*/*/*/*/*/*/*/*/**", "univalue/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "univalue/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "univalue/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "univalue/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "crc32c/**", "crc32c/*/**", "crc32c/*/*/**", "crc32c/*/*/*/**", "crc32c/*/*/*/*/**", "crc32c/*/*/*/*/*/**", "crc32c/*/*/*/*/*/*/**", "crc32c/*/*/*/*/*/*/*/**", "crc32c/*/*/*/*/*/*/*/*/**", "crc32c/*/*/*/*/*/*/*/*/*/**", "crc32c/*/*/*/*/*/*/*/*/*/*/**", "crc32c/*/*/*/*/*/*/*/*/*/*/*/**", "crc32c/*/*/*/*/*/*/*/*/*/*/*/*/**", "crc32c/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "crc32c/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "crc32c/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "crc32c/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "minisketch/**", "minisketch/*/**", "minisketch/*/*/**", "minisketch/*/*/*/**", "minisketch/*/*/*/*/**", "minisketch/*/*/*/*/*/**", "minisketch/*/*/*/*/*/*/**", "minisketch/*/*/*/*/*/*/*/**", "minisketch/*/*/*/*/*/*/*/*/**", "minisketch/*/*/*/*/*/*/*/*/*/**", "minisketch/*/*/*/*/*/*/*/*/*/*/**", "minisketch/*/*/*/*/*/*/*/*/*/*/*/**", "minisketch/*/*/*/*/*/*/*/*/*/*/*/*/**", "minisketch/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "minisketch/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "minisketch/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "minisketch/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "ctaes/**", "ctaes/*/**", "ctaes/*/*/**", "ctaes/*/*/*/**", "ctaes/*/*/*/*/**", "ctaes/*/*/*/*/*/**", "ctaes/*/*/*/*/*/*/**", "ctaes/*/*/*/*/*/*/*/**", "ctaes/*/*/*/*/*/*/*/*/**", "ctaes/*/*/*/*/*/*/*/*/*/**", "ctaes/*/*/*/*/*/*/*/*/*/*/**", "ctaes/*/*/*/*/*/*/*/*/*/*/*/**", "ctaes/*/*/*/*/*/*/*/*/*/*/*/*/**", "ctaes/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "ctaes/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "ctaes/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "ctaes/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "libmultiprocess/**", "libmultiprocess/*/**", "libmultiprocess/*/*/**", "libmultiprocess/*/*/*/**", "libmultiprocess/*/*/*/*/**", "libmultiprocess/*/*/*/*/*/**", "libmultiprocess/*/*/*/*/*/*/**", "libmultiprocess/*/*/*/*/*/*/*/**", "libmultiprocess/*/*/*/*/*/*/*/*/**", "libmultiprocess/*/*/*/*/*/*/*/*/*/**", "libmultiprocess/*/*/*/*/*/*/*/*/*/*/**", "libmultiprocess/*/*/*/*/*/*/*/*/*/*/*/**", "libmultiprocess/*/*/*/*/*/*/*/*/*/*/*/*/**", "libmultiprocess/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "libmultiprocess/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "libmultiprocess/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "libmultiprocess/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**"]
+tree_hash = "sha256:4394ce38628265faddbf4d45533bdccdf530b891d04f6d97001f9fb38a17ca7a"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "large application subset (consensus/script/wallet minus vendored), mature"
+notice_present_upstream = false
+
+[[project]]
+name = "fmt"
+language = "cpp"
+url = "https://github.com/fmtlib/fmt"
+rev = "14ac0d5a9d40aef14f50954069c1e10971abb0b2"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:566c6acba7dc9fca67cdb8199d5aa6a2a90ce1670f0c71a662410eb2eab56147"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "small formatting (constexpr plus templates), current"
+notice_present_upstream = false
