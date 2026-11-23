@@ -516,6 +516,19 @@ class TestMeasureSeeds(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertTrue(first)
 
+    def test_seeds_keep_colliding_names(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        add_synthetic_project(root, lang="python", name="demo", files={
+            "src/a__b.py": "x = 1\n",
+            "src/a/b.py": "y = 22\n"})
+        out = os.path.join(root, "seeds")
+        self.assertEqual(run_tool(root, "seeds", "python", "--out", out).returncode, 0)
+        names = sorted(os.listdir(out))
+        self.assertEqual(len(names), 2, names)
+        contents = sorted(open(os.path.join(out, n), "rb").read() for n in names)
+        self.assertEqual(contents, [b"x = 1\n", b"y = 22\n"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

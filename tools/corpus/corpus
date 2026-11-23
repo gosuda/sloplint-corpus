@@ -1093,7 +1093,7 @@ def cmd_seeds(args):
     for rel, full, pname, size, digest in unique:
         if used + size > args.max_bytes:
             continue
-        flat = "%s__%s" % (pname, rel.replace("/", "__"))
+        flat = "%s__%s__%s" % (pname, rel.replace("/", "__"), digest[:12])
         with open(full, "rb") as src:
             content = src.read()
         with open(os.path.join(out, flat), "wb") as dst:
