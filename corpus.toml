@@ -402,10 +402,11 @@ rev = "49a861eb32041978d72e369f85f89a4547a50f1f"
 spdx = "MIT"
 storage = "copied"
 paths = ["**"]
-tree_hash = "sha256:88a7921cfed8ab32307fae06563d0cfebd7ee98ace513036e428e71fe2fedff1"
+exclude = ["src/pow_overflow_bounds.ml"]
+tree_hash = "sha256:3f19ab5371d097002cde642602bea4da89c3b102ec09eb63fecfd59eece8f829"
 added_by = "CorpusPopC5"
 added_on = "2026-11-23"
-reason = "core library, idiomatic Jane Street style (selection slot: library)"
+reason = "core library, idiomatic Jane Street style, minus the generated pow_overflow_bounds.ml (selection slot: library)"
 notice_present_upstream = false
 
 [[project]]
@@ -561,11 +562,11 @@ rev = "d9c0896d27ccbc2497e865fdd85d372534a03b11"
 spdx = "Apache-2.0"
 storage = "copied"
 paths = ["**"]
-exclude = ["examples/wheel/**", "examples/wheel/*/**"]
-tree_hash = "sha256:2163d74baa18dbaa8d1097ab00077ce4c07b56ecd57caefb4ac7e5ae4a8e9083"
+exclude = ["examples/wheel/**", "examples/wheel/*/**", "examples/pip_parse_vendored/requirements.bzl"]
+tree_hash = "sha256:ccf379ee9a44619b097fac9f73f26bc489bd05dbe95caa7bfc1195bb03c20d25"
 added_by = "CorpusPopC5"
 added_on = "2026-11-23"
-reason = "Python rules with gazelle resolver minus wheel fixture (selection slot: libraries)"
+reason = "Python rules with gazelle resolver minus wheel fixture and the generated vendored requirements.bzl (selection slot: libraries)"
 notice_present_upstream = false
 
 [[project]]
@@ -576,11 +577,11 @@ rev = "5d99ff2e58d1a0c9387fc4945029df11144bc8a3"
 spdx = "Apache-2.0"
 storage = "copied"
 paths = ["**"]
-exclude = ["crate_universe/**", "crate_universe/*/**", "crate_universe/*/*/**", "crate_universe/*/*/*/**", "crate_universe/*/*/*/*/**", "crate_universe/*/*/*/*/*/**"]
-tree_hash = "sha256:3a45e9af19de5902326b27b9359e3b0ffa8d4d1cd4d335948ca164a945a803f5"
+exclude = ["crate_universe/**", "crate_universe/*/**", "crate_universe/*/*/**", "crate_universe/*/*/*/**", "crate_universe/*/*/*/*/**", "crate_universe/*/*/*/*/*/**", "cargo/3rdparty/crates/crates.bzl", "cargo/3rdparty/crates/defs.bzl", "examples/all_deps_vendor/basic/3rdparty/crates/crates.bzl", "examples/all_deps_vendor/basic/3rdparty/crates/defs.bzl", "examples/hello_world/third-party-in-workspace/crates/crates.bzl", "examples/hello_world/third-party-in-workspace/crates/defs.bzl", "examples/ios_build/3rdparty/crates/crates.bzl", "examples/ios_build/3rdparty/crates/defs.bzl", "examples/sys/basic/3rdparty/crates/crates.bzl", "examples/sys/basic/3rdparty/crates/defs.bzl", "examples/sys/complex/3rdparty/crates/crates.bzl", "examples/sys/complex/3rdparty/crates/defs.bzl", "extensions/bindgen/3rdparty/crates/crates.bzl", "extensions/bindgen/3rdparty/crates/defs.bzl", "extensions/mdbook/private/3rdparty/crates/crates.bzl", "extensions/mdbook/private/3rdparty/crates/defs.bzl", "extensions/prost/private/3rdparty/crates/crates.bzl", "extensions/prost/private/3rdparty/crates/defs.bzl", "extensions/pyo3/3rdparty/crates/crates.bzl", "extensions/pyo3/3rdparty/crates/defs.bzl", "extensions/wasm_bindgen/3rdparty/crates/crates.bzl", "extensions/wasm_bindgen/3rdparty/crates/defs.bzl", "rust/private/known_shas.bzl", "rust/private/nightly_versions.bzl", "test/determinism/3rdparty/crates/crates.bzl", "test/determinism/3rdparty/crates/defs.bzl", "test/rust_analyzer/3rdparty/crates/crates.bzl", "test/rust_analyzer/3rdparty/crates/defs.bzl", "test/vscode/3rdparty/crates/crates.bzl", "test/vscode/3rdparty/crates/defs.bzl", "tools/rust_analyzer/3rdparty/crates/crates.bzl", "tools/rust_analyzer/3rdparty/crates/defs.bzl"]
+tree_hash = "sha256:c8b6e9990a1e083ed6d30e5ba65a48f6c835bc9ce8bc1fc27306212349529f6e"
 added_by = "CorpusPopC5"
 added_on = "2026-11-23"
-reason = "Rust rules minus vendored crate BUILD files (selection slot: libraries)"
+reason = "Rust rules minus vendored crate BUILD files and 32 generated files (crate_universe crates.bzl/defs.bzl and the fetch_shas tables) (selection slot: libraries)"
 notice_present_upstream = false
 
 [[project]]
