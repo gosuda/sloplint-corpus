@@ -417,6 +417,35 @@ class TestHeaders(unittest.TestCase):
                              "project demo")
         self.assertTrue(any("outside the public allowlist" in e for e in errors), errors)
 
+    def test_bsd_header_fails_public_without_spdx(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        projdir = add_synthetic_project(root, files={
+            "src/lib.rs": ("// Licensed under the BSD 3-Clause License\n"
+                           "// Redistribution and use in source and binary forms, with or without\n"
+                           "// modification, are permitted.\n"
+                           "pub fn f() {}\n")})
+        errors = []
+        corpus.check_headers(projdir, "rust", {"MIT"}, True, errors,
+                             "project demo")
+        self.assertTrue(any("BSD-3-Clause" in e and "public allowlist" in e
+                            for e in errors), errors)
+
+    def test_isc_header_fails_public_without_spdx(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        projdir = add_synthetic_project(root, files={
+            "src/lib.rs": ("// ISC License\n"
+                           "// Permission to use, copy, modify, and/or distribute this software\n"
+                           "// for any purpose with or without fee.\n"
+                           "pub fn f() {}\n")})
+        errors = []
+        corpus.check_headers(projdir, "rust", {"MIT"}, True, errors,
+                             "project demo")
+        self.assertTrue(any("ISC" in e and "public allowlist" in e
+                            for e in errors), errors)
+
+
     def test_latin1_header_still_checked(self):
         root = make_repo()
         self.addCleanup(shutil.rmtree, root, True)

@@ -92,6 +92,18 @@ COPYLEFT_PHRASES = (
     "copyleft",
 )
 
+NON_ALLOWLIST_HEADER_PHRASES = (
+    ("bsd 3-clause", "BSD-3-Clause"),
+    ("bsd-3-clause", "BSD-3-Clause"),
+    ("bsd 2-clause", "BSD-2-Clause"),
+    ("bsd-2-clause", "BSD-2-Clause"),
+    ("redistribution and use in source and binary forms", "BSD"),
+    ("licensed under the bsd", "BSD"),
+    ("bsd license", "BSD"),
+    ("isc license", "ISC"),
+    ("and/or distribute this software for any purpose", "ISC"),
+)
+
 SECRET_PATTERNS = (
     ("aws-access-key", re.compile(rb"\bAKIA[0-9A-Z]{16}\b")),
     ("github-token", re.compile(rb"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}\b")),
@@ -342,6 +354,13 @@ def has_copyleft_phrase(text):
     lowered = text.lower()
     return any(phrase in lowered for phrase in COPYLEFT_PHRASES)
 
+def non_allowlist_header_license(text):
+    lowered = text.lower()
+    for phrase, label in NON_ALLOWLIST_HEADER_PHRASES:
+        if phrase in lowered:
+            return label
+    return None
+
 
 def scan_secrets(content):
     hits = []
@@ -417,6 +436,10 @@ def check_headers(projdir, language, declared_ids, public, errors, tag):
                               "(MIT, Apache-2.0, OR only)" % (tag, rel, bad_expr))
             elif has_copyleft_phrase(text):
                 errors.append("%s: %s header carries copyleft license text" % (tag, rel))
+            elif not ids and non_allowlist_header_license(text) is not None:
+                errors.append("%s: %s header carries %s license text outside the public "
+                              "allowlist (MIT, Apache-2.0, OR only)" %
+                              (tag, rel, non_allowlist_header_license(text)))
             else:
                 bad = {i for i in ids if i not in declared_ids}
                 if bad:
