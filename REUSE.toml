@@ -1,0 +1,9 @@
+version = 1
+SPDX-PackageName = "sloplint-corpus"
+SPDX-PackageDownloadLocation = "https://github.com/gosuda/sloplint-corpus"
+
+[[annotations]]
+path = "**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 gosuda"
+SPDX-License-Identifier = "MIT"

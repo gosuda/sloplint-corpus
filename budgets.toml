@@ -1,0 +1,13 @@
+# Stabilization budgets, one table per language. Values are set from the
+# first full measurement and ratcheted only downward: a pull request that
+# loosens any value fails review. Until a language has min_projects copied
+# projects, measure reports but the budget check warns instead of failing.
+#
+# Example (uncomment and fill in after the first measurement):
+#
+# [rust]
+# max_parse_error_per_file = 0.01
+# max_parse_error_per_kb = 0.001
+# max_panics = 0
+# max_wall_ms_per_mb = 8000
+# min_projects = 3
