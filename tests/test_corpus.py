@@ -278,6 +278,59 @@ class TestHeaders(unittest.TestCase):
         corpus.check_headers(projdir, "rust", {"MIT"}, False, errors, "project demo")
         self.assertTrue(any("outside declared spdx" in e for e in errors), errors)
 
+    def test_ocaml_header_fails_public(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        projdir = add_synthetic_project(root, lang="ocaml", files={
+            "src/lib.ml": "(* SPDX-License-Identifier: GPL-3.0-only *)\nlet x = 1\n"})
+        self.assertEqual(corpus.header_spdx_ids(
+            "(* SPDX-License-Identifier: GPL-3.0-only *)\n"), {"GPL-3.0-only"})
+        errors = []
+        corpus.check_headers(projdir, "ocaml", {"MIT"}, True, errors, "project demo")
+        self.assertTrue(any("outside the public allowlist" in e for e in errors), errors)
+
+    def test_ocaml_allowed_header_passes_public(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        projdir = add_synthetic_project(root, lang="ocaml", files={
+            "src/lib.ml": "(* SPDX-License-Identifier: MIT *)\nlet x = 1\n"})
+        errors = []
+        corpus.check_headers(projdir, "ocaml", {"MIT"}, True, errors, "project demo")
+        self.assertEqual(errors, [])
+
+    def test_c_header_with_trailing_code_fails_public(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        projdir = add_synthetic_project(root, lang="c", files={
+            "src/lib.c": "/* SPDX-License-Identifier: GPL-3.0-only */ int x;\n"})
+        self.assertEqual(corpus.header_spdx_ids(
+            "/* SPDX-License-Identifier: GPL-3.0-only */ int x;\n"), {"GPL-3.0-only"})
+        errors = []
+        corpus.check_headers(projdir, "c", {"MIT"}, True, errors, "project demo")
+        self.assertTrue(any("outside the public allowlist" in e for e in errors), errors)
+
+    def test_powershell_allowed_header_passes_public(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        projdir = add_synthetic_project(root, lang="powershell", files={
+            "src/run.ps1": "<# SPDX-License-Identifier: MIT #>\n$x = 1\n"})
+        self.assertEqual(corpus.header_spdx_ids(
+            "<# SPDX-License-Identifier: MIT #>\n"), {"MIT"})
+        errors = []
+        corpus.check_headers(projdir, "powershell", {"MIT"}, True, errors,
+                             "project demo")
+        self.assertEqual(errors, [])
+
+    def test_powershell_copyleft_header_fails_public(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        projdir = add_synthetic_project(root, lang="powershell", files={
+            "src/run.ps1": "<# SPDX-License-Identifier: GPL-3.0-only #>\n$x = 1\n"})
+        errors = []
+        corpus.check_headers(projdir, "powershell", {"MIT"}, True, errors,
+                             "project demo")
+        self.assertTrue(any("outside the public allowlist" in e for e in errors), errors)
+
     def test_latin1_header_still_checked(self):
         root = make_repo()
         self.addCleanup(shutil.rmtree, root, True)
