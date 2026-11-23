@@ -653,6 +653,26 @@ def record_entry(root, args, url, patterns, excludes, storage, tree_hash, stamp,
     return 0
 
 
+def check_upstream_nesting(cache, selected, root_texts, errors, tag):
+    for rel, full in selected:
+        if os.path.islink(full):
+            continue
+        scopes = rel.split("/")[:-1]
+        for depth in range(1, len(scopes) + 1):
+            scope = "/".join(scopes[:depth])
+            for base in LICENSE_NAMES:
+                candidate = os.path.join(cache, scope, base)
+                if not os.path.isfile(candidate) or os.path.islink(candidate):
+                    continue
+                with open(candidate, "rb") as fh:
+                    content = fh.read()
+                if content not in root_texts:
+                    errors.append("%s: %s is governed by nested %s/%s, which differs "
+                                  "from the project license; vendored third-party code "
+                                  "is excluded" % (tag, rel, scope, base))
+                    return
+
+
 def cmd_add(args):
     root = os.path.abspath(args.root)
     data, problems = load_manifest(root, args.manifest)
@@ -777,6 +797,20 @@ def cmd_add(args):
     notice_flag = bool(notice_src)
     if notice_src is not None:
         shutil.copyfile(notice_src, os.path.join(projdir, os.path.basename(notice_src)))
+    root_texts = []
+    for path in [license_src, notice_src]:
+        if path is not None:
+            with open(path, "rb") as fh:
+                root_texts.append(fh.read())
+    nesting_errors = []
+    check_upstream_nesting(cache, selected, root_texts, nesting_errors,
+                           "project %s" % args.name)
+    if nesting_errors:
+        shutil.rmtree(cache, ignore_errors=True)
+        shutil.rmtree(projdir, ignore_errors=True)
+        for item in nesting_errors:
+            fail(item)
+        return 1
     with open(os.path.join(projdir, "UPSTREAM.md"), "w", encoding="utf-8") as fh:
         fh.write("# Upstream provenance\n\n")
         fh.write("url: %s\n" % url)
