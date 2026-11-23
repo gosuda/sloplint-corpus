@@ -69,10 +69,11 @@ rev = "8a53515e753d9f60f1ed338cd40e0fae9464af52"
 spdx = "MIT"
 storage = "copied"
 paths = ["src/Composer/**", "src/Composer/*/**", "src/Composer/*/*/**", "src/Composer/*/*/*/**", "src/Composer/*/*/*/*/**", "src/Composer/*/*/*/*/*/**", "src/Composer/*/*/*/*/*/*/**", "src/Composer/*/*/*/*/*/*/*/**", "src/Composer/*/*/*/*/*/*/*/*/**", "src/Composer/*/*/*/*/*/*/*/*/*/**"]
-tree_hash = "sha256:7cfcad7f23d7ce59c4d92c73421864ab9c01791785815d6a7cc9975a2814c683"
+exclude = ["src/Composer/Util/TlsHelper.php"]
+tree_hash = "sha256:4f12f890468f12f0df1f5a6ec8040e107d4dfca0de29e68e80a8d480fb7cf0a4"
 added_by = "CorpusPopC3"
 added_on = "2026-11-23"
-reason = "Package manager core library; version-constraint parser strings; tests dropped (token fixtures, LGPL-quoting comment)"
+reason = "Package manager core library; version-constraint parser strings; tests dropped (token fixtures, LGPL-quoting comment); TlsHelper.php excluded (embeds BSD-3 text)"
 notice_present_upstream = false
 
 [[project]]
