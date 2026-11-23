@@ -116,3 +116,119 @@ added_by = "CorpusPopC1"
 added_on = "2026-11-23"
 reason = "small reactive UI framework, library"
 notice_present_upstream = false
+
+[[project]]
+name = "eslint"
+language = "javascript"
+url = "https://github.com/eslint/eslint"
+rev = "b377b08f95646ac450551a5b73486ab95b9b09cf"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:d78e51e6adbf908a8ddf338800e9d75103bbea2cc7ccb20fa8353c0c644ed33e"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "linter, tool"
+notice_present_upstream = false
+
+[[project]]
+name = "express"
+language = "javascript"
+url = "https://github.com/expressjs/express"
+rev = "43fca52d28a422c8be48fd489cbd4f2d6152bab6"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:98bf3188539dd189d2d2d1fac183346675a7e3885536125fe058d4c575737231"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "small server framework, library"
+notice_present_upstream = false
+
+[[project]]
+name = "axios"
+language = "javascript"
+url = "https://github.com/axios/axios"
+rev = "9f0f4ddfe72b4c06afafe1a658e6ee53d35b5760"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+exclude = ["dist/**", "dist/*/**", "dist/*/*/**", "dist/*/*/*/**", "dist/*/*/*/*/**", "dist/*/*/*/*/*/**", "dist/*/*/*/*/*/*/**", "dist/*/*/*/*/*/*/*/**", "dist/*/*/*/*/*/*/*/*/**"]
+tree_hash = "sha256:0fe736009d2273d53dcf64ea99ac244da067048894ca2d7e7599dd8e5a8e41f7"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "small HTTP client, library"
+notice_present_upstream = false
+
+[[project]]
+name = "svelte"
+language = "javascript"
+url = "https://github.com/sveltejs/svelte"
+rev = "90ad4e870c72aa76db35ecc7e46f0b027ffe175a"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:acffb0159cc3b87949ff3b5d2e36cfb71df66f456ec4d1341ff10063665d0e62"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "compiler-driven UI framework, library"
+notice_present_upstream = false
+
+[[project]]
+name = "jquery"
+language = "javascript"
+url = "https://github.com/jquery/jquery"
+rev = "effd615f0009e927dfd1f41d04fb6073478076d4"
+spdx = "MIT"
+storage = "copied"
+paths = ["src/**", "src/*/**", "src/*/*/**", "src/*/*/*/**", "src/*/*/*/*/**", "src/*/*/*/*/*/**", "src/*/*/*/*/*/*/**", "src/*/*/*/*/*/*/*/**", "src/*/*/*/*/*/*/*/*/**"]
+tree_hash = "sha256:09f098a2ca732dcbd80a611110b6fd1de7b92fd07d1c848a17016fe2b55ddfbb"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "UMD/global-script relic, library"
+notice_present_upstream = false
+
+[[project]]
+name = "react"
+language = "javascript"
+url = "https://github.com/facebook/react"
+rev = "33e52451f2ab39e0a4d186256b2b4d55277e6041"
+spdx = "MIT"
+storage = "copied"
+paths = ["packages/**", "packages/*/**", "packages/*/*/**", "packages/*/*/*/**", "packages/*/*/*/*/**", "packages/*/*/*/*/*/**", "packages/*/*/*/*/*/*/**", "packages/*/*/*/*/*/*/*/**", "packages/*/*/*/*/*/*/*/*/**", "packages/*/*/*/*/*/*/*/*/*/**", "packages/*/*/*/*/*/*/*/*/*/*/**", "packages/*/*/*/*/*/*/*/*/*/*/*/**", "packages/*/*/*/*/*/*/*/*/*/*/*/*/**"]
+exclude = ["packages/react-devtools*/**", "packages/react-devtools*/*/**", "packages/react-devtools*/*/*/**", "packages/react-devtools*/*/*/*/**", "packages/react-devtools*/*/*/*/*/**", "packages/react-devtools*/*/*/*/*/*/**", "packages/react-devtools*/*/*/*/*/*/*/**", "packages/react-devtools*/*/*/*/*/*/*/*/**", "packages/react-devtools*/*/*/*/*/*/*/*/*/**", "packages/react-devtools*/*/*/*/*/*/*/*/*/*/**", "packages/react-devtools*/*/*/*/*/*/*/*/*/*/*/**", "packages/react-devtools*/*/*/*/*/*/*/*/*/*/*/*/**", "packages/react-devtools*/*/*/*/*/*/*/*/*/*/*/*/*/**", "compiler/**", "compiler/*/**", "compiler/*/*/**", "compiler/*/*/*/**", "compiler/*/*/*/*/**", "compiler/*/*/*/*/*/**", "compiler/*/*/*/*/*/*/**", "compiler/*/*/*/*/*/*/*/**", "compiler/*/*/*/*/*/*/*/*/**", "compiler/*/*/*/*/*/*/*/*/*/**", "compiler/*/*/*/*/*/*/*/*/*/*/**", "compiler/*/*/*/*/*/*/*/*/*/*/*/**", "compiler/*/*/*/*/*/*/*/*/*/*/*/*/**"]
+tree_hash = "sha256:f1f694c48aded3cd6fe5e8aa29fec545c6c2214163a7532e25400e6617913a1d"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "large UI framework with inline JSX, library"
+notice_present_upstream = false
+
+[[project]]
+name = "webpack"
+language = "javascript"
+url = "https://github.com/webpack/webpack"
+rev = "545f13bed085bdd7143ecb91a6a449647fbf70fc"
+spdx = "MIT"
+storage = "copied"
+paths = ["lib/**", "lib/*/**", "lib/*/*/**", "lib/*/*/*/**", "lib/*/*/*/*/**", "lib/*/*/*/*/*/**", "lib/*/*/*/*/*/*/**", "lib/*/*/*/*/*/*/*/**", "lib/*/*/*/*/*/*/*/*/**", "lib/*/*/*/*/*/*/*/*/*/**", "lib/*/*/*/*/*/*/*/*/*/*/**", "lib/*/*/*/*/*/*/*/*/*/*/*/**", "lib/*/*/*/*/*/*/*/*/*/*/*/*/**"]
+exclude = ["syntax-printer.js", "test/**", "test/*/**", "test/*/*/**", "test/*/*/*/**", "test/*/*/*/*/**", "test/*/*/*/*/*/**", "test/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/*/*/*/**", "examples/**", "examples/*/**", "examples/*/*/**", "examples/*/*/*/**", "examples/*/*/*/*/**", "examples/*/*/*/*/*/**", "examples/*/*/*/*/*/*/**", "examples/*/*/*/*/*/*/*/**", "examples/*/*/*/*/*/*/*/*/**", "examples/*/*/*/*/*/*/*/*/*/**", "examples/*/*/*/*/*/*/*/*/*/*/**", "examples/*/*/*/*/*/*/*/*/*/*/*/**", "examples/*/*/*/*/*/*/*/*/*/*/*/*/**"]
+tree_hash = "sha256:d72b89c72920995feb610e2c48f69e95b2087aba90838a2524e1bf45502984df"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "bundler core, tool"
+notice_present_upstream = false
+
+[[project]]
+name = "babel"
+language = "javascript"
+url = "https://github.com/babel/babel"
+rev = "5122561237cfbbc78b356a24e96eea9bdc558fd2"
+spdx = "MIT"
+storage = "copied"
+paths = ["packages/**", "packages/*/**", "packages/*/*/**", "packages/*/*/*/**", "packages/*/*/*/*/**", "packages/*/*/*/*/*/**", "packages/*/*/*/*/*/*/**", "packages/*/*/*/*/*/*/*/**", "packages/*/*/*/*/*/*/*/*/**", "packages/*/*/*/*/*/*/*/*/*/**", "packages/*/*/*/*/*/*/*/*/*/*/**", "packages/*/*/*/*/*/*/*/*/*/*/*/**", "packages/*/*/*/*/*/*/*/*/*/*/*/*/**"]
+exclude = ["*/generated/**", "*/generated/*/**", "*/generated/*/*/**", "*/generated/*/*/*/**", "*/generated/*/*/*/*/**", "*/generated/*/*/*/*/*/**", "*/generated/*/*/*/*/*/*/**", "*/generated/*/*/*/*/*/*/*/**", "*/generated/*/*/*/*/*/*/*/*/**", "*/generated/*/*/*/*/*/*/*/*/*/**", "*/generated/*/*/*/*/*/*/*/*/*/*/**", "*/generated/*/*/*/*/*/*/*/*/*/*/*/**", "*/generated/*/*/*/*/*/*/*/*/*/*/*/*/**", "edgecase/large-file-concise/input.js", "edgecase/large-file-concise/output.js", "core/uncategorised/318/input.js"]
+tree_hash = "sha256:865b248a967efea7664c400e6588214c7ed395c4a4853e89a994d7e38d5b31f0"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "compiler toolchain, tool"
+notice_present_upstream = false

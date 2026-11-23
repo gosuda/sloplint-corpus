@@ -1,0 +1,612 @@
+/**
+ * @fileoverview Tests for no-unneeded-ternary rule.
+ * @author Gyandeep Singh
+ */
+
+"use strict";
+
+//------------------------------------------------------------------------------
+// Requirements
+//------------------------------------------------------------------------------
+
+const rule = require("../../../lib/rules/no-unneeded-ternary"),
+	RuleTester = require("../../../lib/rule-tester/rule-tester"),
+	parser = require("../../fixtures/fixture-parser");
+
+//------------------------------------------------------------------------------
+// Tests
+//------------------------------------------------------------------------------
+
+const ruleTester = new RuleTester();
+
+ruleTester.run("no-unneeded-ternary", rule, {
+	valid: [
+		"config.newIsCap = config.newIsCap !== false",
+		"var a = x === 2 ? 'Yes' : 'No';",
+		"var a = x === 2 ? true : 'No';",
+		"var a = x === 2 ? 'Yes' : false;",
+		"var a = x === 2 ? 'true' : 'false';",
+		"var a = foo ? foo : bar;",
+		"var value = 'a';var canSet = true;var result = value || (canSet ? 'unset' : 'can not set')",
+		"var a = foo ? bar : foo;",
+		"foo ? bar : foo;",
+		"var a = f(x ? x : 1)",
+		"f(x ? x : 1);",
+		"foo ? foo : bar;",
+		"var a = foo ? 'Yes' : foo;",
+		{
+			code: "var a = foo ? 'Yes' : foo;",
+			options: [{ defaultAssignment: false }],
+		},
+		{
+			code: "var a = foo ? bar : foo;",
+			options: [{ defaultAssignment: false }],
+		},
+		{
+			code: "foo ? bar : foo;",
+			options: [{ defaultAssignment: false }],
+		},
+	],
+	invalid: [
+		{
+			code: "var a = x === 2 ? true : false;",
+			output: "var a = x === 2;",
+			errors: [
+				{
+					messageId: "unnecessaryConditionalExpression",
+					line: 1,
+					column: 9,
+					endLine: 1,
+					endColumn: 31,
+				},
+			],
+		},
+		{
+			code: "var a = x >= 2 ? true : false;",
+			output: "var a = x >= 2;",
+			errors: [
+				{
+					messageId: "unnecessaryConditionalExpression",
+					line: 1,
+					column: 9,
+					endLine: 1,
+					endColumn: 30,
+				},
+			],
+		},
+		{
+			code: "var a = x ? true : false;",
+			output: "var a = !!x;",
+			errors: [
+				{
+					messageId: "unnecessaryConditionalExpression",
+					line: 1,
+					column: 9,
+					endLine: 1,
+					endColumn: 25,
+				},
+			],
+		},
+		{
+			code: "var a = x === 1 ? false : true;",
+			output: "var a = x !== 1;",
+			errors: [
+				{
+					messageId: "unnecessaryConditionalExpression",
+					line: 1,
+					column: 9,
+					endLine: 1,
+					endColumn: 31,
+				},
+			],
+		},
+		{
+			code: "var a = x != 1 ? false : true;",
+			output: "var a = x == 1;",
+			errors: [
+				{
+					messageId: "unnecessaryConditionalExpression",
+					line: 1,
+					column: 9,
+					endLine: 1,
+					endColumn: 30,
+				},
+			],
+		},
+		{
+			code: "var a = foo() ? false : true;",
+			output: "var a = !foo();",
+			errors: [
+				{
+					messageId: "unnecessaryConditionalExpression",
+					line: 1,
+					column: 9,
+					endLine: 1,
+					endColumn: 29,
+				},
+			],
+		},
+		{
+			code: "var a = !foo() ? false : true;",
+			output: "var a = !!foo();",
+			errors: [
+				{
+					messageId: "unnecessaryConditionalExpression",
+					line: 1,
+					column: 9,
+					endLine: 1,
+					endColumn: 30,
+				},
+			],
+		},
+		{
+			code: "var a = foo + bar ? false : true;",
+			output: "var a = !(foo + bar);",
+			errors: [
+				{
+					messageId: "unnecessaryConditionalExpression",
+					line: 1,
+					column: 9,
+					endLine: 1,
+					endColumn: 33,
+				},
+			],
+		},
+		{
+			code: "var a = x instanceof foo ? false : true;",
+			output: "var a = !(x instanceof foo);",
+			errors: [
+				{
+					messageId: "unnecessaryConditionalExpression",
+					line: 1,
+					column: 9,
+					endLine: 1,
+					endColumn: 40,
+				},
+			],
+		},
+		{
+			code: "var a = foo ? false : false;",
+			output: "var a = false;",
+			errors: [
+				{
+					messageId: "unnecessaryConditionalExpression",
+					line: 1,
+					column: 9,
+					endLine: 1,
+					endColumn: 28,
+				},
+			],
+		},
+		{
+			code: "var a = foo() ? false : false;",
+			output: null,
+			errors: [
+				{
+					messageId: "unnecessaryConditionalExpression",
+					line: 1,
+					column: 9,
+					endLine: 1,
+					endColumn: 30,
+				},
+			],
+		},
+		{
+			code: "var a = x instanceof foo ? true : false;",
+			output: "var a = x instanceof foo;",
+			errors: [
+				{
+					messageId: "unnecessaryConditionalExpression",
+					line: 1,
+					column: 9,
+					endLine: 1,
+					endColumn: 40,
+				},
+			],
+		},
+		{
+			code: "var a = !foo ? true : false;",
+			output: "var a = !foo;",
+			errors: [
+				{
+					messageId: "unnecessaryConditionalExpression",
+					line: 1,
+					column: 9,
+					endLine: 1,
+					endColumn: 28,
+				},
+			],
+		},
+		{
+			code: `
+                var value = 'a'
+                var canSet = true
+                var result = value ? value : canSet ? 'unset' : 'can not set'
+            `,
+			output: `
+                var value = 'a'
+                var canSet = true
+                var result = value || (canSet ? 'unset' : 'can not set')
+            `,
+			options: [{ defaultAssignment: false }],
+			errors: [
+				{
+					messageId: "unnecessaryConditionalAssignment",
+					line: 4,
+					column: 30,
+					endLine: 4,
+					endColumn: 78,
+				},
+			],
+		},
+		{
+			code: "foo ? foo : (bar ? baz : qux)",
+			output: "foo || (bar ? baz : qux)",
+			options: [{ defaultAssignment: false }],
+			errors: [
+				{
+					messageId: "unnecessaryConditionalAssignment",
+					line: 1,
+					column: 1,
+					endLine: 1,
+					endColumn: 30,
+				},
+			],
+		},
+		{
+			code: "function* fn() { foo ? foo : yield bar }",
+			output: "function* fn() { foo || (yield bar) }",
+			options: [{ defaultAssignment: false }],
+			languageOptions: { ecmaVersion: 6 },
+			errors: [
+				{
+					messageId: "unnecessaryConditionalAssignment",
+					line: 1,
+					column: 18,
+					endLine: 1,
+					endColumn: 39,
+				},
+			],
+		},
+		{
+			code: "var a = foo ? foo : 'No';",
+			output: "var a = foo || 'No';",
+			options: [{ defaultAssignment: false }],
+			errors: [
+				{
+					messageId: "unnecessaryConditionalAssignment",
+					line: 1,
+					column: 9,
+					endLine: 1,
+					endColumn: 25,
+				},
+			],
+		},
+		{
+			code: "var a = ((foo)) ? (((((foo))))) : ((((((((((((((bar))))))))))))));",
+			output: "var a = ((foo)) || ((((((((((((((bar))))))))))))));",
+			options: [{ defaultAssignment: false }],
+			errors: [
+				{
+					messageId: "unnecessaryConditionalAssignment",
+					line: 1,
+					column: 9,
+					endLine: 1,
+					endColumn: 66,
+				},
+			],
+		},
+		{
+			code: "var a = b ? b : c => c;",
+			output: "var a = b || (c => c);",
+			options: [{ defaultAssignment: false }],
+			languageOptions: { ecmaVersion: 2015 },
+			errors: [
+				{
+					messageId: "unnecessaryConditionalAssignment",
+					line: 1,
+					column: 9,
+					endLine: 1,
+					endColumn: 23,
+				},
+			],
+		},
+		{
+			code: "var a = b ? b : c = 0;",
+			output: "var a = b || (c = 0);",
+			options: [{ defaultAssignment: false }],
+			languageOptions: { ecmaVersion: 2015 },
+			errors: [
+				{
+					messageId: "unnecessaryConditionalAssignment",
+					line: 1,
+					column: 9,
+					endLine: 1,
+					endColumn: 22,
+				},
+			],
+		},
+		{
+			code: "var a = b ? b : (c => c);",
+			output: "var a = b || (c => c);",
+			options: [{ defaultAssignment: false }],
+			languageOptions: { ecmaVersion: 2015 },
+			errors: [
+				{
+					messageId: "unnecessaryConditionalAssignment",
+					line: 1,
+					column: 9,
+					endLine: 1,
+					endColumn: 25,
+				},
+			],
+		},
+		{
+			code: "var a = b ? b : (c = 0);",
+			output: "var a = b || (c = 0);",
+			options: [{ defaultAssignment: false }],
+			languageOptions: { ecmaVersion: 2015 },
+			errors: [
+				{
+					messageId: "unnecessaryConditionalAssignment",
+					line: 1,
+					column: 9,
+					endLine: 1,
+					endColumn: 24,
+				},
+			],
+		},
+		{
+			code: "var a = b ? b : (c) => (c);",
+			output: "var a = b || ((c) => (c));",
+			options: [{ defaultAssignment: false }],
+			languageOptions: { ecmaVersion: 2015 },
+			errors: [
+				{
+					messageId: "unnecessaryConditionalAssignment",
+					line: 1,
+					column: 9,
+					endLine: 1,
+					endColumn: 27,
+				},
+			],
+		},
+		{
+			code: "var a = b ? b : c, d; // this is ((b ? b : c), (d))",
+			output: "var a = b || c, d; // this is ((b ? b : c), (d))",
+			options: [{ defaultAssignment: false }],
+			languageOptions: { ecmaVersion: 2015 },
+			errors: [
+				{
+					messageId: "unnecessaryConditionalAssignment",
+					line: 1,
+					column: 9,
+					endLine: 1,
+					endColumn: 18,
+				},
+			],
+		},
+		{
+			code: "var a = b ? b : (c, d);",
+			output: "var a = b || (c, d);",
+			options: [{ defaultAssignment: false }],
+			languageOptions: { ecmaVersion: 2015 },
+			errors: [
+				{
+					messageId: "unnecessaryConditionalAssignment",
+					line: 1,
+					column: 9,
+					endLine: 1,
+					endColumn: 23,
+				},
+			],
+		},
+		{
+			code: "f(x ? x : 1);",
+			output: "f(x || 1);",
+			options: [{ defaultAssignment: false }],
+			errors: [
+				{
+					messageId: "unnecessaryConditionalAssignment",
+					line: 1,
+					column: 3,
+					endLine: 1,
+					endColumn: 12,
+				},
+			],
+		},
+		{
+			code: "x ? x : 1;",
+			output: "x || 1;",
+			options: [{ defaultAssignment: false }],
+			errors: [
+				{
+					messageId: "unnecessaryConditionalAssignment",
+					line: 1,
+					column: 1,
+					endLine: 1,
+					endColumn: 10,
+				},
+			],
+		},
+		{
+			code: "var a = foo ? foo : bar;",
+			output: "var a = foo || bar;",
+			options: [{ defaultAssignment: false }],
+			errors: [
+				{
+					messageId: "unnecessaryConditionalAssignment",
+					line: 1,
+					column: 9,
+					endLine: 1,
+					endColumn: 24,
+				},
+			],
+		},
+		{
+			code: "var a = foo ? foo : a ?? b;",
+			output: "var a = foo || (a ?? b);",
+			options: [{ defaultAssignment: false }],
+			languageOptions: { ecmaVersion: 2020 },
+			errors: [
+				{
+					messageId: "unnecessaryConditionalAssignment",
+					line: 1,
+					column: 9,
+					endLine: 1,
+					endColumn: 27,
+				},
+			],
+		},
+
+		// https://github.com/eslint/eslint/issues/17173
+		{
+			code: "foo as any ? false : true",
+			output: "!(foo as any)",
+			languageOptions: {
+				parser: require(
+					parser("typescript-parsers/unneeded-ternary-1"),
+				),
+				ecmaVersion: 6,
+			},
+			errors: [
+				{
+					messageId: "unnecessaryConditionalExpression",
+				},
+			],
+		},
+		{
+			code: "foo ? foo : bar as any",
+			output: "foo || (bar as any)",
+			options: [{ defaultAssignment: false }],
+			languageOptions: {
+				parser: require(
+					parser("typescript-parsers/unneeded-ternary-2"),
+				),
+				ecmaVersion: 6,
+			},
+			errors: [
+				{
+					messageId: "unnecessaryConditionalAssignment",
+				},
+			],
+		},
+		{
+			code: "({ a: 1 } === b) ? false : true;",
+			output: "({ a: 1 } !== b);",
+			errors: [
+				{
+					messageId: "unnecessaryConditionalExpression",
+					line: 1,
+					column: 1,
+					endLine: 1,
+					endColumn: 32,
+				},
+			],
+		},
+		{
+			code: "const f = () => ({ a: 1 } === b) ? false : true;",
+			output: "const f = () => ({ a: 1 } !== b);",
+			errors: [
+				{
+					messageId: "unnecessaryConditionalExpression",
+					line: 1,
+					column: 17,
+					endLine: 1,
+					endColumn: 48,
+				},
+			],
+		},
+		{
+			code: "(function() {} === b) ? false : true;",
+			output: "(function() {} !== b);",
+			errors: [
+				{
+					messageId: "unnecessaryConditionalExpression",
+					line: 1,
+					column: 1,
+					endLine: 1,
+					endColumn: 37,
+				},
+			],
+		},
+		{
+			code: "(class {} === b) ? false : true;",
+			output: "(class {} !== b);",
+			errors: [
+				{
+					messageId: "unnecessaryConditionalExpression",
+					line: 1,
+					column: 1,
+					endLine: 1,
+					endColumn: 32,
+				},
+			],
+		},
+		{
+			code: "export default (function() {} === b) ? false : true;",
+			output: "export default (function() {} !== b);",
+			errors: [
+				{
+					messageId: "unnecessaryConditionalExpression",
+					line: 1,
+					column: 16,
+					endLine: 1,
+					endColumn: 52,
+				},
+			],
+		},
+		{
+			code: "a++\n(/x/.test(y) === b) ? false : true;",
+			output: "a++\n(/x/.test(y) !== b);",
+			errors: [
+				{
+					messageId: "unnecessaryConditionalExpression",
+					line: 2,
+					column: 1,
+					endLine: 2,
+					endColumn: 35,
+				},
+			],
+		},
+		{
+			code: "switch (x) { case(foo) ? true : true: break; }",
+			output: "switch (x) { case true: break; }",
+			errors: [
+				{
+					messageId: "unnecessaryConditionalExpression",
+					line: 1,
+					column: 18,
+					endLine: 1,
+					endColumn: 37,
+				},
+			],
+		},
+		{
+			code: "function f() { return(foo) ? true : true; }",
+			output: "function f() { return true; }",
+			errors: [
+				{
+					messageId: "unnecessaryConditionalExpression",
+					line: 1,
+					column: 22,
+					endLine: 1,
+					endColumn: 41,
+				},
+			],
+		},
+		{
+			code: "function f() { return(a === b) ? false : true; }",
+			output: "function f() { return(a !== b); }",
+			errors: [
+				{
+					messageId: "unnecessaryConditionalExpression",
+					line: 1,
+					column: 22,
+					endLine: 1,
+					endColumn: 46,
+				},
+			],
+		},
+	],
+});

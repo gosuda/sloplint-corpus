@@ -1,0 +1,33 @@
+import _Object$keys from "core-js-pure/features/object/keys.js";
+import _Object$getOwnPropertySymbols from "core-js-pure/features/object/get-own-property-symbols.js";
+import _filterInstanceProperty from "core-js-pure/features/instance/filter.js";
+import _Object$getOwnPropertyDescriptor from "core-js-pure/features/object/get-own-property-descriptor.js";
+import _pushInstanceProperty from "core-js-pure/features/instance/push.js";
+import _forEachInstanceProperty from "core-js-pure/features/instance/for-each.js";
+import _Object$getOwnPropertyDescriptors from "core-js-pure/features/object/get-own-property-descriptors.js";
+import _Object$defineProperties from "core-js-pure/features/object/define-properties.js";
+import _Object$defineProperty from "core-js-pure/features/object/define-property.js";
+import defineProperty from "./defineProperty.js";
+function ownKeys(e, r) {
+  var t = _Object$keys(e);
+  if (_Object$getOwnPropertySymbols) {
+    var o = _Object$getOwnPropertySymbols(e);
+    r && (o = _filterInstanceProperty(o).call(o, function (r) {
+      return _Object$getOwnPropertyDescriptor(e, r).enumerable;
+    })), _pushInstanceProperty(t).apply(t, o);
+  }
+  return t;
+}
+function _objectSpread2(r) {
+  for (var t = 1; t < arguments.length; t++) {
+    var _context, _context2;
+    var o = null != arguments[t] ? arguments[t] : {};
+    t % 2 ? _forEachInstanceProperty(_context = ownKeys(Object(o), !0)).call(_context, function (t) {
+      defineProperty(r, t, o[t]);
+    }) : _Object$getOwnPropertyDescriptors ? _Object$defineProperties(r, _Object$getOwnPropertyDescriptors(o)) : _forEachInstanceProperty(_context2 = ownKeys(Object(o))).call(_context2, function (e) {
+      _Object$defineProperty(r, e, _Object$getOwnPropertyDescriptor(o, e));
+    });
+  }
+  return r;
+}
+export { _objectSpread2 as default };
