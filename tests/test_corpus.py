@@ -855,6 +855,34 @@ class TestAddLocal(unittest.TestCase):
         manifest = open(os.path.join(root, "corpus.toml")).read()
         self.assertNotIn("readmeonly", manifest)
 
+    @unittest.skipUnless(HAS_GIT and HAS_ASKALONO, "needs git and askalono")
+    def test_add_copies_every_root_license_file(self):
+        upstream = tempfile.mkdtemp(prefix="corpus-upstream-")
+        self.addCleanup(shutil.rmtree, upstream, True)
+        write(os.path.join(upstream, "src", "lib.rs"),
+              "// SPDX-License-Identifier: MIT\npub fn f() {}\n")
+        write(os.path.join(upstream, "LICENSE"), MIT_TEXT)
+        write(os.path.join(upstream, "COPYING"), MIT_TEXT)
+        subprocess.run(["git", "init", "-q", upstream], check=True, timeout=60)
+        subprocess.run(["git", "-C", upstream, "add", "-A"], check=True, timeout=60)
+        subprocess.run(["git", "-C", upstream, "-c", "user.name=t",
+                        "-c", "user.email=t@t", "commit", "-qm", "fixture"],
+                       check=True, timeout=60)
+        rev = subprocess.run(["git", "-C", upstream, "rev-parse", "HEAD"],
+                             capture_output=True, text=True, check=True,
+                             timeout=60).stdout.strip()
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        proc = run_tool(root, "add", "--url", upstream, "--rev", rev,
+                        "--lang", "rust", "--spdx", "MIT",
+                        "--name", "twolicense", "--paths", "src/**",
+                        "--reason", "two license files")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        projdir = os.path.join(root, "projects", "rust", "twolicense")
+        self.assertTrue(os.path.isfile(os.path.join(projdir, "LICENSE")))
+        self.assertTrue(os.path.isfile(os.path.join(projdir, "COPYING")))
+        self.assertEqual(run_tool(root, "verify", "--offline").returncode, 0)
+
     @unittest.skipUnless(HAS_GIT, "needs git")
     def test_add_duplicate_name_rejected_before_clone(self):
         upstream, rev = make_local_git_repo(MIT_TEXT)

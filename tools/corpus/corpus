@@ -944,18 +944,17 @@ def cmd_add(args):
         fail("path subset copied no source files for %s; refusing empty entry" %
              args.lang)
         return 1
-    license_src = None
+    license_srcs = []
     for base in LICENSE_NAMES:
         candidate = os.path.join(cache, base)
         if os.path.isfile(candidate):
-            license_src = candidate
-            break
-    if license_src is None and storage == "copied":
+            license_srcs.append(candidate)
+    if not license_srcs and storage == "copied":
         shutil.rmtree(cache, ignore_errors=True)
         shutil.rmtree(projdir, ignore_errors=True)
         fail("upstream has no LICENSE or COPYING file")
         return 1
-    if license_src is not None:
+    for license_src in license_srcs:
         shutil.copyfile(license_src, os.path.join(projdir, os.path.basename(license_src)))
     notice_src = None
     for base in NOTICE_NAMES:
@@ -967,7 +966,7 @@ def cmd_add(args):
     if notice_src is not None:
         shutil.copyfile(notice_src, os.path.join(projdir, os.path.basename(notice_src)))
     root_texts = []
-    for path in [license_src, notice_src]:
+    for path in license_srcs + [notice_src]:
         if path is not None:
             with open(path, "rb") as fh:
                 root_texts.append(fh.read())
