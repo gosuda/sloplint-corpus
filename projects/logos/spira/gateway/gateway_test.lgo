@@ -1,0 +1,781 @@
+package gateway_test
+
+import (
+	"bytes"
+	"fmt"
+	"io"
+	"log/slog"
+	"logos/sync"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/gosuda/spira/gateway"
+	"github.com/gosuda/spira/resilience"
+	"github.com/gosuda/spira/web"
+)
+
+type upstreamNote struct {
+	Method    string
+	Path      string
+	Escaped   string
+	Query     string
+	Body      string
+	XFF       string
+	XFH       string
+	XFP       string
+	Forwarded string
+	Custom    string
+}
+func echoUpstream(t *testing.T, grd *requestGuard, notes chan<- upstreamNote) *httptest.Server {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !grd.admit(r) {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		b, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("upstream read body: %v", err)
+		}
+		note := upstreamNote{
+			Method: r.Method,
+			Path:   r.URL.Path,
+			Escaped: r.URL.EscapedPath(),
+			Query:  r.URL.RawQuery,
+			Body:   string(b),
+			XFF:       r.Header.Get("X-Forwarded-For"),
+			XFH:       r.Header.Get("X-Forwarded-Host"),
+			XFP:       r.Header.Get("X-Forwarded-Proto"),
+			Forwarded: r.Header.Get("Forwarded"),
+			Custom:    r.Header.Get("X-Custom"),
+		}
+		select {
+		case notes <- note:
+		case <-r.Context().Done():
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func countingUpstream(t *testing.T, grd *requestGuard, hits *atomic.Int64) *httptest.Server {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !grd.admit(r) {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		hits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func serveRoutes(t *testing.T, build func(r *web.Router)) *httptest.Server {
+	r := web.NewRouter()
+	build(r)
+	srv := httptest.NewServer(r)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func serveGateway(t *testing.T, routes []gateway.Route, policy resilience.Policy) *httptest.Server {
+	return serveRoutes(t, func(r *web.Router) {
+		gateway.Mount(r, routes, policy)
+	})
+}
+
+func plainPolicy() resilience.Policy {
+	return resilience.Policy{Timeout: 2 * time.Second}
+}
+
+const testMarkHeader = "X-Spira-Test"
+
+type requestGuard struct {
+	want string
+	first sync.Locked[int64]
+	count sync.Locked[int64]
+	marked sync.Locked[string]
+	strangers sync.Locked[string]
+}
+
+type markedTransport struct {
+	want string
+	base http.RoundTripper
+}
+
+func newRequestGuard(t *testing.T) *requestGuard {
+	t.Helper()
+	return &requestGuard{want: t.Name()}
+}
+
+func (grd *requestGuard) admit(r *http.Request) bool {
+	if r.Header.Get(testMarkHeader) != grd.want {
+		grd.strangers.WithLock(func(s *string) {
+			*s = *s + strangerRow(r, grd.age()) + "\n"
+		})
+		return false
+	}
+	grd.first.WithLock(func(p *int64) {
+		if *p == 0 {
+			*p = time.Now().UnixNano()
+		}
+	})
+	var n int64
+	grd.count.WithLock(func(p *int64) {
+		*p = *p + 1
+		n = *p
+	})
+	grd.marked.WithLock(func(s *string) {
+		*s = *s + markedRow(n, r, grd.age()) + "\n"
+	})
+	return true
+}
+
+func (grd *requestGuard) age() string {
+	var start int64
+	grd.first.WithLock(func(p *int64) {
+		start = *p
+	})
+	if start == 0 {
+		return "before-first-marked"
+	}
+	return time.Since(time.Unix(0, start)).String()
+}
+
+func (grd *requestGuard) report() string {
+	var m string
+	grd.marked.WithLock(func(s *string) {
+		m = *s
+	})
+	var u string
+	grd.strangers.WithLock(func(s *string) {
+		u = *s
+	})
+	if m == "" {
+		m = "none\n"
+	}
+	if u == "" {
+		u = "none\n"
+	}
+	return "marked:\n" + m + "strangers:\n" + u
+}
+
+func (grd *requestGuard) httpClient(t *testing.T) *http.Client {
+	t.Helper()
+	fresh := &http.Transport{}
+	t.Cleanup(func() {
+		fresh.CloseIdleConnections()
+	})
+	return &http.Client{Transport: &markedTransport{want: grd.want, base: fresh}}
+}
+
+func (m *markedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	dup := req.Clone(req.Context())
+	dup.Header.Set(testMarkHeader, m.want)
+	return m.base.RoundTrip(dup)
+}
+
+func strangerRow(r *http.Request, age string) string {
+	return "method=" + r.Method + " path=" + r.URL.Path + " agent=" + r.UserAgent() + " remote=" + r.RemoteAddr + " conn=" + r.Header.Get("Connection") + " age=" + age
+}
+
+func markedRow(n int64, r *http.Request, age string) string {
+	closeNote := "false"
+	if r.Close {
+		closeNote = "true"
+	}
+	return "#" + fmt.Sprint(n) + " age=" + age + " remote=" + r.RemoteAddr + " close=" + closeNote + " path=" + r.URL.Path
+}
+
+func awaitNote(t *testing.T, notes <-chan upstreamNote) upstreamNote {
+	t.Helper()
+	select {
+	case n := <-notes:
+		return n
+	case <-time.After(2 * time.Second):
+		t.Fatal("the upstream saw no request")
+	}
+	return upstreamNote{}
+}
+
+func readBody(t *testing.T, resp *http.Response) string {
+	t.Helper()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("client read body: %v", err)
+	}
+	if cerr := resp.Body.Close(); cerr != nil {
+		t.Errorf("client close body: %v", cerr)
+	}
+	return string(data)
+}
+
+func TestMethodBodyQueryAndHeaderArriveUnchanged(t *testing.T) {
+	grd := newRequestGuard(t)
+	hc := grd.httpClient(t)
+	notes := make(chan upstreamNote, 4)
+	up := echoUpstream(t, grd, notes)
+	gw := serveGateway(t, []gateway.Route{{PathPrefix: "/shop", StripPrefix: true, To: []string{up.URL}}}, plainPolicy())
+
+	req, err := http.NewRequest(http.MethodGet, gw.URL+"/shop/catalog?a=1&b=two", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Custom", "c-41")
+	resp, err := hc.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET status=%d want 200", resp.StatusCode)
+	}
+	readBody(t, resp)
+	n := awaitNote(t, notes)
+	if n.Method != http.MethodGet || n.Path != "/catalog" || n.Query != "a=1&b=two" || n.Custom != "c-41" {
+		t.Fatalf("GET reached the upstream as %+v", n)
+	}
+
+	presp, err := hc.Post(gw.URL+"/shop/submit", "text/plain", strings.NewReader("name=ada"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if presp.StatusCode != http.StatusOK {
+		t.Fatalf("POST status=%d want 200", presp.StatusCode)
+	}
+	readBody(t, presp)
+	pn := awaitNote(t, notes)
+	if pn.Method != http.MethodPost || pn.Path != "/submit" || pn.Body != "name=ada" {
+		t.Fatalf("POST reached the upstream as %+v", pn)
+	}
+}
+
+func TestPrefixStrippedOrKeptByFlagAndShoppingNotRouted(t *testing.T) {
+	grd := newRequestGuard(t)
+	hc := grd.httpClient(t)
+	notesA := make(chan upstreamNote, 4)
+	notesB := make(chan upstreamNote, 4)
+	ua := echoUpstream(t, grd, notesA)
+	ub := echoUpstream(t, grd, notesB)
+	gw := serveGateway(t, []gateway.Route{
+		{PathPrefix: "/shop", StripPrefix: true, To: []string{ua.URL}},
+		{PathPrefix: "/keep", To: []string{ub.URL}},
+	}, plainPolicy())
+
+	for _, tc := range []struct {
+		path string
+		want string
+	}{
+		{path: "/shop/catalog", want: "/catalog"},
+		{path: "/shop", want: "/"},
+	} {
+		resp, err := hc.Get(gw.URL + tc.path)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.path, err)
+		}
+		readBody(t, resp)
+		if n := awaitNote(t, notesA); n.Path != tc.want {
+			t.Fatalf("%s reached the upstream as %q want %q", tc.path, n.Path, tc.want)
+		}
+	}
+	resp, err := hc.Get(gw.URL + "/keep/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	readBody(t, resp)
+	if n := awaitNote(t, notesB); n.Path != "/keep/x" {
+		t.Fatalf("/keep/x reached the upstream as %q want /keep/x", n.Path)
+	}
+	sresp, err := hc.Get(gw.URL + "/shopping")
+	if err != nil {
+		t.Fatal(err)
+	}
+	readBody(t, sresp)
+	if sresp.StatusCode != http.StatusNotFound {
+		t.Fatalf("/shopping status=%d want 404", sresp.StatusCode)
+	}
+	if len(notesA) != 0 || len(notesB) != 0 {
+		t.Fatalf("upstreams hold %d and %d extra requests, want none after the awaited notes\n%s", len(notesA), len(notesB), grd.report())
+	}
+}
+
+func TestUpstreamBasePathIsJoinedBeforeTheStrippedTail(t *testing.T) {
+	grd := newRequestGuard(t)
+	hc := grd.httpClient(t)
+	notes := make(chan upstreamNote, 2)
+	up := echoUpstream(t, grd, notes)
+	gw := serveGateway(t, []gateway.Route{{PathPrefix: "/shop", StripPrefix: true, To: []string{up.URL + "/base"}}}, plainPolicy())
+	resp, err := hc.Get(gw.URL + "/shop/catalog")
+	if err != nil {
+		t.Fatal(err)
+	}
+	readBody(t, resp)
+	if n := awaitNote(t, notes); n.Path != "/base/catalog" {
+		t.Fatalf("path reached the upstream as %q want /base/catalog", n.Path)
+	}
+}
+
+func TestForwardedHeadersHoldInboundValuesAndDropForgedOnes(t *testing.T) {
+	grd := newRequestGuard(t)
+	hc := grd.httpClient(t)
+	notes := make(chan upstreamNote, 2)
+	up := echoUpstream(t, grd, notes)
+	gw := serveGateway(t, []gateway.Route{{PathPrefix: "/", To: []string{up.URL}}}, plainPolicy())
+	req, err := http.NewRequest(http.MethodGet, gw.URL+"/thing", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Forwarded-For", "9.9.9.9")
+	req.Header.Set("X-Forwarded-Host", "evil.example")
+	req.Header.Set("X-Forwarded-Proto", "https")
+	resp, err := hc.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readBody(t, resp)
+	n := awaitNote(t, notes)
+	if n.XFF != "127.0.0.1" {
+		t.Fatalf("X-Forwarded-For=%q want the client address 127.0.0.1", n.XFF)
+	}
+	if want := strings.TrimPrefix(gw.URL, "http://"); n.XFH != want {
+		t.Fatalf("X-Forwarded-Host=%q want %q", n.XFH, want)
+	}
+	if n.XFP != "http" {
+		t.Fatalf("X-Forwarded-Proto=%q want http", n.XFP)
+	}
+}
+
+func TestUpstreamsTakeTurns(t *testing.T) {
+	grd := newRequestGuard(t)
+	hc := grd.httpClient(t)
+	var a, b atomic.Int64
+	ua := countingUpstream(t, grd, &a)
+	ub := countingUpstream(t, grd, &b)
+	gw := serveGateway(t, []gateway.Route{{PathPrefix: "/shop", To: []string{ua.URL, ub.URL}}}, plainPolicy())
+	for i := range 10 {
+		resp, err := hc.Get(gw.URL + "/shop/x")
+		if err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+		readBody(t, resp)
+	}
+	if a.Load() != 5 || b.Load() != 5 {
+		t.Fatalf("upstream hits %d and %d, want 5 and 5\n%s", a.Load(), b.Load(), grd.report())
+	}
+}
+
+func TestHostRouteMatchesOnlyItsHost(t *testing.T) {
+	grd := newRequestGuard(t)
+	hc := grd.httpClient(t)
+	notes := make(chan upstreamNote, 2)
+	up := echoUpstream(t, grd, notes)
+	gw := serveGateway(t, []gateway.Route{{Host: "shop.example", PathPrefix: "/", To: []string{up.URL}}}, plainPolicy())
+	req, err := http.NewRequest(http.MethodGet, gw.URL+"/thing", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "shop.example"
+	resp, err := hc.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readBody(t, resp)
+	if n := awaitNote(t, notes); n.Path != "/thing" {
+		t.Fatalf("host route reached the upstream as %q", n.Path)
+	}
+	other, err := http.NewRequest(http.MethodGet, gw.URL+"/thing", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other.Host = "other.example"
+	oresp, err := hc.Do(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readBody(t, oresp)
+	if oresp.StatusCode != http.StatusNotFound {
+		t.Fatalf("other host status=%d want 404", oresp.StatusCode)
+	}
+	if len(notes) != 0 {
+		t.Fatalf("the upstream saw %d more requests, want none for the other host\n%s", len(notes), grd.report())
+	}
+}
+
+func recorderStage(order *[]string, name string) web.Stage {
+	return func(next web.Handler) web.Handler {
+		return func(ctx *web.Context) (web.Reply, error) {
+			*order = append(*order, name)
+			return next(ctx)
+		}
+	}
+}
+
+func TestRouteStagesRunAfterRouterStagesBeforeTheProxy(t *testing.T) {
+	grd := newRequestGuard(t)
+	hc := grd.httpClient(t)
+	order := make([]string, 0, 5)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !grd.admit(r) {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		order = append(order, "up")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(up.Close)
+	gw := serveRoutes(t, func(r *web.Router) {
+		r.Use(recorderStage(&order, "r1"), recorderStage(&order, "r2"))
+		gateway.Mount(r, []gateway.Route{{
+			PathPrefix: "/shop",
+			To:         []string{up.URL},
+			Stages:     []web.Stage{recorderStage(&order, "a1"), recorderStage(&order, "a2")},
+		}}, plainPolicy())
+	})
+	resp, err := hc.Get(gw.URL + "/shop/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	readBody(t, resp)
+	if want := "r1,r2,a1,a2,up"; strings.Join(order, ",") != want {
+		t.Fatalf("order=%q want %q", strings.Join(order, ","), want)
+	}
+}
+
+func TestStageAnswerKeepsTheRequestFromTheUpstream(t *testing.T) {
+	grd := newRequestGuard(t)
+	hc := grd.httpClient(t)
+	var hits atomic.Int64
+	up := countingUpstream(t, grd, &hits)
+	gw := serveGateway(t, []gateway.Route{{
+		PathPrefix: "/shop",
+		To:         []string{up.URL},
+		Stages:     []web.Stage{func(next web.Handler) web.Handler {
+			return func(ctx *web.Context) (web.Reply, error) {
+				return web.Problem{Status: http.StatusForbidden, Title: "Forbidden"}, nil
+			}
+		}},
+	}}, plainPolicy())
+	resp, err := hc.Get(gw.URL + "/shop/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status=%d want 403", resp.StatusCode)
+	}
+	if !strings.Contains(body, "Forbidden") {
+		t.Fatalf("body %q lacks the stage's title", body)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("the upstream saw %d requests, want 0\n%s", hits.Load(), grd.report())
+	}
+}
+
+func TestSettledStagesLetTheProxyAnswer(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		if _, err := w.Write([]byte("made")); err != nil {
+			t.Errorf("upstream write body: %v", err)
+		}
+	}))
+	t.Cleanup(up.Close)
+	statuses := make(chan int, 1)
+	statusAfterNext := func(next web.Handler) web.Handler {
+		return func(ctx *web.Context) (web.Reply, error) {
+			_, err := next(ctx)
+			select {
+			case statuses <- ctx.Status():
+			case <-ctx.Request.Context().Done():
+			}
+			return nil, err
+		}
+	}
+	gw := serveGateway(t, []gateway.Route{{
+		PathPrefix: "/shop",
+		To:         []string{up.URL},
+		Stages:     []web.Stage{web.Recover(), web.AccessLog(slog.New(slog.DiscardHandler)), statusAfterNext},
+	}}, plainPolicy())
+	resp, err := http.Get(gw.URL + "/shop/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusCreated || body != "made" {
+		t.Fatalf("status=%d body=%q, want 201 and the upstream body", resp.StatusCode, body)
+	}
+	select {
+	case got := <-statuses:
+		if got != http.StatusCreated {
+			t.Fatalf("the stage read status %d after next, want 201", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the stage did not run past next")
+	}
+}
+
+func TestMountInsideAGroupStripsTheGroupPrefixAndKeepsTheHost(t *testing.T) {
+	grd := newRequestGuard(t)
+	hc := grd.httpClient(t)
+	notes := make(chan upstreamNote, 2)
+	up := echoUpstream(t, grd, notes)
+	gw := serveRoutes(t, func(r *web.Router) {
+		r.Group("/edge", func(g *web.Router) {
+			gateway.Mount(g, []gateway.Route{{Host: "shop.example", PathPrefix: "/api", StripPrefix: true, To: []string{up.URL}}}, plainPolicy())
+		})
+	})
+	for _, tc := range []struct {
+		host string
+		want int
+	}{{"shop.example", http.StatusOK}, {"other.example", http.StatusNotFound}} {
+		req, err := http.NewRequest(http.MethodGet, gw.URL+"/edge/api/x", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Host = tc.host
+		resp, err := hc.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		readBody(t, resp)
+		if resp.StatusCode != tc.want {
+			t.Fatalf("host %s status=%d want %d", tc.host, resp.StatusCode, tc.want)
+		}
+	}
+	if n := awaitNote(t, notes); n.Path != "/x" {
+		t.Fatalf("the upstream saw %q, want /x without the group prefix and the path prefix", n.Path)
+	}
+	if len(notes) != 0 {
+		t.Fatalf("the upstream saw %d more requests, want none for the other host\n%s", len(notes), grd.report())
+	}
+}
+
+func TestPercentEncodedPathArrivesEncoded(t *testing.T) {
+	grd := newRequestGuard(t)
+	hc := grd.httpClient(t)
+	notes := make(chan upstreamNote, 8)
+	up := echoUpstream(t, grd, notes)
+	gw := serveGateway(t, []gateway.Route{
+		{PathPrefix: "/api", StripPrefix: true, To: []string{up.URL + "/base"}},
+		{PathPrefix: "/keep", To: []string{up.URL}},
+		{PathPrefix: "/shop/", StripPrefix: true, To: []string{up.URL}},
+		{PathPrefix: "/", To: []string{up.URL + "/storage%2F"}},
+	}, plainPolicy())
+	for _, tc := range []struct {
+		path string
+		want string
+	}{
+		{"/api/files/a%2Fb", "/base/files/a%2Fb"},
+		{"/keep/a%2Fb%20c", "/keep/a%2Fb%20c"},
+		{"/shop/files/a%2Fb", "/files/a%2Fb"},
+		{"/shop/%2Ffiles", "/%2Ffiles"},
+		{"/a%2Fb", "/storage%2F/a%2Fb"},
+		{"/%61pi/files/a%2Fb", "/base/files/a%2Fb"},
+	} {
+		resp, err := hc.Get(gw.URL + tc.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		readBody(t, resp)
+		if n := awaitNote(t, notes); n.Escaped != tc.want {
+			t.Fatalf("%s reached the upstream as %q want %q", tc.path, n.Escaped, tc.want)
+		}
+	}
+}
+
+func TestUpstreamQueryLeadsTheRequestQuery(t *testing.T) {
+	grd := newRequestGuard(t)
+	hc := grd.httpClient(t)
+	notes := make(chan upstreamNote, 2)
+	up := echoUpstream(t, grd, notes)
+	gw := serveGateway(t, []gateway.Route{{
+		PathPrefix:  "/shop",
+		StripPrefix: true,
+		To:          []string{up.URL + "/base?locale=en"},
+	}}, plainPolicy())
+	for _, tc := range []struct {
+		path string
+		want string
+	}{{"/shop/catalog?page=2", "locale=en&page=2"}, {"/shop/catalog", "locale=en"}} {
+		resp, err := hc.Get(gw.URL + tc.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		readBody(t, resp)
+		n := awaitNote(t, notes)
+		if n.Path != "/base/catalog" || n.Query != tc.want {
+			t.Fatalf("%s reached the upstream as %s?%s want /base/catalog?%s", tc.path, n.Path, n.Query, tc.want)
+		}
+	}
+}
+
+func TestMountPanicsOnBadRoutes(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		route gateway.Route
+		want  string
+	}{
+		{name: "no upstream", route: gateway.Route{PathPrefix: "/shop"}, want: "route /shop: no upstream"},
+		{name: "relative upstream", route: gateway.Route{PathPrefix: "/shop", To: []string{"example.com/base"}}, want: "route /shop: upstream example.com/base is not an absolute http or https URL"},
+		{name: "wrong scheme", route: gateway.Route{PathPrefix: "/shop", To: []string{"ftp://example.com"}}, want: "route /shop: upstream ftp://example.com is not an absolute http or https URL"},
+		{name: "prefix without slash", route: gateway.Route{PathPrefix: "shop", To: []string{"http://example.com"}}, want: "route shop: path prefix must start with /"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				p := recover()
+				if p == nil {
+					t.Fatal("Mount did not panic")
+				}
+				if msg := fmt.Sprint(p); !strings.Contains(msg, tc.want) {
+					t.Fatalf("panic %q lacks %q", msg, tc.want)
+				}
+			}()
+			gateway.Mount(web.NewRouter(), []gateway.Route{tc.route}, plainPolicy())
+		})
+	}
+}
+
+type lockedBuffer struct {
+	buf sync.Locked[bytes.Buffer]
+}
+
+func (b *lockedBuffer) Write(p []byte) (n int, err error) {
+	b.buf.WithLock(func(buf *bytes.Buffer) { n, err = buf.Write(p) })
+	return n, err
+}
+
+func (b *lockedBuffer) String() string {
+	var text string
+	b.buf.WithLock(func(buf *bytes.Buffer) { text = buf.String() })
+	return text
+}
+
+func TestStrippedTailStaysAnAbsolutePath(t *testing.T) {
+	grd := newRequestGuard(t)
+	hc := grd.httpClient(t)
+	notes := make(chan upstreamNote, 4)
+	up := echoUpstream(t, grd, notes)
+	gw := serveGateway(t, []gateway.Route{
+		{PathPrefix: "/", StripPrefix: true, To: []string{up.URL}},
+		{PathPrefix: "/shop/", StripPrefix: true, To: []string{up.URL}},
+	}, plainPolicy())
+	for _, tc := range []struct {
+		path string
+		want string
+	}{
+		{path: "/catalog", want: "/catalog"},
+		{path: "/shop/x", want: "/x"},
+	} {
+		resp, err := hc.Get(gw.URL + tc.path)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.path, err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s status=%d want 200", tc.path, resp.StatusCode)
+		}
+		readBody(t, resp)
+		if n := awaitNote(t, notes); n.Path != tc.want {
+			t.Fatalf("%s reached the upstream as %q want %q", tc.path, n.Path, tc.want)
+		}
+	}
+}
+
+func TestClientForwardedHeaderNeverReachesTheUpstream(t *testing.T) {
+	grd := newRequestGuard(t)
+	hc := grd.httpClient(t)
+	notes := make(chan upstreamNote, 2)
+	up := echoUpstream(t, grd, notes)
+	gw := serveGateway(t, []gateway.Route{{PathPrefix: "/", To: []string{up.URL}}}, plainPolicy())
+	req, err := http.NewRequest(http.MethodGet, gw.URL+"/thing", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Forwarded", "for=9.9.9.9;host=evil.example")
+	resp, err := hc.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readBody(t, resp)
+	if n := awaitNote(t, notes); n.Forwarded != "" {
+		t.Fatalf("Forwarded=%q reached the upstream; a client forwarding header must be dropped", n.Forwarded)
+	}
+}
+
+func TestSlashEndingPrefixServesSubpathsWithoutARedirect(t *testing.T) {
+	grd := newRequestGuard(t)
+	hc := grd.httpClient(t)
+	notes := make(chan upstreamNote, 4)
+	up := echoUpstream(t, grd, notes)
+	gw := serveGateway(t, []gateway.Route{{PathPrefix: "/shop/", StripPrefix: true, To: []string{up.URL}}}, plainPolicy())
+	presp, err := hc.Post(gw.URL+"/shop/order", "text/plain", strings.NewReader("name=ada"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	readBody(t, presp)
+	if presp.StatusCode != http.StatusOK {
+		t.Fatalf("POST status=%d want 200", presp.StatusCode)
+	}
+	n := awaitNote(t, notes)
+	if n.Method != http.MethodPost || n.Path != "/order" || n.Body != "name=ada" {
+		t.Fatalf("POST reached the upstream as %+v; a redirect would have turned it into a GET", n)
+	}
+	resp, err := hc.Get(gw.URL + "/shop/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	readBody(t, resp)
+	if m := awaitNote(t, notes); m.Path != "/x" {
+		t.Fatalf("GET reached the upstream as %q want /x", m.Path)
+	}
+}
+func TestMountRefusesWildcardPrefixButStripsLiteralNeighbor(t *testing.T) {
+	for _, prefix := range []string{"/api/{rest...}", "/api/*", "/api/{id}"} {
+		func() {
+			defer func() {
+				p := recover()
+				if p == nil {
+					t.Fatalf("Mount with prefix %q did not panic", prefix)
+				}
+				msg := fmt.Sprint(p)
+				if !strings.Contains(msg, prefix) || !strings.Contains(msg, "wildcards") {
+					t.Fatalf("Mount with prefix %q panicked with %q, want the wildcard rule", prefix, msg)
+				}
+			}()
+			gateway.Mount(web.NewRouter(), []gateway.Route{{PathPrefix: prefix, StripPrefix: true, To: []string{"http://example.com"}}}, plainPolicy())
+		}()
+	}
+	grd := newRequestGuard(t)
+	hc := grd.httpClient(t)
+	notes := make(chan upstreamNote, 2)
+	up := echoUpstream(t, grd, notes)
+	gw := serveGateway(t, []gateway.Route{{PathPrefix: "/api/files", StripPrefix: true, To: []string{up.URL}}}, plainPolicy())
+	resp, err := hc.Get(gw.URL + "/api/files/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	readBody(t, resp)
+	if n := awaitNote(t, notes); n.Path != "/x" {
+		t.Fatalf("/api/files/x reached the upstream as %q want /x", n.Path)
+	}
+}
+
+func TestCutEscapedSuffixKeepsOneLeadingSlash(t *testing.T) {
+	for _, tc := range []struct{ path, mounted, want string }{
+		{"/shop/catalog", "/shop", "/catalog"},
+		{"/shop", "/shop", "/"},
+		{"/shop/", "/shop/", "/"},
+		{"/shop/x", "/shop/", "/x"},
+		{"/shop//catalog", "/shop/", "/catalog"},
+		{"/shop//catalog", "/shop", "/catalog"},
+		{"/shop/%2Ffiles", "/shop/", "/%2Ffiles"},
+		{"/other/x", "/shop", "/other/x"},
+		{"/catalog", "/", "/catalog"},
+	} {
+		if got := gateway.CutEscapedSuffixForTest(tc.path, tc.mounted); got != tc.want {
+			t.Fatalf("cutEscapedSuffix(%q, %q) = %q want %q", tc.path, tc.mounted, got, tc.want)
+		}
+	}
+}

@@ -1,0 +1,310 @@
+package web
+
+import (
+	"bufio"
+	"context"
+	"crypto/tls"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"time"
+
+	"logos/rt"
+	"logos/sync"
+)
+
+type Server struct {
+	Addr              string = ":8080"
+	Router            *Router
+	ReadHeaderTimeout time.Duration = 5 * time.Second
+	ShutdownGrace     time.Duration = 20 * time.Second
+	TLS               *tls.Config?
+	H2C               bool
+
+	state sync.Locked[serverState]
+}
+
+type serverState struct {
+	run *serverRun?
+}
+
+type serverRun struct {
+	srv        *http.Server
+	join       *joinState
+	upgrades   *upgrades
+	listener   net.Listener
+}
+
+type upgradesKey struct{}
+
+type upgrades struct {
+	state sync.Locked[upgradeState]
+}
+
+type upgradeState struct {
+	open    map[*upgradedConn]struct{}
+	stopped bool
+}
+
+type upgradedConn struct {
+	net.Conn
+	owner *upgrades
+}
+
+func newUpgrades() *upgrades {
+	u := &upgrades{}
+	u.state.WithLock(func(st *upgradeState) {
+		st.open = map[*upgradedConn]struct{}{}
+	})
+	return u
+}
+
+func (u *upgrades) adopt(conn net.Conn, buf *bufio.ReadWriter) (net.Conn, *bufio.ReadWriter, error) {
+	c := &upgradedConn{Conn: conn, owner: u}
+	stopped := false
+	u.state.WithLock(func(st *upgradeState) {
+		stopped = st.stopped
+		if !stopped {
+			st.open[c] = struct{}{}
+		}
+	})
+	if stopped {
+		return c, buf, errors.Join(errors.New("web: server is stopping"), conn.Close())
+	}
+	return c, buf, nil
+}
+
+func TrackConn(ctx context.Context, conn net.Conn) (net.Conn, error) {
+	ups, ok := ctx.Value(upgradesKey{}).(*upgrades)
+	if !ok {
+		return conn, nil
+	}
+	c := &upgradedConn{Conn: conn, owner: ups}
+	stopped := false
+	ups.state.WithLock(func(st *upgradeState) {
+		stopped = st.stopped
+		if !stopped {
+			st.open[c] = struct{}{}
+		}
+	})
+	if stopped {
+		return c, errors.Join(errors.New("web: server is stopping"), conn.Close())
+	}
+	return c, nil
+}
+
+func (c *upgradedConn) Close() error {
+	c.owner.state.WithLock(func(st *upgradeState) {
+		delete(st.open, c)
+	})
+	return c.Conn.Close()
+}
+
+func (c *upgradedConn) CloseRead() error {
+	if closer, ok := c.Conn.(interface{ CloseRead() error }); ok {
+		return closer.CloseRead()
+	}
+	return errors.New("web: CloseRead not supported by the underlying connection")
+}
+
+func (c *upgradedConn) CloseWrite() error {
+	if closer, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return closer.CloseWrite()
+	}
+	return errors.New("web: CloseWrite not supported by the underlying connection")
+}
+
+func (u *upgrades) closeAll() error {
+	var open []*upgradedConn
+	u.state.WithLock(func(st *upgradeState) {
+		st.stopped = true
+		for c := range st.open {
+			open = append(open, c)
+		}
+		clear(st.open)
+	})
+	var errs []error
+	for _, c := range open {
+		if err := c.Conn.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			errs = append(errs, fmt.Errorf("web: close upgraded connection: %w", err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+type joinState struct {
+	done chan struct{}
+	err  sync.Locked[error]
+}
+
+func (s *Server) cloneTLS() *tls.Config? {
+	cfg := s.TLS
+	if cfg == nil {
+		return nil
+	}
+	out := cfg.Clone()
+	if out.MinVersion < tls.VersionTLS13 {
+		out.MinVersion = tls.VersionTLS13
+	}
+	if inner := out.GetConfigForClient; inner != nil {
+		out.GetConfigForClient = func(chi *tls.ClientHelloInfo) (*tls.Config, error) {
+			got, err := inner(chi)
+			if err != nil || got == nil {
+				return got, err
+			}
+			if got.MinVersion < tls.VersionTLS13 {
+				fixed := got.Clone()
+				fixed.MinVersion = tls.VersionTLS13
+				return fixed, nil
+			}
+			return got, nil
+		}
+	}
+	out.NextProtos = []string{"h2", "http/1.1"}
+	return out
+}
+
+func checkTLSConfig(cfg *tls.Config?) error {
+	if cfg == nil {
+		return nil
+	}
+	if len(cfg.Certificates) == 0 && cfg.GetCertificate == nil && cfg.GetConfigForClient == nil {
+		return errors.New("web: server TLS needs a certificate")
+	}
+	return nil
+}
+
+func (s *Server) Start(ctx context.Context) error {
+	if err := s.checkStart(); err != nil {
+		return err
+	}
+	l, err := net.Listen("tcp", s.Addr)
+	if err != nil {
+		return fmt.Errorf("web: listen %s: %w", s.Addr, err)
+	}
+	return s.serveStored(ctx, l)
+}
+
+func (s *Server) Serve(ctx context.Context, l net.Listener) error {
+	if l == nil {
+		return errors.New("web: serve needs a listener")
+	}
+	if err := s.checkStart(); err != nil {
+		return err
+	}
+	return s.serveStored(ctx, l)
+}
+
+func (s *Server) checkStart() error {
+	busy := false
+	s.state.WithLock(func(st *serverState) {
+		if st.run != nil {
+			busy = true
+		}
+	})
+	if busy {
+		return errors.New("web: server already started")
+	}
+	if s.Router == nil {
+		return errors.New("web: server needs a router")
+	}
+	return checkTLSConfig(s.TLS)
+}
+
+func (s *Server) serveStored(ctx context.Context, l net.Listener) error {
+	run := s.serve(ctx, l)
+	stored := false
+	s.state.WithLock(func(st *serverState) {
+		if st.run == nil {
+			st.run = run
+			stored = true
+		}
+	})
+	if !stored {
+		return errors.Join(errors.New("web: server already started"), run.stop(ctx, s.ShutdownGrace))
+	}
+	return nil
+}
+
+func (s *Server) serve(startCtx context.Context, l net.Listener) *serverRun {
+	ups := newUpgrades()
+	srv := &http.Server{Handler: s.Router, DisableGeneralOptionsHandler: true, ReadHeaderTimeout: s.ReadHeaderTimeout, BaseContext: func(_ net.Listener) context.Context {
+		return context.WithValue(context.Background(), upgradesKey{}, ups)
+	}}
+	cfg := s.cloneTLS()
+	if cfg != nil {
+		srv.TLSConfig = cfg
+	}
+	if s.H2C {
+		protos := &http.Protocols{}
+		protos.SetHTTP1(true)
+		protos.SetUnencryptedHTTP2(true)
+		if cfg != nil {
+			protos.SetHTTP2(true)
+		}
+		srv.Protocols = protos
+	}
+	g, _ := rt.NewGroup(context.WithoutCancel(startCtx), 0)
+	if cfg != nil {
+		g.Go(func(_ context.Context) error {
+			if serr := srv.ServeTLS(l, "", ""); !errors.Is(serr, http.ErrServerClosed) {
+				if cerr := l.Close(); cerr != nil {
+					return fmt.Errorf("web: serve: %w (close listener: %w)", serr, cerr)
+				}
+				return fmt.Errorf("web: serve: %w", serr)
+			}
+			return nil
+		})
+	} else {
+		g.Go(func(_ context.Context) error {
+			if serr := srv.Serve(l); !errors.Is(serr, http.ErrServerClosed) {
+				return fmt.Errorf("web: serve: %w", serr)
+			}
+			return nil
+		})
+	}
+	js := &joinState{done: make(chan struct{})}
+	waiter, _ := rt.NewGroup(context.WithoutCancel(startCtx), 0)
+	waiter.Go(func(_ context.Context) error {
+		js.err.WithLock(func(e *error) {
+			*e = g.Wait()
+		})
+		close(js.done)
+		return nil
+	})
+	return &serverRun{srv: srv, join: js, upgrades: ups, listener: l}
+}
+
+func (s *Server) Stop(ctx context.Context) error {
+	var held *serverRun?
+	s.state.WithLock(func(st *serverState) {
+		held = st.run
+		st.run = nil
+	})
+	current := held
+	if current != nil {
+		return current.stop(ctx, s.ShutdownGrace)
+	}
+	return nil
+}
+
+func (r *serverRun) stop(ctx context.Context, grace time.Duration) error {
+	sctx, cancel := context.WithTimeout(ctx, grace)
+	defer cancel()
+	shutdownErr := r.srv.Shutdown(sctx)
+	if shutdownErr != nil {
+		shutdownErr = errors.Join(fmt.Errorf("web: shutdown: %w", shutdownErr), r.srv.Close())
+	}
+	shutdownErr = errors.Join(shutdownErr, r.upgrades.closeAll())
+	select {
+	case <-r.join.done:
+	case <-ctx.Done():
+		return errors.Join(shutdownErr, ctx.Err())
+	}
+	var joinErr error
+	r.join.err.WithLock(func(e *error) {
+		joinErr = *e
+	})
+	return errors.Join(joinErr, shutdownErr)
+}

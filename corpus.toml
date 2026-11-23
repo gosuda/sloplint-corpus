@@ -2,3 +2,31 @@ schema_version = 1
 
 [corpus]
 mode = "public"
+
+[[project]]
+name = "spira"
+language = "logos"
+url = "https://github.com/gosuda/spira"
+rev = "b35a253039a539d1c710d4fb759244a37d429b82"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["*.lgo"]
+tree_hash = "sha256:2988cf79498d7448a73d82971886aea4b8e835e8627a02fdda2aaca8f8354eed"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "own LoGOs application covering every language feature; full-program syntax and app-idiom spread"
+notice_present_upstream = true
+
+[[project]]
+name = "sloplint"
+language = "logos"
+url = "https://github.com/gosuda/sloplint"
+rev = "d9d257c83580879f5b742ef7d78a3df202b317f4"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["*.lgo"]
+tree_hash = "sha256:d1cff44ea2303e2c689f440648c8b0a6c893d9bdc06bc22bb422cc73781cbfc7"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "own linter .lgo test fixtures including parse-error edge cases"
+notice_present_upstream = false
