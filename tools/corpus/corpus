@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 try:
@@ -57,7 +58,7 @@ EXTENSIONS = {
     "zig": [".zig"],
     "ocaml": [".ml", ".mli"],
     "odin": [".odin"],
-    "starlark": [".bzl", ".star"],
+    "starlark": [".bzl", ".star", ".bazel"],
     "lean": [".lean"],
     "quint": [".qnt"],
     "tlaplus": [".tla"],
@@ -65,7 +66,7 @@ EXTENSIONS = {
     "dafny": [".dfy"],
     "racket": [".rkt", ".rktd", ".rktl"],
 }
-STARLARK_SPECIAL = frozenset({"BUILD", ".bazel"})
+STARLARK_SPECIAL = frozenset({"BUILD", "WORKSPACE"})
 
 LICENSE_NAMES = ("LICENSE", "LICENSE.txt", "LICENSE.md", "LICENCE", "LICENCE.txt",
                  "COPYING", "COPYING.txt")
@@ -150,9 +151,22 @@ def spdx_ids(expr):
     return ids
 
 
+def _spdx_public_ok(expr):
+    core = expr.replace("(", " ").replace(")", " ")
+    parts = core.split()
+    if not parts or len(parts) % 2 == 0:
+        return False
+    for index, part in enumerate(parts):
+        if index % 2 == 0:
+            if part not in PUBLIC_ALLOWLIST:
+                return False
+        elif part != "OR":
+            return False
+    return True
+
+
 def public_spdx_ok(expr):
-    ids = spdx_ids(expr)
-    return bool(ids) and ids <= set(PUBLIC_ALLOWLIST)
+    return _spdx_public_ok(expr)
 
 
 def extension_ok(language, relpath):
@@ -170,6 +184,11 @@ def list_project_files(projdir):
     found = []
     for dirpath, dirnames, filenames in os.walk(projdir, followlinks=False):
         dirnames.sort()
+        for name in sorted(dirnames):
+            full = os.path.join(dirpath, name)
+            if os.path.islink(full):
+                rel = os.path.relpath(full, projdir).replace(os.sep, "/")
+                found.append((rel, full))
         for name in sorted(filenames):
             full = os.path.join(dirpath, name)
             rel = os.path.relpath(full, projdir).replace(os.sep, "/")
@@ -258,6 +277,8 @@ def check_license_files(projdir, declared_ids, public, errors, tag):
         depth = rel.count("/")
         base = os.path.basename(rel)
         if depth == 0 and base in LICENSE_NAMES:
+            if os.path.islink(full) or not os.path.isfile(full):
+                continue
             candidates.append(full)
     if not candidates:
         errors.append("%s: copied entry has no LICENSE or COPYING file" % tag)
@@ -298,24 +319,23 @@ def check_headers(projdir, language, declared_ids, public, errors, tag):
     for rel, full in list_project_files(projdir):
         if not extension_ok(language, rel):
             continue
+        if os.path.islink(full) or not os.path.isfile(full):
+            continue
         try:
             with open(full, "rb") as fh:
                 raw = fh.read(65536)
         except OSError as exc:
             errors.append("%s: cannot read %s: %s" % (tag, rel, exc))
             continue
-        try:
-            text = raw.decode("utf-8", errors="strict")
-        except UnicodeDecodeError:
-            continue
+        text = raw.decode("utf-8", errors="replace")
         ids = header_spdx_ids(text)
         if public:
-            bad = {i for i in ids if i not in PUBLIC_ALLOWLIST}
-            if bad:
-                errors.append("%s: %s header names non-allowlisted license %s" %
-                              (tag, rel, sorted(bad)[0]))
-                continue
-            if has_copyleft_phrase(text):
+            bad_expr = next((match.group(1) for match in SPDX_HEADER_RE.finditer(text)
+                             if not _spdx_public_ok(match.group(1))), None)
+            if bad_expr is not None:
+                errors.append("%s: %s header expression %r is outside the public allowlist "
+                              "(MIT, Apache-2.0, OR only)" % (tag, rel, bad_expr))
+            elif has_copyleft_phrase(text):
                 errors.append("%s: %s header carries copyleft license text" % (tag, rel))
         else:
             bad = {i for i in ids if i not in declared_ids}
@@ -367,11 +387,15 @@ def check_nested_licenses(projdir, errors, tag):
     for rel, full in list_project_files(projdir):
         base = os.path.basename(rel)
         if rel.count("/") == 0 and base in LICENSE_NAMES + NOTICE_NAMES:
+            if os.path.islink(full) or not os.path.isfile(full):
+                continue
             with open(full, "rb") as fh:
                 top[base] = fh.read()
     for rel, full in list_project_files(projdir):
         base = os.path.basename(rel)
         if rel.count("/") > 0 and base in LICENSE_NAMES + NOTICE_NAMES:
+            if os.path.islink(full) or not os.path.isfile(full):
+                continue
             with open(full, "rb") as fh:
                 content = fh.read()
             if content not in set(top.values()):
@@ -393,8 +417,8 @@ def verify_project(root, project, mode, errors):
     rev = project.get("rev", "")
     spdx = project.get("spdx", "")
     storage = project.get("storage", "")
-    if not isinstance(url, str) or not url.startswith("https://"):
-        errors.append("%s: url must start with https://" % tag)
+    if not isinstance(url, str) or not (url.startswith("https://") or url.startswith("file://")):
+        errors.append("%s: url must start with https:// or file://" % tag)
     if not isinstance(rev, str) or not REV_RE.match(rev):
         errors.append("%s: rev must be a 40-hex commit, never a branch or tag" % tag)
     if not isinstance(spdx, str) or not spdx_ids(spdx):
@@ -419,6 +443,14 @@ def verify_project(root, project, mode, errors):
                           (tag, language, name))
         if "NOASSERTION" not in declared and not declared:
             errors.append("%s: pinned entry needs a recorded spdx" % tag)
+        paths = project.get("paths", [])
+        if (not isinstance(paths, list) or not paths
+                or not all(isinstance(p, str) and p for p in paths)):
+            errors.append("%s: pinned entry needs a non-empty paths subset" % tag)
+        tree_hash = project.get("tree_hash", "")
+        if (not isinstance(tree_hash, str)
+                or not re.fullmatch(r"sha256:[0-9a-f]{64}", tree_hash)):
+            errors.append("%s: pinned entry needs tree_hash sha256:<64 hex>" % tag)
         return 0
     if not os.path.isdir(projdir):
         errors.append("%s: copied entry is missing projects/%s/%s" % (tag, language, name))
@@ -450,6 +482,33 @@ def verify_project(root, project, mode, errors):
     return total
 
 
+def check_unowned_tree(root, projects, errors):
+    owned = set()
+    for project in projects:
+        if not isinstance(project, dict):
+            continue
+        if project.get("storage") == "copied" and project.get("language") in EXTENSIONS:
+            name = project.get("name")
+            if isinstance(name, str) and NAME_RE.match(name):
+                owned.add((project["language"], name))
+    top = os.path.join(root, "projects")
+    if not os.path.isdir(top):
+        return
+    for lang in sorted(os.listdir(top)):
+        langdir = os.path.join(top, lang)
+        if not os.path.isdir(langdir) or os.path.islink(langdir):
+            errors.append("projects/%s is not a project directory" % lang)
+            continue
+        if lang not in EXTENSIONS:
+            errors.append("projects/%s is not a known language" % lang)
+            continue
+        for name in sorted(os.listdir(langdir)):
+            full = os.path.join(langdir, name)
+            if (lang, name) in owned and os.path.isdir(full) and not os.path.islink(full):
+                continue
+            errors.append("projects/%s/%s is not owned by a copied manifest entry" % (lang, name))
+
+
 def cmd_verify(args):
     root = os.path.abspath(args.root)
     data, problems = load_manifest(root, args.manifest)
@@ -461,6 +520,12 @@ def cmd_verify(args):
         mode = manifest_mode(data)
         if mode not in ("public", "private"):
             errors.append("[corpus] mode must be public or private")
+        elif getattr(args, "expect_mode", None) and mode != args.expect_mode:
+            errors.append("manifest mode is %s, expected %s" % (mode, args.expect_mode))
+            for item in errors:
+                fail(item)
+            sys.stdout.write("verify: %d failure(s)\n" % len(errors))
+            return 1
         else:
             projects = data.get("project", [])
             if not isinstance(projects, list):
@@ -480,6 +545,7 @@ def cmd_verify(args):
                 lang = project.get("language")
                 if isinstance(lang, str):
                     sizes[lang] = sizes.get(lang, 0) + total
+            check_unowned_tree(root, projects, errors)
             for lang, total in sorted(sizes.items()):
                 if total > MAX_LANG_BYTES:
                     errors.append("language %s: %d bytes, above the %d cap" %
@@ -507,13 +573,126 @@ def cmd_verify(args):
     return 0
 
 
+def _glob_to_regex(pattern):
+    slot = "\x00DS\x00"
+    tmp = pattern.replace("**/", slot)
+    out = []
+    i = 0
+    while i < len(tmp):
+        char = tmp[i]
+        if char == "*":
+            if i + 1 < len(tmp) and tmp[i + 1] == "*":
+                out.append(".*")
+                i += 2
+            else:
+                out.append("[^/]*")
+                i += 1
+        elif char == "?":
+            out.append("[^/]")
+            i += 1
+        elif tmp.startswith(slot, i):
+            out.append("(?:.*/)?")
+            i += len(slot)
+        else:
+            out.append(re.escape(char))
+            i += 1
+    return "".join(out)
+
+
 def match_subset(relpath, patterns):
-    from pathlib import PurePosixPath
-    path = PurePosixPath(relpath)
     for pattern in patterns:
-        if path.match(pattern):
+        if re.fullmatch(_glob_to_regex(pattern), relpath):
             return True
     return False
+
+
+def _toml_basic(value):
+    out = []
+    for char in value:
+        code = ord(char)
+        if char == "\\":
+            out.append("\\\\")
+        elif char == '"':
+            out.append('\\"')
+        elif char == "\b":
+            out.append("\\b")
+        elif char == "\t":
+            out.append("\\t")
+        elif char == "\n":
+            out.append("\\n")
+        elif char == "\f":
+            out.append("\\f")
+        elif char == "\r":
+            out.append("\\r")
+        elif code < 0x20 or code == 0x7F:
+            out.append("\\u%04X" % code)
+        else:
+            out.append(char)
+    return "".join(out)
+
+
+def record_entry(root, args, url, patterns, excludes, storage, tree_hash, stamp, notice_flag):
+    quote = lambda value: '"%s"' % _toml_basic(value)
+    entry = ("\n[[project]]\n"
+             "name = %s\n"
+             "language = %s\n"
+             "url = %s\n"
+             "rev = %s\n"
+             "spdx = %s\n"
+             "storage = %s\n"
+             "paths = [%s]\n" % (
+                 quote(args.name), quote(args.lang), quote(url), quote(args.rev),
+                 quote(args.spdx), quote(storage),
+                 ", ".join(quote(p) for p in patterns)))
+    if excludes:
+        entry += "exclude = [%s]\n" % ", ".join(quote(p) for p in excludes)
+    entry += ("tree_hash = %s\n"
+              "added_by = %s\n"
+              "added_on = %s\n"
+              "reason = %s\n"
+              "notice_present_upstream = %s\n" % (
+                  quote(tree_hash), quote(args.added_by or "unknown"), quote(stamp),
+                  quote(args.reason), "true" if notice_flag else "false"))
+    manifest_path = find_manifest(root, args.manifest)
+    with open(manifest_path, "r", encoding="utf-8") as fh:
+        current = fh.read()
+    try:
+        tomllib.loads(current + entry)
+    except Exception as exc:
+        fail("refusing to write an unparsable manifest entry: %s" % exc)
+        return 1
+    with open(manifest_path, "a", encoding="utf-8") as fh:
+        fh.write(entry)
+    verify_args = argparse.Namespace(root=root, manifest=args.manifest, reuse=False,
+                                    expect_mode=None)
+    if cmd_verify(verify_args) != 0:
+        fail("added tree does not pass verify; entry kept for inspection")
+        return 1
+    if storage == "pinned":
+        sys.stdout.write("PASS add: pinned %s\n" % args.name)
+    else:
+        sys.stdout.write("PASS add: projects/%s/%s\n" % (args.lang, args.name))
+    return 0
+
+
+def check_upstream_nesting(cache, selected, root_texts, errors, tag):
+    for rel, full in selected:
+        if os.path.islink(full):
+            continue
+        scopes = rel.split("/")[:-1]
+        for depth in range(1, len(scopes) + 1):
+            scope = "/".join(scopes[:depth])
+            for base in LICENSE_NAMES:
+                candidate = os.path.join(cache, scope, base)
+                if not os.path.isfile(candidate) or os.path.islink(candidate):
+                    continue
+                with open(candidate, "rb") as fh:
+                    content = fh.read()
+                if content not in root_texts:
+                    errors.append("%s: %s is governed by nested %s/%s, which differs "
+                                  "from the project license; vendored third-party code "
+                                  "is excluded" % (tag, rel, scope, base))
+                    return
 
 
 def cmd_add(args):
@@ -531,14 +710,19 @@ def cmd_add(args):
     if not NAME_RE.match(args.name):
         fail("bad name; use [a-z0-9-]")
         return 1
-    if args.language not in EXTENSIONS:
-        fail("unknown language %s" % args.language)
+    if args.lang not in EXTENSIONS:
+        fail("unknown language %s" % args.lang)
         return 1
     if not REV_RE.match(args.rev):
         fail("rev must be a 40-hex commit, never a branch or tag")
         return 1
-    if not args.url.startswith("https://"):
-        fail("url must start with https://")
+    url = args.url
+    if url.startswith("https://") or url.startswith("file://"):
+        pass
+    elif os.path.isdir(url):
+        url = "file://" + os.path.abspath(url)
+    else:
+        fail("url must start with https:// or file://, or be a local directory")
         return 1
     if mode == "private" and public_spdx_ok(args.spdx):
         fail("spdx %s is public-allowlisted; it belongs in the public repo" % args.spdx)
@@ -546,13 +730,13 @@ def cmd_add(args):
     if mode == "public" and not public_spdx_ok(args.spdx):
         fail("spdx %s is not on the public allowlist" % args.spdx)
         return 1
-    cache = os.path.join(root, ".cache", "tmp", "add-" + args.name)
-    if os.path.exists(cache):
-        shutil.rmtree(cache)
-    os.makedirs(os.path.dirname(cache), exist_ok=True)
-    proc = subprocess.run(["git", "clone", "--quiet", args.url, cache],
+    scratch_parent = os.path.join(root, ".cache", "tmp")
+    os.makedirs(scratch_parent, exist_ok=True)
+    cache = tempfile.mkdtemp(prefix="add-" + args.name + "-", dir=scratch_parent)
+    proc = subprocess.run(["git", "clone", "--quiet", url, cache],
                           capture_output=True, text=True, timeout=600)
     if proc.returncode != 0:
+        shutil.rmtree(cache, ignore_errors=True)
         fail("git clone failed: %s" % (proc.stderr.strip().splitlines() or ["unknown"])[0])
         return 1
     proc = subprocess.run(["git", "-C", cache, "checkout", "--quiet", args.rev],
@@ -577,11 +761,28 @@ def cmd_add(args):
         shutil.rmtree(cache, ignore_errors=True)
         fail("path subset selected no files")
         return 1
-    projdir = os.path.join(root, "projects", args.language, args.name)
+    projdir = os.path.join(root, "projects", args.lang, args.name)
     if os.path.exists(projdir):
         shutil.rmtree(cache, ignore_errors=True)
-        fail("projects/%s/%s already exists" % (args.language, args.name))
+        fail("projects/%s/%s already exists" % (args.lang, args.name))
         return 1
+    stamp = time.strftime("%Y-%m-%d")
+    if storage == "pinned":
+        staged = os.path.join(root, ".cache", "tmp", "stage-" + args.name)
+        if os.path.exists(staged):
+            shutil.rmtree(staged)
+        os.makedirs(staged)
+        for rel, full in selected:
+            if os.path.islink(full):
+                continue
+            dest = os.path.join(staged, rel)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            shutil.copyfile(full, dest)
+        tree_hash = compute_tree_hash(staged)
+        shutil.rmtree(staged, ignore_errors=True)
+        shutil.rmtree(cache, ignore_errors=True)
+        return record_entry(root, args, url, patterns, excludes, storage,
+                            tree_hash, stamp, False)
     os.makedirs(projdir)
     for rel, full in selected:
         if os.path.islink(full):
@@ -591,7 +792,7 @@ def cmd_add(args):
             continue
         if base == ".gitmodules" or rel.endswith("/.gitmodules"):
             continue
-        if not extension_ok(args.language, rel):
+        if not extension_ok(args.lang, rel):
             continue
         dest = os.path.join(projdir, rel)
         os.makedirs(os.path.dirname(dest), exist_ok=True)
@@ -618,10 +819,23 @@ def cmd_add(args):
     notice_flag = bool(notice_src)
     if notice_src is not None:
         shutil.copyfile(notice_src, os.path.join(projdir, os.path.basename(notice_src)))
-    stamp = time.strftime("%Y-%m-%d")
+    root_texts = []
+    for path in [license_src, notice_src]:
+        if path is not None:
+            with open(path, "rb") as fh:
+                root_texts.append(fh.read())
+    nesting_errors = []
+    check_upstream_nesting(cache, selected, root_texts, nesting_errors,
+                           "project %s" % args.name)
+    if nesting_errors:
+        shutil.rmtree(cache, ignore_errors=True)
+        shutil.rmtree(projdir, ignore_errors=True)
+        for item in nesting_errors:
+            fail(item)
+        return 1
     with open(os.path.join(projdir, "UPSTREAM.md"), "w", encoding="utf-8") as fh:
         fh.write("# Upstream provenance\n\n")
-        fh.write("url: %s\n" % args.url)
+        fh.write("url: %s\n" % url)
         fh.write("rev: %s\n" % args.rev)
         fh.write("retrieved: %s\n" % stamp)
         fh.write("spdx: %s\n" % args.spdx)
@@ -631,34 +845,8 @@ def cmd_add(args):
         fh.write("modifications: unmodified subset copy\n")
     tree_hash = compute_tree_hash(projdir)
     shutil.rmtree(cache, ignore_errors=True)
-    entry = ("\n[[project]]\n"
-             "name = \"%s\"\n"
-             "language = \"%s\"\n"
-             "url = \"%s\"\n"
-             "rev = \"%s\"\n"
-             "spdx = \"%s\"\n"
-             "storage = \"%s\"\n"
-             "paths = [%s]\n" % (
-                 args.name, args.language, args.url, args.rev, args.spdx, storage,
-                 ", ".join('"%s"' % p for p in patterns)))
-    if excludes:
-        entry += "exclude = [%s]\n" % ", ".join('"%s"' % p for p in excludes)
-    entry += ("tree_hash = \"%s\"\n"
-              "added_by = \"%s\"\n"
-              "added_on = \"%s\"\n"
-              "reason = \"%s\"\n"
-              "notice_present_upstream = %s\n" % (
-                  tree_hash, args.added_by or "unknown", stamp, args.reason,
-                  "true" if notice_flag else "false"))
-    manifest_path = find_manifest(root, args.manifest)
-    with open(manifest_path, "a", encoding="utf-8") as fh:
-        fh.write(entry)
-    verify_args = argparse.Namespace(root=root, manifest=args.manifest, reuse=False)
-    if cmd_verify(verify_args) != 0:
-        fail("added tree does not pass verify; entry kept for inspection")
-        return 1
-    sys.stdout.write("PASS add: projects/%s/%s\n" % (args.language, args.name))
-    return 0
+    return record_entry(root, args, url, patterns, excludes, storage,
+                        tree_hash, stamp, notice_flag)
 
 
 def cached_pinned_dir(root, language, name):
@@ -676,11 +864,20 @@ def cmd_fetch(args):
     if args.lang:
         projects = [p for p in projects if p.get("language") == args.lang]
     failures = 0
+    cache_base = os.path.abspath(os.path.join(root, ".cache", "tree"))
     for project in projects:
         name = project.get("name", "?")
         language = project.get("language", "")
         storage = project.get("storage", "")
         tag = "project %s" % name
+        if not isinstance(name, str) or not NAME_RE.match(name):
+            fail("%s: bad name; use [a-z0-9-]" % tag)
+            failures += 1
+            continue
+        if language not in EXTENSIONS:
+            fail("%s: unknown language %r" % (tag, language))
+            failures += 1
+            continue
         if storage == "copied":
             if not args.check:
                 continue
@@ -702,6 +899,10 @@ def cmd_fetch(args):
                 failures += 1
                 continue
             dest = cached_pinned_dir(root, language, name)
+            if os.path.normpath(dest) != dest or not dest.startswith(cache_base + os.sep):
+                fail("%s: pinned cache path escapes .cache/tree; refusing" % tag)
+                failures += 1
+                continue
             if args.check:
                 if not os.path.isdir(dest):
                     fail("%s: pinned entry not materialized under .cache/tree" % tag)
@@ -801,7 +1002,7 @@ def cmd_measure(args):
     for project in sorted(projects, key=lambda p: p.get("name", "")):
         projdir = os.path.join(root, "projects", language, project["name"])
         for rel, full in list_project_files(projdir):
-            if extension_ok(language, rel) and os.path.isfile(full):
+            if extension_ok(language, rel) and os.path.isfile(full) and not os.path.islink(full):
                 files_all.append(full)
                 total_bytes += os.path.getsize(full)
     files_all.sort()
@@ -834,9 +1035,12 @@ def cmd_measure(args):
             panics += 1
             continue
         for item in doc.get("findings", []):
+            raw_path = item.get("path", "")
+            pname = project.get("name", "?")
+            item["path"] = "%s/%s" % (pname, raw_path) if raw_path else pname
             findings.append(item)
             if item.get("rule") == "meta/parse-error":
-                parse_error_files.add(item.get("path", ""))
+                parse_error_files.add(item["path"])
         for key, value in doc.get("rules", {}).items():
             rules_fired[key] = value
     findings.sort(key=lambda f: (str(f.get("path", "")), int(f.get("line", 0)),
@@ -937,6 +1141,8 @@ def cmd_seeds(args):
         for rel, full in list_project_files(projdir):
             if not extension_ok(language, rel):
                 continue
+            if os.path.islink(full) or not os.path.isfile(full):
+                continue
             size = os.path.getsize(full)
             if size > MAX_FILE_BYTES or size == 0:
                 continue
@@ -964,7 +1170,7 @@ def cmd_seeds(args):
     for rel, full, pname, size, digest in unique:
         if used + size > args.max_bytes:
             continue
-        flat = "%s__%s" % (pname, rel.replace("/", "__"))
+        flat = "%s__%s__%s" % (pname, rel.replace("/", "__"), digest[:12])
         with open(full, "rb") as src:
             content = src.read()
         with open(os.path.join(out, flat), "wb") as dst:
@@ -991,9 +1197,8 @@ def cmd_stats(args):
         storage = project.get("storage", "")
         if storage == "copied":
             row["copied"] += 1
-            projdir = os.path.join(root, "projects", language, project.get("name", ""))
             for rel, full in list_project_files(projdir):
-                if extension_ok(language, rel) and os.path.isfile(full):
+                if extension_ok(language, rel) and os.path.isfile(full) and not os.path.islink(full):
                     row["files"] += 1
                     row["bytes"] += os.path.getsize(full)
         else:
@@ -1020,6 +1225,8 @@ def build_parser():
                         help="Skip reachability checks (default; verify never uses the network).")
     verify.add_argument("--reuse", action="store_true",
                         help="Also run reuse lint on the repo root when the binary is present.")
+    verify.add_argument("--expect-mode", default=None, choices=("public", "private"),
+                        help="Fail when the manifest mode differs; the gate supplies this.")
     add = sub.add_parser("add", help="Record a project: fetch at a pinned rev, gate, copy.")
     add.add_argument("--root", default=".")
     add.add_argument("--manifest", default=None)

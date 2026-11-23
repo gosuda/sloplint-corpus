@@ -51,10 +51,16 @@ subset, copies only source files with allowlisted extensions, writes
 the entry to `corpus.toml`, and re-runs `verify`. Nothing is committed by the
 tool. Open a pull request afterwards and paste the `verify` report into it.
 
+`--url` also accepts a `file://` URL or a plain local directory path for
+local fixtures and offline curation. A local path is recorded in the
+manifest as a `file://` URL. The published corpus uses `https://`
+upstreams only.
+
 ## The gate
 
-Every pull request runs `corpus verify --offline`. It fails closed on:
+Every pull request runs `corpus verify --offline --expect-mode public`. It fails closed on:
 
+- a manifest whose mode is not `public`;
 - an SPDX expression outside the allowlist, or a `storage = "pinned"` entry;
 - a missing or unidentified project license (askalono 0.5.0, score below
   0.95, or a detected license outside the declared SPDX);
