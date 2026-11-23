@@ -232,3 +232,60 @@ added_by = "CorpusPopC1"
 added_on = "2026-11-23"
 reason = "compiler toolchain, tool"
 notice_present_upstream = false
+
+[[project]]
+name = "pytest"
+language = "python"
+url = "https://github.com/pytest-dev/pytest"
+rev = "718929265449ca33040264152ba5e7022e766a52"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:939db238725068875128c57e82f6f3ed9bf9604fce4092e6908969afe6efab5e"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "test framework, small-mid library"
+notice_present_upstream = false
+
+[[project]]
+name = "aiohttp"
+language = "python"
+url = "https://github.com/aio-libs/aiohttp"
+rev = "b60c6125c1039152013aa130ab4c2005ba52ccd1"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+exclude = ["vendor/**"]
+tree_hash = "sha256:5acc99b63fc7922e84630789cce37b4517bb4bb6849412412533e2f2320963b3"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "async HTTP client and server, library"
+notice_present_upstream = false
+
+[[project]]
+name = "keras"
+language = "python"
+url = "https://github.com/keras-team/keras"
+rev = "e1705782f99a692cd5b5aef181590f69342847c2"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:8802a69a11e7444db4fc1e8fd2b8ec8d5935780356fcd03d87f6e1c03cafd459"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "ML framework, mid-size application"
+notice_present_upstream = false
+
+[[project]]
+name = "homeassistant"
+language = "python"
+url = "https://github.com/home-assistant/core"
+rev = "ccb48381c79dfee73c6356339778fd9f1eadf742"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["homeassistant/helpers/**", "homeassistant/components/sensor/**", "homeassistant/components/automation/**"]
+tree_hash = "sha256:c6ad3102b02f9117ab75b97a2a1eb338d1489abc0e52f2d8bf27e72076533d76"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "IoT application helpers plus two integrations"
+notice_present_upstream = false
