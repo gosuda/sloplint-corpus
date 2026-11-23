@@ -667,7 +667,10 @@ def _glob_to_regex(pattern):
     i = 0
     while i < len(tmp):
         char = tmp[i]
-        if char == "*":
+        if char == "\\" and i + 1 < len(tmp):
+            out.append(re.escape(tmp[i + 1]))
+            i += 2
+        elif char == "*":
             if i + 1 < len(tmp) and tmp[i + 1] == "*":
                 out.append(".*")
                 i += 2
@@ -717,6 +720,8 @@ def match_subset(relpath, patterns):
     for pattern in patterns:
         while pattern.startswith("./"):
             pattern = pattern[2:]
+        if relpath == pattern:
+            return True
         if re.fullmatch(_glob_to_regex(pattern), relpath):
             return True
     return False

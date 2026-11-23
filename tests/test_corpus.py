@@ -246,6 +246,20 @@ class TestGlobs(unittest.TestCase):
         self.assertIsNotNone(corpus.check_subset(["src/test[9-0].rs"]))
         self.assertIsNone(corpus.check_subset(["src/test[0-9].rs", "src/**"]))
 
+    def test_literal_brackets_still_match(self):
+        self.assertTrue(corpus.match_subset(
+            "src/pages/[id].ts", ["src/pages/[id].ts"]))
+        self.assertTrue(corpus.match_subset(
+            "src/pages/i.ts", ["src/pages/[id].ts"]))
+        self.assertTrue(corpus.match_subset(
+            "src/pages/[id].ts", ["src/pages/\\[id].ts"]))
+        self.assertFalse(corpus.match_subset(
+            "src/pages/i.ts", ["src/pages/\\[id].ts"]))
+        self.assertTrue(corpus.match_subset(
+            "src/*.rs", ["src/\\*.rs"]))
+        self.assertFalse(corpus.match_subset(
+            "src/x.rs", ["src/\\*.rs"]))
+
     def test_dot_slash_prefix(self):
         self.assertTrue(corpus.match_subset("src/lib.rs", ["./src/*.rs"]))
         self.assertTrue(corpus.match_subset("src/net/tcp.rs", ["./src/**"]))
