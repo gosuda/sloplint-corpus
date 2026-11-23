@@ -590,6 +590,22 @@ def _glob_to_regex(pattern):
         elif char == "?":
             out.append("[^/]")
             i += 1
+        elif char == "[":
+            end = tmp.find("]", i + 1)
+            if end == -1:
+                out.append(re.escape(char))
+                i += 1
+            else:
+                body = tmp[i + 1:end]
+                if body.startswith("!"):
+                    body = "^" + body[1:]
+                elif body.startswith("^"):
+                    body = "\\^" + body[1:]
+                if not body or body == "^":
+                    out.append(re.escape(tmp[i:end + 1]))
+                else:
+                    out.append("[" + body.replace("\\", "\\\\") + "]")
+                i = end + 1
         elif tmp.startswith(slot, i):
             out.append("(?:.*/)?")
             i += len(slot)
@@ -601,6 +617,8 @@ def _glob_to_regex(pattern):
 
 def match_subset(relpath, patterns):
     for pattern in patterns:
+        while pattern.startswith("./"):
+            pattern = pattern[2:]
         if re.fullmatch(_glob_to_regex(pattern), relpath):
             return True
     return False

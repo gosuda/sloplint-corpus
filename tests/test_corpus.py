@@ -193,6 +193,19 @@ class TestGlobs(unittest.TestCase):
         self.assertTrue(corpus.match_subset("src/lib.rs", ["src/*.rs"]))
         self.assertFalse(corpus.match_subset("src/net/tcp.rs", ["src/*.rs"]))
 
+    def test_bracket_classes(self):
+        self.assertTrue(corpus.match_subset("src/test1.rs", ["src/test[12].rs"]))
+        self.assertTrue(corpus.match_subset("src/test2.rs", ["src/test[12].rs"]))
+        self.assertFalse(corpus.match_subset("src/test3.rs", ["src/test[12].rs"]))
+        self.assertTrue(corpus.match_subset("src/test3.rs", ["src/test[!12].rs"]))
+        self.assertFalse(corpus.match_subset("src/test1.rs", ["src/test[!12].rs"]))
+        self.assertTrue(corpus.match_subset("src/a1b.rs", ["src/a[0-9]b.rs"]))
+
+    def test_dot_slash_prefix(self):
+        self.assertTrue(corpus.match_subset("src/lib.rs", ["./src/*.rs"]))
+        self.assertTrue(corpus.match_subset("src/net/tcp.rs", ["./src/**"]))
+        self.assertFalse(corpus.match_subset("vendor/src/x.rs", ["./src/**"]))
+
 
 class TestExtensions(unittest.TestCase):
     def test_starlark_build_files(self):
