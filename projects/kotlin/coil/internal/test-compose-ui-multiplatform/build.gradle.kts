@@ -1,0 +1,42 @@
+import coil3.addAllMultiplatformTargets
+import coil3.multiplatformAndroidLibrary
+import coil3.skikoAwtRuntimeDependency
+
+plugins {
+    id("com.android.kotlin.multiplatform.library")
+    id("kotlin-multiplatform")
+    id("org.jetbrains.kotlinx.atomicfu")
+    id("org.jetbrains.compose")
+    id("org.jetbrains.kotlin.plugin.compose")
+}
+
+addAllMultiplatformTargets(libs.versions.skiko, enableNativeLinux = false)
+multiplatformAndroidLibrary(name = "coil3.test.composeuimultiplatform") {
+    androidResources {
+        enable = true
+    }
+}
+
+kotlin {
+    sourceSets {
+        commonMain {
+            dependencies {
+                implementation(projects.coil)
+                implementation(projects.coilComposeCore)
+                implementation(libs.compose.components.resources)
+            }
+        }
+        commonTest {
+            dependencies {
+                implementation(projects.internal.testUtils)
+                implementation(libs.bundles.test.common)
+                implementation(libs.compose.ui.test)
+            }
+        }
+        jvmTest {
+            dependencies {
+                implementation(skikoAwtRuntimeDependency())
+            }
+        }
+    }
+}

@@ -1,0 +1,196 @@
+/*
+ * Copyright 2017-Present the original author or authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.koin.core.resolution
+
+import org.koin.core.Koin
+import org.koin.core.annotation.KoinExperimentalAPI
+import org.koin.core.annotation.KoinInternalApi
+import org.koin.core.error.NoDefinitionFoundException
+import org.koin.core.instance.InstanceFactory
+import org.koin.core.instance.ResolutionContext
+import org.koin.core.instance.SingleInstanceFactory
+import org.koin.core.scope.Scope
+import org.koin.ext.getFullName
+
+
+/**
+ * Resolver - optimised version
+ */
+@KoinInternalApi
+class CoreResolverV2(
+    private val _koin : Koin
+) : InstanceResolver {
+
+    override val extendedResolution = arrayListOf<ResolutionExtension>()
+
+    override fun addResolutionExtension(resolutionExtension : ResolutionExtension){
+        extendedResolution += resolutionExtension
+    }
+
+    override fun <T> resolveFromContext(scope : Scope, instanceContext: ResolutionContext): T {
+        return resolveFromContextOrNull(scope,instanceContext) ?: throwNoDefinitionFound(scope, instanceContext)
+    }
+
+    private fun <T> resolveFromContextOrNull(scope : Scope, instanceContext: ResolutionContext): T? {
+        return resolveFromInjectedParameters(instanceContext)
+            ?: resolveFromStackedParameters(scope, instanceContext)
+            ?: resolveFromRegistry(scope, instanceContext)
+            ?: resolveInExtensions(scope, instanceContext)
+    }
+
+    private fun <T> resolveFromRegistry(
+        scope: Scope,
+        ctx: ResolutionContext
+    ): T? {
+        return resolveDirectDefinition(scope, ctx)
+            ?: resolveFromScopeSource(scope, ctx)
+            ?: resolveFromLinkedScopes(scope, ctx)
+    }
+
+    private fun <T> resolveDirectDefinition(scope: Scope, ctx: ResolutionContext): T? {
+        val factory = _koin.instanceRegistry.resolveDefinition(ctx.clazz, ctx.qualifier, scope.scopeQualifier)
+            ?: resolveFromScopeArchetype(scope, ctx)
+        return factory?.get(ctx) as T?
+    }
+
+    private fun resolveFromScopeArchetype(scope: Scope, ctx: ResolutionContext): InstanceFactory<*>? {
+        if (scope.isRoot) return null
+        return scope.scopeArchetype?.let { archetype ->
+            ctx.scopeArchetype = archetype
+            _koin.instanceRegistry.resolveDefinition(ctx.clazz, ctx.qualifier, archetype)
+        }
+    }
+
+    private fun <T> resolveFromScopeSource(scope: Scope, ctx: ResolutionContext): T? {
+        if (scope.isRoot || ctx.qualifier != null) return null
+        return if (ctx.clazz.isInstance(scope.sourceValue)) scope.sourceValue as? T else null
+    }
+
+    private fun <T> resolveFromLinkedScopes(scope: Scope, ctx: ResolutionContext): T? {
+        val linkedScopes = flatten(scope.linkedScopes)
+        if (linkedScopes.isEmpty()) return null
+
+        for (linkedScope in linkedScopes) {
+            // 1. Registry on this linked scope
+            val factory = findDefinitionInScope(linkedScope, ctx)
+            if (factory != null) {
+                // #2379: a root FACTORY requested from a child scope keeps the ORIGINATING
+                // context, so its transitive (possibly scoped/archetype) dependencies
+                // resolve back in the requesting scope instead of falling through to _root_.
+                // The origin ctx already carries the scope + scopeArchetype and its params
+                // are already stacked on it, so no context switch or re-stacking is needed.
+                // Root SINGLES are excluded: a singleton must resolve its dependencies once,
+                // from root, and must never capture a scope-local instance (guard: #2325).
+                if (linkedScope.isRoot && factory !is SingleInstanceFactory<*>) {
+                    return factory.get(ctx) as T?
+                }
+
+                // we will loose parameters from parent context
+                val newCtx = ctx.newContextForScope(linkedScope)
+                if (linkedScope.scopeArchetype != null && !linkedScope.isRoot) {
+                    newCtx.scopeArchetype = linkedScope.scopeArchetype
+                }
+
+                // stack params for call on other Scope
+                val paramStack = if (newCtx.parameters != null) {
+                    newCtx.scope.onParameterOnStack(newCtx.parameters)
+                } else null
+
+                // call with scope
+                val value = factory.get(newCtx) as T?
+
+                // unstack params - reuse stack reference, avoid second ThreadLocal access
+                paramStack?.let { newCtx.scope.clearParameterStack(it) }
+
+                return value
+            }
+
+            // 2. Stacked params on this linked scope (issue #2387):
+            // restores access to parameters stacked on parent scopes (e.g.
+            // AndroidParametersHolder stacked on root by KoinViewModelFactory,
+            // resolved from a child ViewModel scope's property initializer).
+            val fromStack = resolveFromStackedParameters<T>(linkedScope, ctx)
+            if (fromStack != null) return fromStack
+        }
+        return null
+    }
+
+    private fun findDefinitionInScope(scope: Scope, ctx: ResolutionContext): InstanceFactory<*>? {
+        return scope.scopeArchetype?.let { archetype ->
+            _koin.instanceRegistry.resolveDefinition(ctx.clazz, ctx.qualifier, archetype)
+        } ?: _koin.instanceRegistry.resolveDefinition(ctx.clazz, ctx.qualifier, scope.scopeQualifier)
+    }
+
+    private inline fun <T> resolveFromInjectedParameters(ctx: ResolutionContext): T? {
+        return if (ctx.parameters == null || ctx.parameters.isEmpty()) null
+        else {
+//            ctx.logger.debug("|- ? ${ctx.debugTag} look in injected parameters")
+            ctx.parameters.getOrNull(clazz = ctx.clazz)
+        }
+    }
+
+    private inline fun <T> resolveFromStackedParameters(scope: Scope, ctx: ResolutionContext): T? {
+        // A qualified lookup (get(named(...))) is a registry-only question: stacked parameters
+        // carry no qualifier (ParametersHolder matches by type only), so they can never be a
+        // legitimate match and would only shadow the qualified definition (#2370, #2408).
+        if (ctx.qualifier != null) return null
+        val stack = scope._parameterStack ?: return null
+        val current = stack.get()
+        return if (current.isNullOrEmpty()) null
+        else {
+//            ctx.logger.debug("|- ? ${ctx.debugTag} look in stack parameters")
+            val parameters = current.firstOrNull()
+            parameters?.getOrNull(ctx.clazz)
+        }
+    }
+
+    private inline fun <T> throwNoDefinitionFound(scope: Scope, ctx: ResolutionContext): T {
+        val qualifierString = ctx.qualifier?.let { " and qualifier '$it'" } ?: ""
+        val scopeInfo = if (ctx.scope != scope) {
+            "scope '${scope}' (resolution context scope: '${ctx.scope}')"
+        } else {
+            "scope '${scope}'"
+        }
+        val linkedScopeIds = scope.getLinkedScopeIds()
+        val searchedScopes = if (linkedScopeIds.isNotEmpty()) {
+            " Searched scopes: ['${scope.id}'] -> ${linkedScopeIds.map { "['$it']" }}"
+        } else ""
+        val typeName = ctx.clazz.getFullName()
+        // SavedStateHandle is supplied by the ViewModel's CreationExtras during creation, not by a
+        // module definition — the generic "add a definition" advice is misleading here (#2044).
+        // Match on the final segment: getFullName() is the FQN on JVM/native but the simpleName on
+        // JS/WASM (#2312), so a hardcoded FQN would miss off-JVM.
+        val isSavedStateHandle = typeName.substringAfterLast('.') == "SavedStateHandle"
+        val advice = if (isSavedStateHandle) {
+            " SavedStateHandle is provided by the ViewModel's CreationExtras during creation, not by a module definition — resolve the ViewModel via koinViewModel()/koinNavViewModel() with a proper owner and inject SavedStateHandle in its constructor (do not resolve it lazily or outside construction)."
+        } else {
+            " Check or add definition for type '$typeName'$qualifierString in scope '${scope.scopeQualifier}'."
+        }
+        throw NoDefinitionFoundException(
+            "No definition found for type '$typeName'$qualifierString on $scopeInfo.$searchedScopes.$advice",
+        )
+    }
+
+    private fun <T> resolveInExtensions(
+        scope: Scope,
+        ctx: ResolutionContext
+    ) : T?{
+        return extendedResolution.firstNotNullOfOrNull {
+            ctx.logger.debug("|- ['${it.name}'] ?")
+            it.resolve(scope,ctx) as T?
+        }
+    }
+}

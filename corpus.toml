@@ -304,3 +304,325 @@ added_by = "CorpusPopC5"
 added_on = "2026-11-23"
 reason = "Rust rules minus vendored crate BUILD files (selection slot: libraries)"
 notice_present_upstream = false
+
+[[project]]
+name = "spring-boot"
+language = "java"
+url = "https://github.com/spring-projects/spring-boot"
+rev = "ebb5e11c70c50469c45f8aada56dd6d477c6b77f"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["module/**", "module/*/**", "module/*/*/**", "module/*/*/*/**", "module/*/*/*/*/**", "module/*/*/*/*/*/**", "module/*/*/*/*/*/*/**", "module/*/*/*/*/*/*/*/**", "module/*/*/*/*/*/*/*/*/**", "module/*/*/*/*/*/*/*/*/*/**", "module/*/*/*/*/*/*/*/*/*/*/**", "module/*/*/*/*/*/*/*/*/*/*/*/**", "module/*/*/*/*/*/*/*/*/*/*/*/*/**", "module/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "module/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "module/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "module/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "loader/**", "loader/*/**", "loader/*/*/**", "loader/*/*/*/**", "loader/*/*/*/*/**", "loader/*/*/*/*/*/**", "loader/*/*/*/*/*/*/**", "loader/*/*/*/*/*/*/*/**", "loader/*/*/*/*/*/*/*/*/**", "loader/*/*/*/*/*/*/*/*/*/**", "loader/*/*/*/*/*/*/*/*/*/*/**", "loader/*/*/*/*/*/*/*/*/*/*/*/**", "loader/*/*/*/*/*/*/*/*/*/*/*/*/**", "loader/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "loader/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "loader/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "loader/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**"]
+exclude = ["**/TokenValidatorTests.java"]
+tree_hash = "sha256:4297cdef77155420b7daca7380e53b632fde921e4e33eb095308af59ae242506"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "large framework subset (extension modules plus loader), current (2026)"
+notice_present_upstream = false
+
+[[project]]
+name = "guava"
+language = "java"
+url = "https://github.com/google/guava"
+rev = "b8eedaa3faf64621a5dc1a85d206a8665370fc35"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["guava/**", "guava/*/**", "guava/*/*/**", "guava/*/*/*/**", "guava/*/*/*/*/**", "guava/*/*/*/*/*/**", "guava/*/*/*/*/*/*/**", "guava/*/*/*/*/*/*/*/**", "guava/*/*/*/*/*/*/*/*/**", "guava/*/*/*/*/*/*/*/*/*/**", "guava/*/*/*/*/*/*/*/*/*/*/**", "guava/*/*/*/*/*/*/*/*/*/*/*/**", "guava/*/*/*/*/*/*/*/*/*/*/*/*/**", "guava/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "guava/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "guava/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "guava/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "guava-tests/**", "guava-tests/*/**", "guava-tests/*/*/**", "guava-tests/*/*/*/**", "guava-tests/*/*/*/*/**", "guava-tests/*/*/*/*/*/**", "guava-tests/*/*/*/*/*/*/**", "guava-tests/*/*/*/*/*/*/*/**", "guava-tests/*/*/*/*/*/*/*/*/**", "guava-tests/*/*/*/*/*/*/*/*/*/**", "guava-tests/*/*/*/*/*/*/*/*/*/*/**", "guava-tests/*/*/*/*/*/*/*/*/*/*/*/**", "guava-tests/*/*/*/*/*/*/*/*/*/*/*/*/**", "guava-tests/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "guava-tests/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "guava-tests/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "guava-tests/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "guava-testlib/**", "guava-testlib/*/**", "guava-testlib/*/*/**", "guava-testlib/*/*/*/**", "guava-testlib/*/*/*/*/**", "guava-testlib/*/*/*/*/*/**", "guava-testlib/*/*/*/*/*/*/**", "guava-testlib/*/*/*/*/*/*/*/**", "guava-testlib/*/*/*/*/*/*/*/*/**", "guava-testlib/*/*/*/*/*/*/*/*/*/**", "guava-testlib/*/*/*/*/*/*/*/*/*/*/**", "guava-testlib/*/*/*/*/*/*/*/*/*/*/*/**", "guava-testlib/*/*/*/*/*/*/*/*/*/*/*/*/**", "guava-testlib/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "guava-testlib/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "guava-testlib/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "guava-testlib/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**"]
+exclude = ["android/**", "android/*/**", "android/*/*/**", "android/*/*/*/**", "android/*/*/*/*/**", "android/*/*/*/*/*/**", "android/*/*/*/*/*/*/**", "android/*/*/*/*/*/*/*/**", "android/*/*/*/*/*/*/*/*/**", "android/*/*/*/*/*/*/*/*/*/**", "android/*/*/*/*/*/*/*/*/*/*/**", "android/*/*/*/*/*/*/*/*/*/*/*/**", "android/*/*/*/*/*/*/*/*/*/*/*/*/**", "android/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "android/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "android/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "android/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**"]
+tree_hash = "sha256:14607d6e8da0098424743a656dcf71540d87737ea5eead65ce19ba3250deb84e"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "large library (JRE flavor plus tests), dense generics, mature"
+notice_present_upstream = false
+
+[[project]]
+name = "netty"
+language = "java"
+url = "https://github.com/netty/netty"
+rev = "ccaf4e84fc8e605526f13713f1ec6a89c738f91d"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["codec-http/**", "codec-http/*/**", "codec-http/*/*/**", "codec-http/*/*/*/**", "codec-http/*/*/*/*/**", "codec-http/*/*/*/*/*/**", "codec-http/*/*/*/*/*/*/**", "codec-http/*/*/*/*/*/*/*/**", "codec-http/*/*/*/*/*/*/*/*/**", "codec-http/*/*/*/*/*/*/*/*/*/**", "codec-http/*/*/*/*/*/*/*/*/*/*/**", "codec-http/*/*/*/*/*/*/*/*/*/*/*/**", "codec-http/*/*/*/*/*/*/*/*/*/*/*/*/**", "codec-http/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "codec-http/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "codec-http/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "codec-http/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "codec-http2/**", "codec-http2/*/**", "codec-http2/*/*/**", "codec-http2/*/*/*/**", "codec-http2/*/*/*/*/**", "codec-http2/*/*/*/*/*/**", "codec-http2/*/*/*/*/*/*/**", "codec-http2/*/*/*/*/*/*/*/**", "codec-http2/*/*/*/*/*/*/*/*/**", "codec-http2/*/*/*/*/*/*/*/*/*/**", "codec-http2/*/*/*/*/*/*/*/*/*/*/**", "codec-http2/*/*/*/*/*/*/*/*/*/*/*/**", "codec-http2/*/*/*/*/*/*/*/*/*/*/*/*/**", "codec-http2/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "codec-http2/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "codec-http2/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "codec-http2/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "transport/**", "transport/*/**", "transport/*/*/**", "transport/*/*/*/**", "transport/*/*/*/*/**", "transport/*/*/*/*/*/**", "transport/*/*/*/*/*/*/**", "transport/*/*/*/*/*/*/*/**", "transport/*/*/*/*/*/*/*/*/**", "transport/*/*/*/*/*/*/*/*/*/**", "transport/*/*/*/*/*/*/*/*/*/*/**", "transport/*/*/*/*/*/*/*/*/*/*/*/**", "transport/*/*/*/*/*/*/*/*/*/*/*/*/**", "transport/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "transport/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "transport/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "transport/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "common/**", "common/*/**", "common/*/*/**", "common/*/*/*/**", "common/*/*/*/*/**", "common/*/*/*/*/*/**", "common/*/*/*/*/*/*/**", "common/*/*/*/*/*/*/*/**", "common/*/*/*/*/*/*/*/*/**", "common/*/*/*/*/*/*/*/*/*/**", "common/*/*/*/*/*/*/*/*/*/*/**", "common/*/*/*/*/*/*/*/*/*/*/*/**", "common/*/*/*/*/*/*/*/*/*/*/*/*/**", "common/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "common/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "common/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "common/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "buffer/**", "buffer/*/**", "buffer/*/*/**", "buffer/*/*/*/**", "buffer/*/*/*/*/**", "buffer/*/*/*/*/*/**", "buffer/*/*/*/*/*/*/**", "buffer/*/*/*/*/*/*/*/**", "buffer/*/*/*/*/*/*/*/*/**", "buffer/*/*/*/*/*/*/*/*/*/**", "buffer/*/*/*/*/*/*/*/*/*/*/**", "buffer/*/*/*/*/*/*/*/*/*/*/*/**", "buffer/*/*/*/*/*/*/*/*/*/*/*/*/**", "buffer/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "buffer/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "buffer/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "buffer/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**"]
+exclude = ["codec-http/src/main/java/io/netty/handler/codec/http/websocketx/WebSocket07FrameDecoder.java", "codec-http/src/main/java/io/netty/handler/codec/http/websocketx/WebSocket07FrameEncoder.java", "codec-http/src/main/java/io/netty/handler/codec/http/websocketx/WebSocket08FrameDecoder.java", "codec-http/src/main/java/io/netty/handler/codec/http/websocketx/WebSocket08FrameEncoder.java", "codec-http/src/main/java/io/netty/handler/codec/http/websocketx/WebSocket13FrameDecoder.java", "codec-http/src/main/java/io/netty/handler/codec/http/websocketx/WebSocket13FrameEncoder.java"]
+tree_hash = "sha256:7845e163fc3de102c78d025856820108d9551ce82d705d41f22e171dd854f431"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "large networking (codecs plus transports plus buffers), mature, branch 4.2"
+notice_present_upstream = true
+
+[[project]]
+name = "mockito"
+language = "java"
+url = "https://github.com/mockito/mockito"
+rev = "10b31ba2a8252cf340bc154c9e05224802a84691"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+exclude = ["licenses/**", "licenses/*/**", "licenses/*/*/**", "licenses/*/*/*/**", "licenses/*/*/*/*/**", "licenses/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**"]
+tree_hash = "sha256:3506896b0ccf9c63c5913fa7f44098b034515f0d292348313e3131f002f507cf"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "medium testing (proxies plus subclass mocking), mature"
+notice_present_upstream = false
+
+
+[[project]]
+name = "ktor"
+language = "kotlin"
+url = "https://github.com/ktorio/ktor"
+rev = "170870cf9452f5f79f8327716609fa427c132641"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+exclude = ["**/SSESessionParserTest.kt"]
+tree_hash = "sha256:a9fd886208663329cea85918db85f936f7c8b3dd1f2f2a97eeb81bb20282ff14"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "large server framework (coroutines plus DSL routing), current"
+notice_present_upstream = false
+
+[[project]]
+name = "compose-multiplatform"
+language = "kotlin"
+url = "https://github.com/JetBrains/compose-multiplatform"
+rev = "dea6a8682985a734ed83ce2d9225d13875f1c82e"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+exclude = ["third_party/**", "third_party/*/**", "third_party/*/*/**", "third_party/*/*/*/**", "third_party/*/*/*/*/**", "third_party/*/*/*/*/*/**", "third_party/*/*/*/*/*/*/**", "third_party/*/*/*/*/*/*/*/**", "third_party/*/*/*/*/*/*/*/*/**", "third_party/*/*/*/*/*/*/*/*/*/**", "third_party/*/*/*/*/*/*/*/*/*/*/**", "third_party/*/*/*/*/*/*/*/*/*/*/*/**", "third_party/*/*/*/*/*/*/*/*/*/*/*/*/**", "third_party/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "third_party/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "third_party/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "third_party/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "license/**", "license/*/**", "license/*/*/**", "license/*/*/*/**", "license/*/*/*/*/**", "license/*/*/*/*/*/**", "license/*/*/*/*/*/*/**", "license/*/*/*/*/*/*/*/**", "license/*/*/*/*/*/*/*/*/**", "license/*/*/*/*/*/*/*/*/*/**", "license/*/*/*/*/*/*/*/*/*/*/**", "license/*/*/*/*/*/*/*/*/*/*/*/**", "license/*/*/*/*/*/*/*/*/*/*/*/*/**", "license/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "license/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "license/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "license/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "licenses/**", "licenses/*/**", "licenses/*/*/**", "licenses/*/*/*/**", "licenses/*/*/*/*/**", "licenses/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**"]
+tree_hash = "sha256:932c5d5484bb9b215c07556f186df54a7c0f4a73727848b6bfaff6ab9eab7ffe"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "large UI multiplatform (expect/actual plus examples), current"
+notice_present_upstream = false
+
+[[project]]
+name = "sqldelight"
+language = "kotlin"
+url = "https://github.com/sqldelight/sqldelight"
+rev = "74b446bc5bd960f238f681372aba0960714f810b"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:47a56fe9a1926c79d02bd98398fdf11a09e3a5a0489b287d8dde7c8722ef312b"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "small persistence (SQL codegen plus dialects), current"
+notice_present_upstream = false
+
+[[project]]
+name = "koin"
+language = "kotlin"
+url = "https://github.com/InsertKoinIO/koin"
+rev = "d486a5e8748f90db43f939e227083f2bd2c47c12"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:a5af4c539f11d523bbb51b9c5a17cca1d516a262692af8a6129e4b9e99992105"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "small DI (DSL modules), current"
+notice_present_upstream = false
+
+[[project]]
+name = "mockk"
+language = "kotlin"
+url = "https://github.com/mockk/mockk"
+rev = "f7941da1e078349ad865d13354a22b23c50731d7"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+exclude = ["external/**", "external/*/**", "external/*/*/**", "external/*/*/*/**", "external/*/*/*/*/**", "external/*/*/*/*/*/**", "external/*/*/*/*/*/*/**", "external/*/*/*/*/*/*/*/**", "external/*/*/*/*/*/*/*/*/**", "external/*/*/*/*/*/*/*/*/*/**", "external/*/*/*/*/*/*/*/*/*/*/**", "external/*/*/*/*/*/*/*/*/*/*/*/**", "external/*/*/*/*/*/*/*/*/*/*/*/*/**", "external/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "external/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "external/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "external/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**"]
+tree_hash = "sha256:8349510d5eb455c000b73e458de6dfc91c007a19c1c037ef83e5c335a03fd89d"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "small testing (coroutines plus agents), current"
+notice_present_upstream = false
+
+[[project]]
+name = "exposed"
+language = "kotlin"
+url = "https://github.com/JetBrains/Exposed"
+rev = "82de21cc42b15413fa98111ebf25c63592b0951a"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:7ec5526ac168251349920dfc15a3adff792ead2357a93a294570065dc786e937"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "medium SQL DSL (expression types plus transactions), current"
+notice_present_upstream = false
+
+[[project]]
+name = "coil"
+language = "kotlin"
+url = "https://github.com/coil-kt/coil"
+rev = "14d99b18c4491fd6eccdc54454f3c079a90e3c10"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:9e4ba149aead0926654c38fcb823d0e6e3532707a79632b749d06aa9b74df275"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "small image loading (coroutines plus interceptors), current"
+notice_present_upstream = false
+
+[[project]]
+name = "chucker"
+language = "kotlin"
+url = "https://github.com/ChuckerTeam/chucker"
+rev = "6edb7999a647d4225b5eb9aa18d2bf3e745d7774"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:b6809bfb12eb9a28e898fffdb62cddae9808bc95878be479327caa5f7f939aec"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "small tooling app (interceptors plus storage), newest (2026)"
+notice_present_upstream = false
+
+[[project]]
+name = "aspnetcore"
+language = "csharp"
+url = "https://github.com/dotnet/aspnetcore"
+rev = "d3483989953ae3cccd773aea5ea04cb0c7198531"
+spdx = "MIT"
+storage = "copied"
+paths = ["src/Http/Routing/**", "src/Http/Routing/*/**", "src/Http/Routing/*/*/**", "src/Http/Routing/*/*/*/**", "src/Http/Routing/*/*/*/*/**", "src/Http/Routing/*/*/*/*/*/**", "src/Http/Routing/*/*/*/*/*/*/**", "src/Http/Routing/*/*/*/*/*/*/*/**", "src/Http/Routing/*/*/*/*/*/*/*/*/**", "src/Http/Routing/*/*/*/*/*/*/*/*/*/**", "src/Http/Routing/*/*/*/*/*/*/*/*/*/*/**", "src/Http/Routing/*/*/*/*/*/*/*/*/*/*/*/**", "src/Http/Routing/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/Http/Routing/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/Http/Routing/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/Http/Routing/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/Http/Routing/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/Servers/Kestrel/**", "src/Servers/Kestrel/*/**", "src/Servers/Kestrel/*/*/**", "src/Servers/Kestrel/*/*/*/**", "src/Servers/Kestrel/*/*/*/*/**", "src/Servers/Kestrel/*/*/*/*/*/**", "src/Servers/Kestrel/*/*/*/*/*/*/**", "src/Servers/Kestrel/*/*/*/*/*/*/*/**", "src/Servers/Kestrel/*/*/*/*/*/*/*/*/**", "src/Servers/Kestrel/*/*/*/*/*/*/*/*/*/**", "src/Servers/Kestrel/*/*/*/*/*/*/*/*/*/*/**", "src/Servers/Kestrel/*/*/*/*/*/*/*/*/*/*/*/**", "src/Servers/Kestrel/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/Servers/Kestrel/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/Servers/Kestrel/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/Servers/Kestrel/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/Servers/Kestrel/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**"]
+exclude = ["*.generated.cs"]
+tree_hash = "sha256:b6c7948301487dc5ee15e64d6d20a9158da1218c99c59b78824e1f861f0f47a2"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "large web framework subset (routing plus kestrel), current"
+notice_present_upstream = false
+
+[[project]]
+name = "newtonsoft-json"
+language = "csharp"
+url = "https://github.com/JamesNK/Newtonsoft.Json"
+rev = "52fa3aef1f2cadcd3a3f874251eddc98d3efbbaa"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+exclude = ["Src/Newtonsoft.Json/Utilities/LinqBridge.cs"]
+tree_hash = "sha256:f6aaa9de458d4aa7c41057e38046a42526fecf83c7ab3cfb8125874ff6fe40fe"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "medium JSON library (resolvers plus LINQ-to-JSON), mature"
+notice_present_upstream = false
+
+[[project]]
+name = "serilog"
+language = "csharp"
+url = "https://github.com/serilog/serilog"
+rev = "43105b35095337d77f022561a8f2d3db2f9a7937"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:9e19b7de99f51675b047053d102e750899cc486bc64996b91bdf46e1e04bb645"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "small logging (sinks plus enrichment), current, branch dev"
+notice_present_upstream = false
+
+[[project]]
+name = "powershell"
+language = "csharp"
+url = "https://github.com/PowerShell/PowerShell"
+rev = "ba2221aed027041b6620c5fe1c0675567f14452a"
+spdx = "MIT"
+storage = "copied"
+paths = ["src/System.Management.Automation/FormatAndOutput/**", "src/System.Management.Automation/FormatAndOutput/*/**", "src/System.Management.Automation/FormatAndOutput/*/*/**", "src/System.Management.Automation/FormatAndOutput/*/*/*/**", "src/System.Management.Automation/FormatAndOutput/*/*/*/*/**", "src/System.Management.Automation/FormatAndOutput/*/*/*/*/*/**", "src/System.Management.Automation/FormatAndOutput/*/*/*/*/*/*/**", "src/System.Management.Automation/FormatAndOutput/*/*/*/*/*/*/*/**", "src/System.Management.Automation/FormatAndOutput/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/FormatAndOutput/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/FormatAndOutput/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/FormatAndOutput/*/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/FormatAndOutput/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/FormatAndOutput/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/FormatAndOutput/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/FormatAndOutput/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/FormatAndOutput/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/namespaces/**", "src/System.Management.Automation/namespaces/*/**", "src/System.Management.Automation/namespaces/*/*/**", "src/System.Management.Automation/namespaces/*/*/*/**", "src/System.Management.Automation/namespaces/*/*/*/*/**", "src/System.Management.Automation/namespaces/*/*/*/*/*/**", "src/System.Management.Automation/namespaces/*/*/*/*/*/*/**", "src/System.Management.Automation/namespaces/*/*/*/*/*/*/*/**", "src/System.Management.Automation/namespaces/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/namespaces/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/namespaces/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/namespaces/*/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/namespaces/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/namespaces/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/namespaces/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/namespaces/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/namespaces/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/utils/**", "src/System.Management.Automation/utils/*/**", "src/System.Management.Automation/utils/*/*/**", "src/System.Management.Automation/utils/*/*/*/**", "src/System.Management.Automation/utils/*/*/*/*/**", "src/System.Management.Automation/utils/*/*/*/*/*/**", "src/System.Management.Automation/utils/*/*/*/*/*/*/**", "src/System.Management.Automation/utils/*/*/*/*/*/*/*/**", "src/System.Management.Automation/utils/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/utils/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/utils/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/utils/*/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/utils/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/utils/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/utils/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/utils/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/utils/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/help/**", "src/System.Management.Automation/help/*/**", "src/System.Management.Automation/help/*/*/**", "src/System.Management.Automation/help/*/*/*/**", "src/System.Management.Automation/help/*/*/*/*/**", "src/System.Management.Automation/help/*/*/*/*/*/**", "src/System.Management.Automation/help/*/*/*/*/*/*/**", "src/System.Management.Automation/help/*/*/*/*/*/*/*/**", "src/System.Management.Automation/help/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/help/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/help/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/help/*/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/help/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/help/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/help/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/help/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/help/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/cimSupport/**", "src/System.Management.Automation/cimSupport/*/**", "src/System.Management.Automation/cimSupport/*/*/**", "src/System.Management.Automation/cimSupport/*/*/*/**", "src/System.Management.Automation/cimSupport/*/*/*/*/**", "src/System.Management.Automation/cimSupport/*/*/*/*/*/**", "src/System.Management.Automation/cimSupport/*/*/*/*/*/*/**", "src/System.Management.Automation/cimSupport/*/*/*/*/*/*/*/**", "src/System.Management.Automation/cimSupport/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/cimSupport/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/cimSupport/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/cimSupport/*/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/cimSupport/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/cimSupport/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/cimSupport/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/cimSupport/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/cimSupport/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/security/**", "src/System.Management.Automation/security/*/**", "src/System.Management.Automation/security/*/*/**", "src/System.Management.Automation/security/*/*/*/**", "src/System.Management.Automation/security/*/*/*/*/**", "src/System.Management.Automation/security/*/*/*/*/*/**", "src/System.Management.Automation/security/*/*/*/*/*/*/**", "src/System.Management.Automation/security/*/*/*/*/*/*/*/**", "src/System.Management.Automation/security/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/security/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/security/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/security/*/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/security/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/security/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/security/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/security/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/System.Management.Automation/security/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Commands.Utility/**", "src/Microsoft.PowerShell.Commands.Utility/*/**", "src/Microsoft.PowerShell.Commands.Utility/*/*/**", "src/Microsoft.PowerShell.Commands.Utility/*/*/*/**", "src/Microsoft.PowerShell.Commands.Utility/*/*/*/*/**", "src/Microsoft.PowerShell.Commands.Utility/*/*/*/*/*/**", "src/Microsoft.PowerShell.Commands.Utility/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Commands.Utility/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Commands.Utility/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Commands.Utility/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Commands.Utility/*/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Commands.Utility/*/*/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Commands.Utility/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Commands.Utility/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Commands.Utility/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Commands.Utility/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Commands.Utility/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Commands.Management/**", "src/Microsoft.PowerShell.Commands.Management/*/**", "src/Microsoft.PowerShell.Commands.Management/*/*/**", "src/Microsoft.PowerShell.Commands.Management/*/*/*/**", "src/Microsoft.PowerShell.Commands.Management/*/*/*/*/**", "src/Microsoft.PowerShell.Commands.Management/*/*/*/*/*/**", "src/Microsoft.PowerShell.Commands.Management/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Commands.Management/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Commands.Management/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Commands.Management/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Commands.Management/*/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Commands.Management/*/*/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Commands.Management/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Commands.Management/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Commands.Management/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Commands.Management/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Commands.Management/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.ConsoleHost/**", "src/Microsoft.PowerShell.ConsoleHost/*/**", "src/Microsoft.PowerShell.ConsoleHost/*/*/**", "src/Microsoft.PowerShell.ConsoleHost/*/*/*/**", "src/Microsoft.PowerShell.ConsoleHost/*/*/*/*/**", "src/Microsoft.PowerShell.ConsoleHost/*/*/*/*/*/**", "src/Microsoft.PowerShell.ConsoleHost/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.ConsoleHost/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.ConsoleHost/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.ConsoleHost/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.ConsoleHost/*/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.ConsoleHost/*/*/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.ConsoleHost/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.ConsoleHost/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.ConsoleHost/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.ConsoleHost/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.ConsoleHost/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Security/**", "src/Microsoft.PowerShell.Security/*/**", "src/Microsoft.PowerShell.Security/*/*/**", "src/Microsoft.PowerShell.Security/*/*/*/**", "src/Microsoft.PowerShell.Security/*/*/*/*/**", "src/Microsoft.PowerShell.Security/*/*/*/*/*/**", "src/Microsoft.PowerShell.Security/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Security/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Security/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Security/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Security/*/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Security/*/*/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Security/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Security/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Security/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Security/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Security/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Commands.Diagnostics/**", "src/Microsoft.PowerShell.Commands.Diagnostics/*/**", "src/Microsoft.PowerShell.Commands.Diagnostics/*/*/**", "src/Microsoft.PowerShell.Commands.Diagnostics/*/*/*/**", "src/Microsoft.PowerShell.Commands.Diagnostics/*/*/*/*/**", "src/Microsoft.PowerShell.Commands.Diagnostics/*/*/*/*/*/**", "src/Microsoft.PowerShell.Commands.Diagnostics/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Commands.Diagnostics/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Commands.Diagnostics/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Commands.Diagnostics/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Commands.Diagnostics/*/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Commands.Diagnostics/*/*/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Commands.Diagnostics/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Commands.Diagnostics/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Commands.Diagnostics/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Commands.Diagnostics/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/Microsoft.PowerShell.Commands.Diagnostics/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "test/**", "test/*/**", "test/*/*/**", "test/*/*/*/**", "test/*/*/*/*/**", "test/*/*/*/*/*/**", "test/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**"]
+tree_hash = "sha256:1544a718e44f1a69f1d50ea8020edf0ecd515923b37ac1704715e217f26df5d9"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "large shell subset (cmdlets plus automation non-engine), current"
+notice_present_upstream = false
+
+[[project]]
+name = "libuv"
+language = "c"
+url = "https://github.com/libuv/libuv"
+rev = "f08538cca14f73e30c89625e473fea3f5f55e300"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+exclude = ["include/uv/tree.h"]
+tree_hash = "sha256:3c487eefe149418ca1acaf4e25f958748b5971f80246fc58c23e0f0d5796481b"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "medium async IO (platform backends), mature, branch v1.x"
+notice_present_upstream = false
+
+[[project]]
+name = "cjson"
+language = "c"
+url = "https://github.com/DaveGamble/cJSON"
+rev = "6d9f2443ab071f86e5d9b43025a40929ec41c46c"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:97013e821498cc99558f13237e7dd9f4fe4c8646224c5935783d4d1f3fd3fbde"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "tiny JSON library, oldest snapshot (Sept 2026)"
+notice_present_upstream = false
+
+[[project]]
+name = "mimalloc"
+language = "c"
+url = "https://github.com/microsoft/mimalloc"
+rev = "1d8fd85aa3abe719cd9c42c855f1fc27dbccf84d"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:7488859bbc38e25255f60f4184fbc8f3ec8fc284bf30ad69307b288c574c6b56"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "small allocator (segment caches), current, branch main3"
+notice_present_upstream = false
+
+[[project]]
+name = "opencv"
+language = "cpp"
+url = "https://github.com/opencv/opencv"
+rev = "fb6166e54b495496bb76d721295fe277f850cec0"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["modules/core/**", "modules/core/*/**", "modules/core/*/*/**", "modules/core/*/*/*/**", "modules/core/*/*/*/*/**", "modules/core/*/*/*/*/*/**", "modules/core/*/*/*/*/*/*/**", "modules/core/*/*/*/*/*/*/*/**", "modules/core/*/*/*/*/*/*/*/*/**", "modules/core/*/*/*/*/*/*/*/*/*/**", "modules/core/*/*/*/*/*/*/*/*/*/*/**", "modules/core/*/*/*/*/*/*/*/*/*/*/*/**", "modules/core/*/*/*/*/*/*/*/*/*/*/*/*/**", "modules/core/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "modules/core/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "modules/core/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "modules/core/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "hal/**", "hal/*/**", "hal/*/*/**", "hal/*/*/*/**", "hal/*/*/*/*/**", "hal/*/*/*/*/*/**", "hal/*/*/*/*/*/*/**", "hal/*/*/*/*/*/*/*/**", "hal/*/*/*/*/*/*/*/*/**", "hal/*/*/*/*/*/*/*/*/*/**", "hal/*/*/*/*/*/*/*/*/*/*/**", "hal/*/*/*/*/*/*/*/*/*/*/*/**", "hal/*/*/*/*/*/*/*/*/*/*/*/*/**", "hal/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "hal/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "hal/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "hal/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**"]
+exclude = ["hal/carotene/hal/tegra_hal.hpp", "hal/carotene/include/carotene/definitions.hpp", "hal/carotene/include/carotene/functions.hpp", "hal/carotene/include/carotene/types.hpp", "hal/carotene/src/absdiff.cpp", "hal/carotene/src/accumulate.cpp", "hal/carotene/src/add.cpp", "hal/carotene/src/add_weighted.cpp", "hal/carotene/src/bitwise.cpp", "hal/carotene/src/blur.cpp", "hal/carotene/src/canny.cpp", "hal/carotene/src/channel_extract.cpp", "hal/carotene/src/channels_combine.cpp", "hal/carotene/src/cmp.cpp", "hal/carotene/src/colorconvert.cpp", "hal/carotene/src/common.cpp", "hal/carotene/src/common.hpp", "hal/carotene/src/convert.cpp", "hal/carotene/src/convert_depth.cpp", "hal/carotene/src/convert_scale.cpp", "hal/carotene/src/convolution.cpp", "hal/carotene/src/count_nonzero.cpp", "hal/carotene/src/div.cpp", "hal/carotene/src/dot_product.cpp", "hal/carotene/src/fast.cpp", "hal/carotene/src/fill_minmaxloc.cpp", "hal/carotene/src/flip.cpp", "hal/carotene/src/gaussian_blur.cpp", "hal/carotene/src/in_range.cpp", "hal/carotene/src/integral.cpp", "hal/carotene/src/intrinsics.hpp", "hal/carotene/src/laplacian.cpp", "hal/carotene/src/magnitude.cpp", "hal/carotene/src/meanstddev.cpp", "hal/carotene/src/median_filter.cpp", "hal/carotene/src/min_max.cpp", "hal/carotene/src/minmaxloc.cpp", "hal/carotene/src/morph.cpp", "hal/carotene/src/mul.cpp", "hal/carotene/src/norm.cpp", "hal/carotene/src/opticalflow.cpp", "hal/carotene/src/phase.cpp", "hal/carotene/src/pyramid.cpp", "hal/carotene/src/reduce.cpp", "hal/carotene/src/remap.cpp", "hal/carotene/src/remap.hpp", "hal/carotene/src/resize.cpp", "hal/carotene/src/saturate_cast.hpp", "hal/carotene/src/scharr.cpp", "hal/carotene/src/separable_filter.cpp", "hal/carotene/src/separable_filter.hpp", "hal/carotene/src/sobel.cpp", "hal/carotene/src/sub.cpp", "hal/carotene/src/sum.cpp", "hal/carotene/src/template_matching.cpp", "hal/carotene/src/threshold.cpp", "hal/carotene/src/vround_helper.hpp", "hal/carotene/src/vtransform.hpp", "hal/carotene/src/warp_affine.cpp", "hal/carotene/src/warp_perspective.cpp", "modules/core/include/opencv2/core.hpp", "modules/core/include/opencv2/core/affine.hpp", "modules/core/include/opencv2/core/base.hpp", "modules/core/include/opencv2/core/core.hpp", "modules/core/include/opencv2/core/cuda.hpp", "modules/core/include/opencv2/core/cuda.inl.hpp", "modules/core/include/opencv2/core/cuda/block.hpp", "modules/core/include/opencv2/core/cuda/border_interpolate.hpp", "modules/core/include/opencv2/core/cuda/color.hpp", "modules/core/include/opencv2/core/cuda/common.hpp", "modules/core/include/opencv2/core/cuda/datamov_utils.hpp", "modules/core/include/opencv2/core/cuda/detail/color_detail.hpp", "modules/core/include/opencv2/core/cuda/detail/reduce.hpp", "modules/core/include/opencv2/core/cuda/detail/reduce_key_val.hpp", "modules/core/include/opencv2/core/cuda/detail/transform_detail.hpp", "modules/core/include/opencv2/core/cuda/detail/type_traits_detail.hpp", "modules/core/include/opencv2/core/cuda/detail/vec_distance_detail.hpp", "modules/core/include/opencv2/core/cuda/dynamic_smem.hpp", "modules/core/include/opencv2/core/cuda/emulation.hpp", "modules/core/include/opencv2/core/cuda/filters.hpp", "modules/core/include/opencv2/core/cuda/funcattrib.hpp", "modules/core/include/opencv2/core/cuda/functional.hpp", "modules/core/include/opencv2/core/cuda/limits.hpp", "modules/core/include/opencv2/core/cuda/reduce.hpp", "modules/core/include/opencv2/core/cuda/saturate_cast.hpp", "modules/core/include/opencv2/core/cuda/scan.hpp", "modules/core/include/opencv2/core/cuda/simd_functions.hpp", "modules/core/include/opencv2/core/cuda/transform.hpp", "modules/core/include/opencv2/core/cuda/type_traits.hpp", "modules/core/include/opencv2/core/cuda/utility.hpp", "modules/core/include/opencv2/core/cuda/vec_distance.hpp", "modules/core/include/opencv2/core/cuda/vec_math.hpp", "modules/core/include/opencv2/core/cuda/vec_traits.hpp", "modules/core/include/opencv2/core/cuda/warp.hpp", "modules/core/include/opencv2/core/cuda/warp_reduce.hpp", "modules/core/include/opencv2/core/cuda/warp_shuffle.hpp", "modules/core/include/opencv2/core/cuda_stream_accessor.hpp", "modules/core/include/opencv2/core/cuda_types.hpp", "modules/core/include/opencv2/core/cvstd.hpp", "modules/core/include/opencv2/core/cvstd.inl.hpp", "modules/core/include/opencv2/core/directx.hpp", "modules/core/include/opencv2/core/eigen.hpp", "modules/core/include/opencv2/core/fast_math.hpp", "modules/core/include/opencv2/core/hal/hal.hpp", "modules/core/include/opencv2/core/hal/intrin.hpp", "modules/core/include/opencv2/core/hal/intrin_cpp.hpp", "modules/core/include/opencv2/core/hal/intrin_neon.hpp", "modules/core/include/opencv2/core/hal/intrin_sse.hpp", "modules/core/include/opencv2/core/mat.hpp", "modules/core/include/opencv2/core/mat.inl.hpp", "modules/core/include/opencv2/core/matx.hpp", "modules/core/include/opencv2/core/neon_utils.hpp", "modules/core/include/opencv2/core/ocl.hpp", "modules/core/include/opencv2/core/ocl_genbase.hpp", "modules/core/include/opencv2/core/opencl/runtime/opencl_clblas.hpp", "modules/core/include/opencv2/core/opencl/runtime/opencl_clfft.hpp", "modules/core/include/opencv2/core/opencl/runtime/opencl_core.hpp", "modules/core/include/opencv2/core/opencl/runtime/opencl_core_wrappers.hpp", "modules/core/include/opencv2/core/opencl/runtime/opencl_gl.hpp", "modules/core/include/opencv2/core/opencl/runtime/opencl_gl_wrappers.hpp", "modules/core/include/opencv2/core/opengl.hpp", "modules/core/include/opencv2/core/operations.hpp", "modules/core/include/opencv2/core/optim.hpp", "modules/core/include/opencv2/core/persistence.hpp", "modules/core/include/opencv2/core/private.cuda.hpp", "modules/core/include/opencv2/core/private.hpp", "modules/core/include/opencv2/core/saturate.hpp", "modules/core/include/opencv2/core/softfloat.hpp", "modules/core/include/opencv2/core/traits.hpp", "modules/core/include/opencv2/core/types.hpp", "modules/core/include/opencv2/core/utility.hpp", "modules/core/perf/cuda/perf_gpumat.cpp", "modules/core/perf/opencl/perf_arithm.cpp", "modules/core/perf/opencl/perf_channels.cpp", "modules/core/perf/opencl/perf_dxt.cpp", "modules/core/perf/opencl/perf_gemm.cpp", "modules/core/src/algorithm.cpp", "modules/core/src/alloc.cpp", "modules/core/src/arithm.cpp", "modules/core/src/conjugate_gradient.cpp", "modules/core/src/copy.cpp", "modules/core/src/cuda_gpu_mat.cpp", "modules/core/src/cuda_host_mem.cpp", "modules/core/src/cuda_info.cpp", "modules/core/src/cuda_stream.cpp", "modules/core/src/directx.cpp", "modules/core/src/directx.inc.hpp", "modules/core/src/downhill_simplex.cpp", "modules/core/src/dxt.cpp", "modules/core/src/gl_core_3_1.cpp", "modules/core/src/gl_core_3_1.hpp", "modules/core/src/glob.cpp", "modules/core/src/hal_internal.cpp", "modules/core/src/hal_internal.hpp", "modules/core/src/hal_replacement.hpp", "modules/core/src/kmeans.cpp", "modules/core/src/lapack.cpp", "modules/core/src/lda.cpp", "modules/core/src/lpsolver.cpp", "modules/core/src/mathfuncs.cpp", "modules/core/src/matmul.dispatch.cpp", "modules/core/src/matmul.simd.hpp", "modules/core/src/ocl.cpp", "modules/core/src/opencl/runtime/opencl_clblas.cpp", "modules/core/src/opencl/runtime/opencl_clfft.cpp", "modules/core/src/opencl/runtime/opencl_core.cpp", "modules/core/src/opencl/runtime/runtime_common.hpp", "modules/core/src/opengl.cpp", "modules/core/src/out.cpp", "modules/core/src/parallel.cpp", "modules/core/src/pca.cpp", "modules/core/src/precomp.hpp", "modules/core/src/rand.cpp", "modules/core/src/softfloat.cpp", "modules/core/src/stl.cpp", "modules/core/src/system.cpp", "modules/core/src/tables.cpp", "modules/core/src/types.cpp", "modules/core/src/umatrix.cpp", "modules/core/test/ocl/test_arithm.cpp", "modules/core/test/ocl/test_channels.cpp", "modules/core/test/ocl/test_dft.cpp", "modules/core/test/ocl/test_gemm.cpp", "modules/core/test/ocl/test_matrix_operation.cpp", "modules/core/test/test_concatenation.cpp", "modules/core/test/test_conjugate_gradient.cpp", "modules/core/test/test_countnonzero.cpp", "modules/core/test/test_downhill_simplex.cpp", "modules/core/test/test_eigen.cpp", "modules/core/test/test_hal_core.cpp", "modules/core/test/test_hasnonzero.cpp", "modules/core/test/test_lpsolver.cpp", "modules/core/test/test_operations.cpp", "modules/core/test/test_ptr.cpp", "modules/core/test/test_rotatedrect.cpp", "modules/core/test/test_umat.cpp"]
+tree_hash = "sha256:6c35e6fcf62526d5ccafa56aaaca677188dd8bcfdf6a3f7330b303a3fc4cba43"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "large vision subset (core plus HAL intrinsics), current, branch 5.x"
+notice_present_upstream = false
+
+[[project]]
+name = "bitcoin"
+language = "cpp"
+url = "https://github.com/bitcoin/bitcoin"
+rev = "19128e8b77553e4362fcbf3cb8f3f7dc5a2e4253"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+exclude = ["test/**", "test/*/**", "test/*/*/**", "test/*/*/*/**", "test/*/*/*/*/**", "test/*/*/*/*/*/**", "test/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "leveldb/**", "leveldb/*/**", "leveldb/*/*/**", "leveldb/*/*/*/**", "leveldb/*/*/*/*/**", "leveldb/*/*/*/*/*/**", "leveldb/*/*/*/*/*/*/**", "leveldb/*/*/*/*/*/*/*/**", "leveldb/*/*/*/*/*/*/*/*/**", "leveldb/*/*/*/*/*/*/*/*/*/**", "leveldb/*/*/*/*/*/*/*/*/*/*/**", "leveldb/*/*/*/*/*/*/*/*/*/*/*/**", "leveldb/*/*/*/*/*/*/*/*/*/*/*/*/**", "leveldb/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "leveldb/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "leveldb/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "leveldb/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "secp256k1/**", "secp256k1/*/**", "secp256k1/*/*/**", "secp256k1/*/*/*/**", "secp256k1/*/*/*/*/**", "secp256k1/*/*/*/*/*/**", "secp256k1/*/*/*/*/*/*/**", "secp256k1/*/*/*/*/*/*/*/**", "secp256k1/*/*/*/*/*/*/*/*/**", "secp256k1/*/*/*/*/*/*/*/*/*/**", "secp256k1/*/*/*/*/*/*/*/*/*/*/**", "secp256k1/*/*/*/*/*/*/*/*/*/*/*/**", "secp256k1/*/*/*/*/*/*/*/*/*/*/*/*/**", "secp256k1/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "secp256k1/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "secp256k1/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "secp256k1/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "univalue/**", "univalue/*/**", "univalue/*/*/**", "univalue/*/*/*/**", "univalue/*/*/*/*/**", "univalue/*/*/*/*/*/**", "univalue/*/*/*/*/*/*/**", "univalue/*/*/*/*/*/*/*/**", "univalue/*/*/*/*/*/*/*/*/**", "univalue/*/*/*/*/*/*/*/*/*/**", "univalue/*/*/*/*/*/*/*/*/*/*/**", "univalue/*/*/*/*/*/*/*/*/*/*/*/**", "univalue/*/*/*/*/*/*/*/*/*/*/*/*/**", "univalue/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "univalue/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "univalue/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "univalue/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "crc32c/**", "crc32c/*/**", "crc32c/*/*/**", "crc32c/*/*/*/**", "crc32c/*/*/*/*/**", "crc32c/*/*/*/*/*/**", "crc32c/*/*/*/*/*/*/**", "crc32c/*/*/*/*/*/*/*/**", "crc32c/*/*/*/*/*/*/*/*/**", "crc32c/*/*/*/*/*/*/*/*/*/**", "crc32c/*/*/*/*/*/*/*/*/*/*/**", "crc32c/*/*/*/*/*/*/*/*/*/*/*/**", "crc32c/*/*/*/*/*/*/*/*/*/*/*/*/**", "crc32c/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "crc32c/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "crc32c/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "crc32c/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "minisketch/**", "minisketch/*/**", "minisketch/*/*/**", "minisketch/*/*/*/**", "minisketch/*/*/*/*/**", "minisketch/*/*/*/*/*/**", "minisketch/*/*/*/*/*/*/**", "minisketch/*/*/*/*/*/*/*/**", "minisketch/*/*/*/*/*/*/*/*/**", "minisketch/*/*/*/*/*/*/*/*/*/**", "minisketch/*/*/*/*/*/*/*/*/*/*/**", "minisketch/*/*/*/*/*/*/*/*/*/*/*/**", "minisketch/*/*/*/*/*/*/*/*/*/*/*/*/**", "minisketch/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "minisketch/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "minisketch/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "minisketch/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "ctaes/**", "ctaes/*/**", "ctaes/*/*/**", "ctaes/*/*/*/**", "ctaes/*/*/*/*/**", "ctaes/*/*/*/*/*/**", "ctaes/*/*/*/*/*/*/**", "ctaes/*/*/*/*/*/*/*/**", "ctaes/*/*/*/*/*/*/*/*/**", "ctaes/*/*/*/*/*/*/*/*/*/**", "ctaes/*/*/*/*/*/*/*/*/*/*/**", "ctaes/*/*/*/*/*/*/*/*/*/*/*/**", "ctaes/*/*/*/*/*/*/*/*/*/*/*/*/**", "ctaes/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "ctaes/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "ctaes/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "ctaes/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "libmultiprocess/**", "libmultiprocess/*/**", "libmultiprocess/*/*/**", "libmultiprocess/*/*/*/**", "libmultiprocess/*/*/*/*/**", "libmultiprocess/*/*/*/*/*/**", "libmultiprocess/*/*/*/*/*/*/**", "libmultiprocess/*/*/*/*/*/*/*/**", "libmultiprocess/*/*/*/*/*/*/*/*/**", "libmultiprocess/*/*/*/*/*/*/*/*/*/**", "libmultiprocess/*/*/*/*/*/*/*/*/*/*/**", "libmultiprocess/*/*/*/*/*/*/*/*/*/*/*/**", "libmultiprocess/*/*/*/*/*/*/*/*/*/*/*/*/**", "libmultiprocess/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "libmultiprocess/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "libmultiprocess/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "libmultiprocess/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "src/crypto/sha256_sse4.cpp", "src/support/cleanse.cpp"]
+tree_hash = "sha256:ed2053fb8427b03bf7ef03bc34b64f1a7a53b050da7047e3f4c9e2914febc31a"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "large application subset (consensus/script/wallet minus vendored), mature"
+notice_present_upstream = false
+
+[[project]]
+name = "fmt"
+language = "cpp"
+url = "https://github.com/fmtlib/fmt"
+rev = "14ac0d5a9d40aef14f50954069c1e10971abb0b2"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+exclude = ["test/gtest/gmock-gtest-all.cc"]
+tree_hash = "sha256:90f0c5f7617bfb83b04c20bcf4c3e6860badaf17fadaff9afc89280b271af4c2"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "small formatting (constexpr plus templates), current"
+notice_present_upstream = false

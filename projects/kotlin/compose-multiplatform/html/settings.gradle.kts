@@ -1,0 +1,149 @@
+pluginManagement {
+    val COMPOSE_CORE_VERSION = extra["compose.version"] as String
+    println("[build] compose core version: $COMPOSE_CORE_VERSION")
+
+    // pluginManagement section won't see outer scope, hence the FQ names
+    fun properties(path: String): java.util.Properties? {
+        val localPropertiesFile = File(path)
+        if (!localPropertiesFile.exists()) {
+            return null
+        }
+        return java.io.FileInputStream(localPropertiesFile).use() { inputStream ->
+            val props = java.util.Properties()
+            props.load(inputStream)
+            props
+        }
+    }
+
+    val localProperties: java.util.Properties? = properties(rootDir.resolve("local.properties").absolutePath)
+
+    val repos = (localProperties?.getProperty("compose.web.repos"))?.split(File.pathSeparator)
+
+    val buildSrcProperties: java.util.Properties =
+        properties(rootProject.projectDir.resolve("buildSrc/gradle.properties").absolutePath)!!
+    val kotlinVersion = buildSrcProperties["kotlin.version"] as String
+
+    repositories {
+        mavenCentral {
+            url = uri("https://cache-redirector.jetbrains.com/maven-central")
+        }
+        repos?.forEach { urlPath ->
+            maven {
+                url = uri(urlPath)
+            }
+        }
+        maven {
+            url = uri("https://packages.jetbrains.team/maven/p/cmp/dev")
+        }
+        maven {
+            url = uri("https://packages.jetbrains.team/maven/p/ui/dev")
+        }
+        gradlePluginPortal()
+        google()
+        mavenLocal()
+    }
+
+    resolutionStrategy {
+        eachPlugin {
+            if (requested.id.id == "org.jetbrains.compose") {
+                useModule("org.jetbrains.compose:org.jetbrains.compose.gradle.plugin:$COMPOSE_CORE_VERSION")
+            }
+            if (requested.id.id == "org.jetbrains.kotlin.plugin.compose") {
+                useVersion(kotlinVersion)
+            }
+        }
+    }
+}
+
+dependencyResolutionManagement {
+    repositories {
+        google()
+        mavenCentral {
+            url = uri("https://cache-redirector.jetbrains.com/maven-central")
+        }
+        maven {
+            url = uri("https://packages.jetbrains.team/maven/p/cmp/dev")
+        }
+    }
+    versionCatalogs {
+        create("libs") {
+            library("kotlinx-coroutines-core", "org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.0")
+            library("kotlinx-browser", "org.jetbrains.kotlinx:kotlinx-browser:0.5.0")
+        }
+    }
+}
+
+fun module(name: String, path: String) {
+    include(name)
+    val projectDir = rootDir.resolve(path).normalize().absoluteFile
+    if (!projectDir.exists()) {
+        throw AssertionError("file $projectDir does not exist")
+    }
+    project(name).projectDir = projectDir
+}
+
+val localProperties = java.util.Properties().apply {
+    val file = rootDir.resolve("local.properties")
+    if (file.isFile) {
+        file.inputStream().use(::load)
+    }
+}
+
+fun setting(name: String): String? =
+    localProperties.getProperty(name) ?: providers.gradleProperty(name).orNull
+
+val composeHtmlEapEnabled = setting("compose.html.eap.enabled")?.toBoolean() ?: false
+
+
+module(":html-core", "core")
+module(":html-svg", "svg")
+module(":html-integration-core", "integration-core")
+module(":compose-compiler-integration", "compose-compiler-integration")
+module(":compose-compiler-integration-lib", "compose-compiler-integration/lib")
+module(":internal-html-core-runtime", "internal-html-core-runtime")
+module(":html-test-utils", "test-utils")
+
+if (composeHtmlEapEnabled) {
+    println("Compose HTML EAP modules enabled")
+    val usePublishedExamples = setting("compose.html.eap.examples.usePublished")?.toBoolean() ?: true
+    val publishedExamplesVersion = requireNotNull(setting("compose.html.eap.examples.version"))
+    gradle.rootProject {
+        extra["compose.html.eap.examples.usePublished"] = usePublishedExamples
+        extra["compose.html.eap.examples.version"] = publishedExamplesVersion
+    }
+    if (usePublishedExamples) {
+        pluginManagement.resolutionStrategy.eachPlugin {
+            if (requested.id.id == "org.jetbrains.compose.html.lowering") {
+                useVersion(publishedExamplesVersion)
+            }
+        }
+    } else {
+        includeBuild("eap/compiler-plugin/gradle-plugin") {
+            name = "compose-html-lowering-gradle-plugin"
+        }
+    }
+    module(":compiler-plugin-test-harness", "eap/plugin-test-harness")
+    module(":html-core-eap", "eap/core")
+    module(":html-eap-benchmarks", "eap/benchmarks")
+    module(":html-svg-eap", "eap/svg")
+    module(":internal-html-core-runtime-eap", "eap/internal-html-core-runtime")
+    module(":internal-html-serialization-eap", "eap/internal-html-serialization")
+    module(":compose-html-compiler-plugin", "eap/compiler-plugin")
+    module(":compose-html-compiler-plugin:tests", "eap/compiler-plugin/tests")
+    module(":html-eap-example", "eap/examples/string-rendering")
+    module(":html-eap-hydration-example", "eap/examples/hydration")
+    module(":html-eap-hydration-islands-example", "eap/examples/hydration-islands")
+}
+
+if (extra["compose.web.tests.skip.benchmarks"]!!.toString().toBoolean() != true) {
+    module(":html-benchmark-core", "benchmark-core")
+} else {
+    println("skipping benchmarks")
+}
+
+if (extra["compose.web.buildSamples"]!!.toString().toBoolean() == true) {
+    println("building with examples")
+    module(":examples:compose-web-lp", "../examples/web-landing")
+    module(":examples:web-compose-bird", "../examples/web-compose-bird")
+    module(":examples:web-with-react", "../examples/web-with-react")
+}

@@ -1,0 +1,26 @@
+package org.jetbrains.compose.web
+
+import androidx.compose.runtime.staticCompositionLocalOf
+
+@PublishedApi
+internal enum class HtmlValidationMode {
+    Fast,
+    Strict,
+}
+
+@PublishedApi
+internal val LocalHtmlValidationMode = staticCompositionLocalOf { HtmlValidationMode.Fast }
+
+internal fun htmlValidationMode(validateStrictly: Boolean): HtmlValidationMode =
+    if (validateStrictly) HtmlValidationMode.Strict else HtmlValidationMode.Fast
+
+internal fun parseHtmlValidationMode(value: String?): HtmlValidationMode =
+    when (value?.trim()?.lowercase()) {
+        null, "", "false", "0" -> HtmlValidationMode.Fast
+        "true", "1" -> HtmlValidationMode.Strict
+        else -> throw IllegalArgumentException(
+            "COMPOSE_HTML_VALIDATE_STRICTLY must be true, false, 1, or 0, but was \"$value\""
+        )
+    }
+
+internal expect fun defaultHtmlValidationMode(): HtmlValidationMode
