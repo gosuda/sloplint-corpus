@@ -239,11 +239,11 @@ rev = "8af51fe6c682f63ac0aaa84130454b5ed28a5aee"
 spdx = "Apache-2.0"
 storage = "copied"
 paths = ["**"]
-exclude = ["third_party/**", "third_party/*/**", "third_party/*/*/**", "third_party/*/*/*/**", "third_party/*/*/*/*/**", "third_party/*/*/*/*/*/**"]
-tree_hash = "sha256:fd1d4f612e62ed790ba76d3c72414bae4eea684197ba1e378ce96fe765e6a0ce"
+exclude = ["third_party/**", "third_party/*/**", "third_party/*/*/**", "third_party/*/*/*/**", "third_party/*/*/*/*/**", "third_party/*/*/*/*/*/**", "tools/build_defs/repo/java.bzl"]
+tree_hash = "sha256:630fc499f7dc596d61e344376dbba3c0b398af381527caf42856de04d7002d61"
 added_by = "CorpusPopC5"
 added_on = "2026-11-23"
-reason = "build system interpreter host minus vendored third party (selection slot: build system)"
+reason = "build system interpreter host minus vendored third party and tools/build_defs/repo/java.bzl, whose comment names BSD-3-Clause outside the public allowlist (selection slot: build system)"
 notice_present_upstream = false
 
 [[project]]
