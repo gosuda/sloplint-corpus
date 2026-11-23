@@ -1039,6 +1039,24 @@ class TestAddLocal(unittest.TestCase):
         self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
         self.assertIn("PASS fetch --check", check.stdout)
 
+    @unittest.skipUnless(HAS_GIT, "needs git")
+    def test_fetch_lowercase_licenseref_needs_consent(self):
+        upstream, rev = make_local_git_repo(MIT_TEXT)
+        self.addCleanup(shutil.rmtree, upstream, True)
+        root = make_repo(mode="private")
+        self.addCleanup(shutil.rmtree, root, True)
+        proc = run_tool(root, "add", "--url", upstream, "--rev", rev,
+                        "--lang", "python",
+                        "--spdx", "licenseref-Proprietary",
+                        "--name", "lowerprop", "--storage", "pinned",
+                        "--paths", "src/**", "--reason", "lowercase fixture")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        bare = run_tool(root, "fetch", "--lang", "python")
+        self.assertNotEqual(bare.returncode, 0)
+        self.assertIn("custom license", bare.stdout)
+        self.assertFalse(os.path.exists(
+            os.path.join(root, ".cache", "tree", "python", "lowerprop")))
+
     @unittest.skipUnless(HAS_GIT and HAS_ASKALONO, "needs git and askalono")
     def test_add_copies_every_root_license_file(self):
         upstream = tempfile.mkdtemp(prefix="corpus-upstream-")

@@ -1072,8 +1072,8 @@ def cmd_fetch(args):
         else:
             declared = spdx_ids(project.get("spdx", ""))
             custom = sorted(item for item in declared
-                            if item.startswith("LicenseRef-")
-                            or item.startswith("DocumentRef-") or ":" in item)
+                            if item.lower().startswith(("licenseref-", "documentref-"))
+                            or ":" in item)
             if ("NOASSERTION" in declared or not declared) and not args.allow_unlicensed:
                 fail("%s: pinned entry has no license; refusing (owner decision c default); "
                      "re-run with --allow-unlicensed for a logged local copy" % tag)
