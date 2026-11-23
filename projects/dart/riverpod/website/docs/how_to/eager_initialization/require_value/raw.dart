@@ -1,0 +1,25 @@
+// ignore_for_file: unnecessary_async, use_key_in_widget_constructors
+
+import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'package:material_ui/material_ui.dart';
+
+/* SNIPPET START */
+// {@template provider}
+// An eagerly initialized provider.
+// {@endtemplate}
+final exampleProvider = FutureProvider<String>((ref) async => 'Hello world');
+
+class MyConsumer extends ConsumerWidget {
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final result = ref.watch(exampleProvider);
+
+    // {@template note}
+    /// If the provider was correctly eagerly initialized, then we can
+    /// directly read the data with "requireValue".
+    // {@endtemplate}
+    return Text(result.requireValue);
+  }
+}
+
+/* SNIPPET END */

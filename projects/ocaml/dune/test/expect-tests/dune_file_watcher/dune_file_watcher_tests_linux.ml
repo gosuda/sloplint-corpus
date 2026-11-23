@@ -1,0 +1,46 @@
+open Stdune
+open Dune_file_watcher_tests_lib
+
+let%expect_test _ = init ()
+
+let%expect_test _ =
+  let watcher, try_to_get_events = create_watcher ~watch_exclusions:[] () in
+  let print_events n = print_events ~try_to_get_events ~expected:n in
+  (match Dune_scheduler.File_watcher.add_watch watcher (Path.of_string ".") with
+   | Error _ -> assert false
+   | Ok () -> ());
+  Stdio.Out_channel.write_all "x" ~data:"x";
+  print_events 2;
+  [%expect
+    {|
+    { path = In_source_tree "x"; kind = Created }
+    { path = In_source_tree "x"; kind = File_changed }
+    |}];
+  (* CR-someday aalekseyev: renaming is not detected *)
+  Unix.rename "x" "y";
+  print_events 2;
+  [%expect
+    {|
+    { path = In_source_tree "x"; kind = Deleted }
+    { path = In_source_tree "y"; kind = Created }
+    |}];
+  let (_ : _) = Fpath.mkdir_p "d/w" in
+  (match Dune_scheduler.File_watcher.add_watch watcher (Path.of_string "d/w") with
+   | Error _ -> assert false
+   | Ok () -> ());
+  Stdio.Out_channel.write_all "d/w/x" ~data:"x";
+  print_events 3;
+  [%expect
+    {|
+    { path = In_source_tree "d"; kind = Created }
+    { path = In_source_tree "d/w/x"; kind = Created }
+    { path = In_source_tree "d/w/x"; kind = File_changed }
+    |}];
+  Stdio.Out_channel.write_all "d/w/y" ~data:"y";
+  print_events 2;
+  [%expect
+    {|
+    { path = In_source_tree "d/w/y"; kind = Created }
+    { path = In_source_tree "d/w/y"; kind = File_changed }
+    |}]
+;;

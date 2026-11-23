@@ -1,0 +1,34 @@
+import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'package:material_ui/material_ui.dart';
+
+import 'common.dart';
+import 'home.dart';
+
+void main() {
+  runApp(ProviderScope(child: MyApp()));
+}
+
+class MyApp extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      theme: ThemeData(scaffoldBackgroundColor: const Color(0xFF2d2d2d)),
+      builder: (context, child) {
+        final theme = Theme.of(context);
+
+        return ProviderScope(
+          overrides: [
+            /// We override "themeProvider" with a valid theme instance.
+            /// This allows providers such as "tagThemeProvider" to read the
+            /// current theme, without having a BuildContext.
+            themeProvider.overrideWithValue(theme),
+          ],
+          child: const ListTileTheme(
+            textColor: Color(0xFFe7e8eb),
+            child: MyHomePage(),
+          ),
+        );
+      },
+    );
+  }
+}

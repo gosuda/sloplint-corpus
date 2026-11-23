@@ -1,0 +1,73 @@
+import '../commands/runner.dart';
+import '../common/utils.dart';
+import 'base.dart';
+
+class PublishCommand extends MelosCommand {
+  PublishCommand(super.config) {
+    setupPackageFilterParser();
+    argParser.addFlag(
+      publishOptionDryRun,
+      abbr: 'n',
+      defaultsTo: true,
+      help: 'Validate but do not publish the package.',
+    );
+    argParser.addFlag(
+      publishOptionGitTagVersion,
+      abbr: 't',
+      help:
+          'Add any missing git tags for release. '
+          'Note tags are only created if --no-dry-run is also set.',
+    );
+    argParser.addFlag(
+      publishOptionYes,
+      abbr: 'y',
+      negatable: false,
+      help: 'Skip the Y/n confirmation prompt when using --no-dry-run.',
+    );
+    argParser.addOption(
+      publishOptionServer,
+      help:
+          'The URL of the package server to publish to. '
+          'Overrides the pubServer option in the root pubspec.yaml.',
+    );
+    argParser.addFlag(
+      publishOptionSkipValidation,
+      negatable: false,
+      help:
+          'Publish without validation and resolution (this will ignore '
+          'errors). Forwarded to `dart pub publish --skip-validation`.',
+    );
+  }
+
+  @override
+  final String name = 'publish';
+
+  @override
+  final String description =
+      'Publish any unpublished packages or package versions in your repository '
+      'to pub.dev. Dry run is on by default.';
+
+  @override
+  Future<void> run() async {
+    final dryRun = argResults!.optional(publishOptionDryRun) as bool?;
+    final gitTagVersion =
+        argResults!.optional(publishOptionGitTagVersion) as bool?;
+    final yes = argResults!.optional(publishOptionYes) as bool?;
+    final pubServer = argResults!.optional(publishOptionServer) as String?;
+    final skipValidation =
+        argResults!.optional(publishOptionSkipValidation) as bool?;
+
+    final melos = Melos(logger: logger, config: config);
+    final packageFilters = parsePackageFilters(config.path);
+
+    return melos.publish(
+      global: global,
+      packageFilters: packageFilters,
+      dryRun: dryRun,
+      force: yes,
+      gitTagVersion: gitTagVersion,
+      pubServer: pubServer,
+      skipValidation: skipValidation,
+    );
+  }
+}

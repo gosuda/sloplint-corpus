@@ -1,0 +1,439 @@
+open Import
+open Memo.O
+
+let pped_module m ~f =
+  let pped = Module.pped m in
+  let+ () =
+    Module.iter m ~f:(fun ml_kind file ->
+      let pp_path =
+        Module.file pped ~ml_kind |> Option.value_exn |> Path.as_in_build_dir_exn
+      in
+      let file = Path.as_in_build_dir_exn (Module.File.path file) in
+      f ml_kind file pp_path)
+  in
+  pped
+;;
+
+let pp_input_file (file : Module.File.t) ~ml_kind =
+  let ext = Dialect.extension (Module.File.dialect file) ml_kind |> Option.value_exn in
+  let original_path = Module.File.original_path file in
+  if Filename.Extension.Or_empty.check (Path.extension original_path) ext
+  then original_path
+  else Module.File.path file
+;;
+
+let pp_input_path m ~ml_kind =
+  Module.source m ~ml_kind |> Option.value_exn |> pp_input_file ~ml_kind
+;;
+
+let loc_filename_arg_for_pp ~input_path ~loc_filename =
+  if Path.equal input_path loc_filename
+  then Command.Args.empty
+  else
+    S
+      [ A "-loc-filename"
+      ; A (Path.drop_optional_build_context_maybe_sandboxed loc_filename |> Path.to_string)
+      ]
+;;
+
+let pp_corrected_path m ~ml_kind ~suffix =
+  pp_input_path m ~ml_kind
+  |> Path.as_in_build_dir_exn
+  |> Path.Build.extend_basename ~suffix
+;;
+
+let get_rules sctx key =
+  let ctx = Super_context.context sctx in
+  let build_context = Context.build_context ctx in
+  let exe = Ppx_exe.ppx_exe_path build_context ~key in
+  let* pp_names, scope =
+    match Digest.from_hex key with
+    | None ->
+      User_error.raise
+        [ Pp.textf "invalid ppx key for %s" (Path.Build.to_string_maybe_quoted exe) ]
+    | Some key ->
+      let { Ppx_exe.Key.Decoded.pps; project_root } = Ppx_exe.Key.decode key in
+      let+ scope = Scope.DB.find_by_project_root ctx project_root in
+      pps, scope
+  in
+  let* pps =
+    let lib_db = Scope.libs scope in
+    List.map pp_names ~f:(fun x -> Loc.none, x) |> Lib.DB.resolve_pps lib_db
+  in
+  Ppx_driver.build_ppx_driver sctx ~scope ~pps ~pp_names ~target:exe
+;;
+
+let gen_rules sctx components =
+  match components with
+  | [ key ] -> get_rules sctx key
+  | _ -> Memo.return ()
+;;
+
+let correction_diff ~source ~target =
+  Action.diff ~optional:true source target |> Action.Full.make |> Action_builder.return
+;;
+
+let promote_correction (m : Module.t) build ~suffix ~ml_kind =
+  let open Action_builder.O in
+  let source = pp_input_path m ~ml_kind in
+  let target = pp_corrected_path m ~ml_kind ~suffix in
+  let+ action = build
+  and+ diff = correction_diff ~source ~target in
+  Action.Full.reduce [ action; diff ]
+;;
+
+let promote_correction_with_target source build ~suffix =
+  let target = Path.Build.extend_basename source ~suffix in
+  Action_builder.progn
+    [ build
+    ; correction_diff ~source:(Path.build source) ~target
+      |> Action_builder.with_no_targets
+    ]
+;;
+
+let sandbox_of_setting = function
+  | `Set_by_user d | `Default d -> d
+;;
+
+let action_for_pp ~sandbox ~loc ~expander ~action ~src =
+  let expander =
+    let bindings = Pform.Map.singleton (Var Input_file) [ Value.Path (Path.build src) ] in
+    Expander.add_bindings expander ~bindings
+  in
+  let open Action_builder.O in
+  Action_builder.path (Path.build src)
+  >>> Action_unexpanded.expand_no_targets
+        action
+        Sandbox_config.no_special_requirements
+        ~chdir:(Expander.context expander |> Context_name.build_dir)
+        ~loc
+        ~expander
+        ~deps:[]
+        ~what:"preprocessing actions"
+  >>| Action.Full.add_sandbox sandbox
+;;
+
+(* Generate rules for the dialect modules in [modules] and return a a new module
+   with only OCaml sources *)
+let setup_dialect_rules sctx ~sandbox ~dir ~expander (m : Module.t) =
+  let ml = Module.ml_source m in
+  let+ () =
+    Module.iter m ~f:(fun ml_kind f ->
+      Dialect.preprocess (Module.File.dialect f) ml_kind
+      |> Memo.Option.iter ~f:(fun (loc, action) ->
+        let src = Path.as_in_build_dir_exn (Module.File.path f) in
+        let dst =
+          Module.file ml ~ml_kind |> Option.value_exn |> Path.as_in_build_dir_exn
+        in
+        action_for_pp ~sandbox ~loc ~expander ~action ~src
+        |> Action_builder.with_stdout_to dst
+        |> Super_context.add_rule sctx ~dir))
+  in
+  ml
+;;
+
+let unstaged_ppx =
+  let cutoff =
+    let strings_equal = List.equal String.equal in
+    Tuple.T3.equal Path.Build.equal strings_equal strings_equal
+  in
+  fun ctx ~for_ ~expander ~lib_name ~scope kind spec ->
+    let ({ loc; pps; flags; staged = _ } : _ Preprocess.Pps.t) = spec in
+    let suffix =
+      match kind with
+      | `Lint -> ".lint-corrected"
+      | `Preprocess -> ".ppx-corrected"
+    in
+    let resolved =
+      let open Action_builder.O in
+      Action_builder.memoize ~cutoff "ppx driver and flags"
+      @@ let* () = Action_builder.return () in
+         let* exe, driver, args =
+           Ppx_driver.ppx_driver_and_flags
+             ctx
+             ~for_
+             ~expander
+             ~loc
+             ~lib_name
+             ~flags
+             ~scope
+             pps
+         in
+         let flags, standard =
+           match kind with
+           | `Lint -> Ppx_driver.Driver.lint_flags driver, []
+           | `Preprocess -> Ppx_driver.Driver.flags driver, [ "--as-ppx" ]
+         in
+         let expander =
+           let bindings =
+             Pform.Map.singleton (Var Corrected_suffix) [ Value.String suffix ]
+           in
+           Expander.add_bindings expander ~bindings
+         in
+         let+ expanded =
+           let standard = Action_builder.return standard in
+           Expander.expand_and_eval_set expander flags ~standard
+         in
+         exe, expanded, args
+    in
+    suffix, resolved
+;;
+
+let lint_module sctx ~for_ ~sandbox ~pps_sandbox ~dir ~expander ~lint ~lib_name ~scope =
+  let open Action_builder.O in
+  let add_alias build =
+    Super_context.add_alias_action sctx [ Alias.make Alias0.lint ~dir ] build ~dir
+  in
+  let lint =
+    Module_reference.Per_item.map lint ~f:(function
+      | Preprocess.No_preprocessing -> fun ~source:_ ~ast:_ -> Memo.return ()
+      | Future_syntax loc ->
+        User_error.raise ~loc [ Pp.text "'compat' cannot be used as a linter" ]
+      | Action (loc, action) ->
+        fun ~source ~ast:_ ->
+          Module.iter source ~f:(fun _ (src : Module.File.t) ->
+            let src = Path.as_in_build_dir_exn (Module.File.path src) in
+            add_alias ~loc (action_for_pp ~sandbox ~loc ~expander ~action ~src))
+      | Pps ({ loc; staged; pps = _; flags = _ } as spec) ->
+        if staged
+        then
+          User_error.raise
+            ~loc
+            [ Pp.text "Staged ppx rewriters cannot be used as linters." ];
+        let ctx = Super_context.context sctx in
+        let command_dir = Context.build_dir ctx |> Path.build in
+        let corrected_suffix, driver_and_flags =
+          unstaged_ppx ctx ~for_ ~expander ~lib_name ~scope `Lint spec
+        in
+        fun ~source ~ast ->
+          Module.iter ast ~f:(fun ml_kind src ->
+            add_alias
+              ~loc
+              (promote_correction
+                 ~suffix:(Filename.of_string_exn corrected_suffix)
+                 ~ml_kind
+                 source
+                 (let* exe, flags, args = driver_and_flags in
+                  Command.run'
+                    ~dir:command_dir
+                    ~sandbox:pps_sandbox
+                    (Ok (Path.build exe))
+                    [ As args
+                    ; Command.Ml_kind.ppx_driver_flag ml_kind
+                    ; Dep (pp_input_file src ~ml_kind)
+                    ; As flags
+                    ]))))
+  in
+  Staged.stage
+  @@ fun ~(source : Module.t) ~ast ->
+  Module_reference.Per_item.find lint (Module.path source) ~source ~ast
+;;
+
+let pp_one_module
+      sctx
+      ~for_
+      ~context
+      ~lib_name
+      ~scope
+      ~preprocessor_deps
+      ~env
+      ~(lint_module : source:_ -> ast:_ -> unit Memo.t)
+      ~sandbox
+      ~dir
+      ~expander
+      (pp : _ Preprocess.Without_future_syntax.t)
+  =
+  let open Action_builder.O in
+  let command_dir = Context.build_dir context |> Path.build in
+  match pp with
+  | No_preprocessing ->
+    Staged.stage
+    @@ fun m ~lint ->
+    let open Memo.O in
+    let* ast =
+      let sandbox = sandbox_of_setting sandbox in
+      setup_dialect_rules sctx ~sandbox ~dir ~expander m
+    in
+    let+ () = Memo.when_ lint (fun () -> lint_module ~ast ~source:m) in
+    ast
+  | Action (loc, action) ->
+    Staged.stage
+    @@ fun m ~lint ->
+    let open Memo.O in
+    let* ast =
+      let sandbox = sandbox_of_setting sandbox in
+      pped_module m ~f:(fun _kind src dst ->
+        let action =
+          let open Action_builder.O in
+          let+ act = action_for_pp ~sandbox ~loc ~expander ~action ~src
+          and+ env = env in
+          Action.Full.add_env env act
+        in
+        Action_builder.with_stdout_to dst action |> Super_context.add_rule sctx ~loc ~dir)
+      >>= setup_dialect_rules sctx ~sandbox ~dir ~expander
+    in
+    let+ () = Memo.when_ lint (fun () -> lint_module ~ast ~source:m) in
+    ast
+  | Pps ({ loc; pps; flags; staged } as spec) ->
+    Staged.stage
+    @@
+    if staged
+    then (
+      let dash_ppx_flag =
+        let+ args =
+          Action_builder.memoize
+            ~cutoff:(List.equal String.equal)
+            "ppx command"
+            (let* exe, driver, flags =
+               Ppx_driver.ppx_driver_and_flags
+                 context
+                 ~for_
+                 ~expander
+                 ~loc
+                 ~scope
+                 ~flags
+                 ~lib_name
+                 pps
+             in
+             let* driver_flags =
+               Expander.expand_and_eval_set
+                 expander
+                 (Ppx_driver.Driver.as_ppx_flags driver)
+                 ~standard:(Action_builder.return [ "--as-ppx" ])
+             and* () = preprocessor_deps in
+             Command.expand_no_targets
+               ~dir:command_dir
+               (S [ Dep (Path.build exe); As driver_flags; As flags ])
+             >>| Appendable_list.to_list)
+        in
+        [ "-ppx"; String.quote_list_for_shell args ]
+      in
+      let pp =
+        let sandbox =
+          match sandbox with
+          | `Set_by_user d -> d
+          | `Default _ -> Sandbox_config.no_special_requirements
+        in
+        Some (dash_ppx_flag, sandbox)
+      in
+      let sandbox = sandbox_of_setting sandbox in
+      fun m ~lint ->
+        let open Memo.O in
+        let* ast = setup_dialect_rules sctx ~sandbox ~dir ~expander m in
+        let+ () = Memo.when_ lint (fun () -> lint_module ~ast ~source:m) in
+        Module.set_pp ast pp)
+    else (
+      let corrected_suffix, driver_and_flags =
+        unstaged_ppx context ~for_ ~expander ~lib_name ~scope `Preprocess spec
+      in
+      let sandbox = sandbox_of_setting sandbox in
+      fun m ~lint ->
+        let open Memo.O in
+        let* ast = setup_dialect_rules sctx ~sandbox ~dir ~expander m in
+        let* () = Memo.when_ lint (fun () -> lint_module ~ast ~source:m) in
+        pped_module ast ~f:(fun ml_kind src dst ->
+          let loc_filename = pp_input_path m ~ml_kind in
+          let loc_filename_arg =
+            loc_filename_arg_for_pp ~input_path:(Path.build src) ~loc_filename
+          in
+          let hidden_deps =
+            let source =
+              Module.source m ~ml_kind |> Option.value_exn |> Module.File.path
+            in
+            Dep.Set.of_files [ source; loc_filename ]
+          in
+          Super_context.add_rule
+            sctx
+            ~loc
+            ~dir
+            (promote_correction_with_target
+               ~suffix:(Filename.of_string_exn corrected_suffix)
+               (loc_filename |> Path.as_in_build_dir_exn)
+               (Action_builder.with_file_targets
+                  ~file_targets:[ dst ]
+                  (let open Action_builder.O in
+                   preprocessor_deps
+                   >>> let* exe, flags, args = driver_and_flags in
+                       Command.run'
+                         ~dir:command_dir
+                         ~sandbox
+                         ~env
+                         (Ok (Path.build exe))
+                         [ As args
+                         ; A "-o"
+                         ; Path (Path.build dst)
+                         ; loc_filename_arg
+                         ; Command.Ml_kind.ppx_driver_flag ml_kind
+                         ; Dep (Path.build src)
+                         ; Hidden_deps hidden_deps
+                         ; As flags
+                         ])))))
+;;
+
+let make
+      sctx
+      ~for_
+      ~dir
+      ~expander
+      ~lint
+      ~preprocess
+      ~preprocessor_deps
+      ~instrumentation_deps
+      ~lib_name
+      ~scope
+  =
+  let preprocessor_deps = preprocessor_deps @ instrumentation_deps in
+  let context = Super_context.context sctx in
+  let+ ocaml = Context.ocaml context in
+  let preprocess =
+    Module_reference.Per_item.map preprocess ~f:(fun pp ->
+      Preprocess.remove_future_syntax ~for_:Compiler pp ocaml.version)
+  in
+  let env, sandbox =
+    Dep_conf_eval.unnamed
+      Sandbox_config.no_special_requirements
+      preprocessor_deps
+      ~expander
+  in
+  let dune_version = Scope.project scope |> Dune_project.dune_version in
+  let sandbox =
+    match Sandbox_config.equal Sandbox_config.no_special_requirements sandbox with
+    | false -> `Set_by_user sandbox
+    | true ->
+      `Default
+        (if dune_version >= (3, 3) then Sandbox_config.needs_sandboxing else sandbox)
+  in
+  let preprocessor_deps =
+    (* The dependencies of the env are memoized here but the env is passed on later anyway. *)
+    Action_builder.memoize "preprocessor deps" (Action_builder.ignore env)
+  in
+  let lint_module =
+    let pps_sandbox =
+      match sandbox with
+      | `Set_by_user sandbox -> sandbox
+      | `Default sandbox ->
+        if dune_version >= (3, 25)
+        then sandbox
+        else Sandbox_config.no_special_requirements
+    in
+    let sandbox = sandbox_of_setting sandbox in
+    Staged.unstage
+      (lint_module sctx ~for_ ~sandbox ~pps_sandbox ~dir ~expander ~lint ~lib_name ~scope)
+  in
+  Module_reference.Per_item.map preprocess ~f:(fun spec ->
+    Staged.unstage
+    @@ pp_one_module
+         sctx
+         ~for_
+         ~context
+         ~lib_name
+         ~scope
+         ~preprocessor_deps
+         ~env
+         ~lint_module
+         ~sandbox
+         ~dir
+         ~expander
+         spec)
+  |> Pp_spec.make
+;;

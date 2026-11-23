@@ -1,0 +1,52 @@
+// GENERATED CODE - DO NOT MODIFY BY HAND
+
+// ignore_for_file: non_constant_identifier_names
+
+part of 'codegen.dart';
+
+// **************************************************************************
+// RiverpodGenerator
+// **************************************************************************
+
+// GENERATED CODE - DO NOT MODIFY BY HAND
+// ignore_for_file: type=lint, type=warning
+
+@ProviderFor(example)
+final exampleProvider = ExampleProvider._();
+
+final class ExampleProvider extends $FunctionalProvider<User, User, User>
+    with $Provider<User> {
+  ExampleProvider._()
+    : super(
+        from: null,
+        argument: null,
+        retry: null,
+        name: r'exampleProvider',
+        isAutoDispose: true,
+        dependencies: null,
+        $allTransitiveDependencies: null,
+      );
+
+  @override
+  String debugGetCreateSourceHash() => _$exampleHash();
+
+  @$internal
+  @override
+  $ProviderElement<User> $createElement($ProviderPointer pointer) =>
+      $ProviderElement(pointer);
+
+  @override
+  User create(Ref ref) {
+    return example(ref);
+  }
+
+  /// {@macro riverpod.override_with_value}
+  Override overrideWithValue(User value) {
+    return $ProviderOverride(
+      origin: this,
+      providerOverride: $SyncValueProvider<User>(value),
+    );
+  }
+}
+
+String _$exampleHash() => r'c9865d4390aad5b8480addcbb73dbd225c8417b8';

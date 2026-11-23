@@ -1,0 +1,246 @@
+open Import
+open Action.Ext.Exec
+
+include struct
+  open Dune_rpc
+  module Action_id = Action_id
+  module Action_plugin = Action_plugin
+end
+
+let to_dune_dep_set =
+  let of_action_plugin_dep ~loc ~root : Dune_rpc.Dep.t -> Dep.t =
+    let to_dune_path path =
+      let rec resolve root path =
+        match String.drop_prefix path ~prefix:"../" with
+        | Some path -> resolve (Filename.dirname root) path
+        | None ->
+          if String.equal path ".."
+          then Filename.dirname root
+          else Filename.concat root path
+      in
+      resolve root path
+      |> Path.of_string
+      |> Path.Expert.try_localize_external
+      |> Path.drop_optional_sandbox_root
+    in
+    function
+    | File fn -> Dep.file (to_dune_path fn)
+    | Directory dir ->
+      let selector =
+        let dir = to_dune_path dir in
+        File_selector.of_glob ~dir Glob.universal
+      in
+      Dep.file_selector selector
+    | Glob { path; glob } ->
+      let selector =
+        let dir = to_dune_path path in
+        let glob = Glob.of_string_exn loc glob in
+        File_selector.of_glob ~dir glob
+      in
+      Dep.file_selector selector
+  in
+  fun set ~loc ~root ->
+    let root = Path.to_absolute_filename root in
+    Dune_rpc.Dep.Set.to_list_map set ~f:(of_action_plugin_dep ~loc ~root)
+    |> Dep.Set.of_list
+;;
+
+module Server = struct
+  module Rpc = Action_plugin.Rpc
+  module Build_deps = Dune_rpc.Procedures.Public.Action_plugin.Build_deps
+
+  module Initialize_response =
+    Dune_rpc.Procedures.Public.Action_plugin.Initialize_response
+
+  module Handler = Root.Rpc.Server.Handler
+
+  type active =
+    { build_deps : Dep.Set.t -> unit Fiber.t
+    ; rule_loc : Loc.t
+    ; root : Path.t
+    ; job_slot : Scheduler.Job_slot.t
+    ; mutable initialized : bool
+    ; mutable pending : unit Fiber.Ivar.t list
+    ; mutable errors : string list
+    }
+
+  let active = Action_id.Table.create 16
+
+  let find_active action_id =
+    match Action_id.Table.find active action_id with
+    | Some active -> active
+    | None ->
+      let message =
+        Printf.sprintf "unknown dynamic action %S" (Action_id.to_string action_id)
+      in
+      raise
+        (Dune_rpc.Response.Error.E
+           (Dune_rpc.Response.Error.create
+              ~kind:Dune_rpc.Response.Error.Invalid_request
+              ~message
+              ()))
+  ;;
+
+  let with_active ~(ectx : context) f =
+    let { Action.Ext.Exec.build_deps; rule_loc; root; metadata; _ } = ectx in
+    let { Process_metadata.job_slots; _ } = metadata in
+    let action_id = Action_id.gen () in
+    let active_action =
+      { build_deps
+      ; rule_loc
+      ; root
+      ; job_slot = Scheduler.Job_slot.create ~job_slots
+      ; initialized = false
+      ; pending = []
+      ; errors = []
+      }
+    in
+    Action_id.Table.add_exn active action_id active_action;
+    let open Fiber.O in
+    let+ result =
+      Fiber.finalize
+        (fun () -> f action_id active_action)
+        ~finally:(fun () ->
+          Action_id.Table.remove active action_id;
+          Fiber.parallel_iter active_action.pending ~f:Fiber.Ivar.read)
+    in
+    match active_action.errors with
+    | [] -> result
+    | errors -> User_error.raise ~loc:ectx.rule_loc (List.rev_map errors ~f:Pp.verbatim)
+  ;;
+
+  let build_deps =
+    let build_error_message =
+      let rec exception_message = function
+        | User_error.E message -> User_message.to_string message
+        | Memo.Error.E error -> exception_message (Memo.Error.get error)
+        | exn -> Printexc.to_string exn
+      in
+      function
+      | [] -> "dependency build failed"
+      | { Exn_with_backtrace.exn; _ } :: _ -> exception_message exn
+    in
+    fun _session { Build_deps.action_id; deps } ->
+      let ({ rule_loc; root; errors; _ } as active) = find_active action_id in
+      match errors with
+      | message :: _ -> Fiber.return (Some message)
+      | [] ->
+        let deps_to_build = to_dune_dep_set deps ~loc:rule_loc ~root in
+        let open Fiber.O in
+        let completed = Fiber.Ivar.create () in
+        active.pending <- completed :: active.pending;
+        Fiber.finalize
+          ~finally:(fun () -> Fiber.Ivar.fill completed ())
+          (fun () ->
+             Scheduler.Job_slot.with_ active.job_slot ~f:(fun () ->
+               Fiber.collect_errors (fun () -> active.build_deps deps_to_build)
+               >>| function
+               | Ok () -> None
+               | Error errors ->
+                 let message = build_error_message errors in
+                 active.errors <- message :: active.errors;
+                 Some message))
+  ;;
+
+  let initialize _session action_id =
+    let ({ root; _ } as active) = find_active action_id in
+    active.initialized <- true;
+    (* Match Sys.getcwd even when the build directory is a symlink. *)
+    let root = Unix.realpath (Path.to_absolute_filename root) in
+    Fiber.return { Initialize_response.root }
+  ;;
+
+  let implement_handler handler =
+    Handler.implement_request handler Rpc.initialize initialize;
+    Handler.implement_request handler Rpc.build_deps build_deps
+  ;;
+end
+
+let exec ~(ectx : context) ~(eenv : env) prog args =
+  let open Fiber.O in
+  let prog_name = Path.reach ~from:eenv.working_dir prog in
+  Server.with_active ~ectx (fun action_id active_action ->
+    let env =
+      let where =
+        match Root.Rpc.Where.default () with
+        | `Unix path -> `Unix (Path.reach (Path.of_string path) ~from:eenv.working_dir)
+        | where -> where
+      in
+      Dune_rpc.Where.add_to_env where eenv.env
+      |> Env.add
+           ~var:Action_plugin.Rpc.action_id_env_variable
+           ~value:(Action_id.to_string action_id)
+    in
+    let+ (_ : (unit, int) result) =
+      Process.run_with_job_slot
+        ~job_slot:active_action.job_slot
+        ~display:!Clflags.display
+        (Accept eenv.exit_codes)
+        ~dir:eenv.working_dir
+        ~env
+        ~stdout_to:eenv.stdout_to
+        ~stderr_to:eenv.stderr_to
+        ~stdin_from:eenv.stdin_from
+        ~metadata:ectx.metadata
+        prog
+        args
+    in
+    if not active_action.initialized
+    then
+      User_error.raise
+        ~loc:ectx.rule_loc
+        [ Pp.textf
+            "Executable '%s' declared as using dune-action-plugin (declared with \
+             'dynamic-run' tag) failed to respond to dune."
+            prog_name
+        ; Pp.nop
+        ; Pp.text
+            "If you don't use dynamic dependency discovery in your executable you may \
+             consider changing 'dynamic-run' to 'run' in your rule definition."
+        ];
+    ())
+;;
+
+module Spec = struct
+  type ('path, 'target) t = ('path, Action.Prog.Not_found.t) result * string list
+
+  let name = "dynamic-run"
+  let version = 1
+  let is_useful_to_memoize = true
+  let is_dynamic = true
+  let runs_process = true
+  let can_run_in_action_runner = true
+
+  let encode (prog, args) f _ : Sexp.t =
+    let open Sexp in
+    List
+      [ Atom name
+      ; Atom (Int.to_string version)
+      ; (match prog with
+         | Ok path -> f path
+         | Error error -> Atom (Filename.to_string (Action.Prog.Not_found.program error)))
+      ; List (List.map args ~f:(fun s -> Atom s))
+      ]
+  ;;
+
+  let bimap (prog, args) f _ = Result.map ~f prog, args
+
+  let action (prog, args) ~ectx ~eenv =
+    match prog with
+    | Error e -> Action.Prog.Not_found.raise e
+    | Ok prog -> exec ~ectx ~eenv prog args
+  ;;
+end
+
+let action ~prog ~args =
+  let module M = struct
+    type path = Path.t
+    type target = Path.Build.t
+
+    module Spec = Spec
+
+    let v = prog, args
+  end
+  in
+  Action.Extension (module M)
+;;

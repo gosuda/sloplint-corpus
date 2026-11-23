@@ -1,0 +1,147 @@
+/*
+ * Copyright (C) from 2022 The Play Framework Contributors <https://github.com/playframework>, 2011-2021 Lightbend Inc. <https://www.lightbend.com>
+ */
+
+package play.filters.hosts
+
+import jakarta.inject.Inject
+import jakarta.inject.Provider
+import jakarta.inject.Singleton
+import play.api.http.HttpErrorHandler
+import play.api.http.HttpErrorInfo
+import play.api.http.Status
+import play.api.inject._
+import play.api.libs.streams.Accumulator
+import play.api.mvc.request.AuthorityPort
+import play.api.mvc.request.RequestAuthority
+import play.api.mvc.EssentialAction
+import play.api.mvc.EssentialFilter
+import play.api.mvc.RequestHeader
+import play.api.Configuration
+import play.api.Logger
+import play.api.MarkerContexts.SecurityMarkerContext
+import play.core.j.JavaContextComponents
+import play.core.j.JavaHttpErrorHandlerAdapter
+
+/**
+ * A filter that denies requests by hosts that do not match a configured list of allowed hosts.
+ */
+case class AllowedHostsFilter @Inject() (config: AllowedHostsConfig, errorHandler: HttpErrorHandler)
+    extends EssentialFilter {
+  private val logger = Logger(this.getClass)
+
+  // Java API
+  def this(
+      config: AllowedHostsConfig,
+      errorHandler: play.http.HttpErrorHandler
+  ) = {
+    this(config, new JavaHttpErrorHandlerAdapter(errorHandler))
+  }
+
+  @deprecated("Use constructor without JavaContextComponents", "2.8.0")
+  def this(
+      config: AllowedHostsConfig,
+      errorHandler: play.http.HttpErrorHandler,
+      contextComponents: JavaContextComponents
+  ) = {
+    this(config, new JavaHttpErrorHandlerAdapter(errorHandler))
+  }
+
+  private val hostMatchers: Seq[HostMatcher] = config.allowed.map(HostMatcher.apply)
+
+  override def apply(next: EssentialAction) = EssentialAction { req =>
+    if (!config.shouldProtect(req) || hostMatchers.exists(_(req.authority))) {
+      next(req)
+    } else {
+      logger.warn(s"Host not allowed: ${req.host}")(using SecurityMarkerContext)
+      Accumulator.done(
+        errorHandler.onClientError(
+          req.addAttr(HttpErrorHandler.Attrs.HttpErrorInfo, HttpErrorInfo("allowed-hosts-filter")),
+          Status.BAD_REQUEST,
+          s"Host not allowed: ${req.host}"
+        )
+      )
+    }
+  }
+}
+
+/**
+ * A utility class for matching a host header with a pattern
+ */
+private[hosts] case class HostMatcher(pattern: String) {
+  private val parsedPattern: Option[(Boolean, String, Option[AuthorityPort])] = {
+    val trimmed = pattern.trim
+    RequestAuthority
+      .parse(trimmed)
+      .toOption
+      .map(authority => (trimmed.startsWith("."), normalizedHost(authority), authority.port))
+  }
+
+  def apply(authority: Option[RequestAuthority]): Boolean = {
+    val (headerHost, headerPort) =
+      authority.fold("" -> Option.empty[AuthorityPort])(value => normalizedHost(value) -> value.port)
+
+    parsedPattern.exists {
+      case (isSuffix, hostPattern, portPattern) =>
+        val hostMatches = if (isSuffix) s".$headerHost".endsWith(hostPattern) else headerHost == hostPattern
+        val portMatches = portPattern.forall(headerPort.contains)
+        hostMatches && portMatches
+    }
+  }
+
+  private def normalizedHost(authority: RequestAuthority): String = authority.host.render.stripSuffix(".")
+}
+
+case class AllowedHostsConfig(allowed: Seq[String], shouldProtect: RequestHeader => Boolean = _ => true) {
+  import scala.jdk.CollectionConverters._
+  import scala.jdk.FunctionConverters._
+
+  import play.mvc.Http.{ RequestHeader => JRequestHeader }
+
+  def withHostPatterns(hosts: java.util.List[String]): AllowedHostsConfig                                = copy(allowed = hosts.asScala.toSeq)
+  def withShouldProtect(shouldProtect: java.util.function.Predicate[JRequestHeader]): AllowedHostsConfig =
+    copy(shouldProtect = shouldProtect.asScala.compose(_.asJava))
+}
+
+object AllowedHostsConfig {
+
+  /**
+   * Parses out the AllowedHostsConfig from play.api.Configuration (usually this means application.conf).
+   */
+  def fromConfiguration(conf: Configuration): AllowedHostsConfig = {
+    val whiteListRouteModifiers = conf.get[Seq[String]]("play.filters.hosts.routeModifiers.whiteList")
+    val blackListRouteModifiers = conf.get[Seq[String]]("play.filters.hosts.routeModifiers.blackList")
+
+    @inline def shouldProtectViaRouteModifiers(rh: RequestHeader): Boolean = {
+      import play.api.routing.Router.RequestImplicits._
+      if (whiteListRouteModifiers.isEmpty)
+        blackListRouteModifiers.isEmpty || blackListRouteModifiers.exists(rh.hasRouteModifier)
+      else
+        !whiteListRouteModifiers.exists(rh.hasRouteModifier)
+    }
+
+    AllowedHostsConfig(
+      allowed = conf.get[Seq[String]]("play.filters.hosts.allowed"),
+      shouldProtect = shouldProtectViaRouteModifiers
+    )
+  }
+}
+
+@Singleton
+class AllowedHostsConfigProvider @Inject() (configuration: Configuration) extends Provider[AllowedHostsConfig] {
+  lazy val get = AllowedHostsConfig.fromConfiguration(configuration)
+}
+
+class AllowedHostsModule
+    extends SimpleModule(
+      bind[AllowedHostsConfig].toProvider[AllowedHostsConfigProvider],
+      bind[AllowedHostsFilter].toSelf
+    )
+
+trait AllowedHostsComponents {
+  def configuration: Configuration
+  def httpErrorHandler: HttpErrorHandler
+
+  lazy val allowedHostsConfig: AllowedHostsConfig = AllowedHostsConfig.fromConfiguration(configuration)
+  lazy val allowedHostsFilter: AllowedHostsFilter = AllowedHostsFilter(allowedHostsConfig, httpErrorHandler)
+}

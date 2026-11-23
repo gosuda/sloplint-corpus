@@ -1,0 +1,286 @@
+// GENERATED CODE - DO NOT MODIFY BY HAND
+
+// ignore_for_file: non_constant_identifier_names, require_trailing_commas
+
+part of 'detail.dart';
+
+// **************************************************************************
+// RiverpodGenerator
+// **************************************************************************
+
+// GENERATED CODE - DO NOT MODIFY BY HAND
+// ignore_for_file: type=lint, type=warning
+
+@ProviderFor(fetchPackageDetails)
+final fetchPackageDetailsProvider = FetchPackageDetailsFamily._();
+
+final class FetchPackageDetailsProvider
+    extends $FunctionalProvider<AsyncValue<Package>, Package, FutureOr<Package>>
+    with $FutureModifier<Package>, $FutureProvider<Package> {
+  FetchPackageDetailsProvider._({
+    required FetchPackageDetailsFamily super.from,
+    required String super.argument,
+  }) : super(
+         retry: null,
+         name: r'fetchPackageDetailsProvider',
+         isAutoDispose: true,
+         dependencies: null,
+         $allTransitiveDependencies: null,
+       );
+
+  @override
+  String debugGetCreateSourceHash() => _$fetchPackageDetailsHash();
+
+  @override
+  String toString() {
+    return r'fetchPackageDetailsProvider'
+        ''
+        '($argument)';
+  }
+
+  @$internal
+  @override
+  $FutureProviderElement<Package> $createElement($ProviderPointer pointer) =>
+      $FutureProviderElement(pointer);
+
+  @override
+  FutureOr<Package> create(Ref ref) {
+    final argument = this.argument as String;
+    return fetchPackageDetails(ref, packageName: argument);
+  }
+
+  @override
+  bool operator ==(Object other) {
+    return other is FetchPackageDetailsProvider && other.argument == argument;
+  }
+
+  @override
+  int get hashCode {
+    return argument.hashCode;
+  }
+}
+
+String _$fetchPackageDetailsHash() =>
+    r'5a9efadea302d6127f629d240bf469dec4c51d69';
+
+final class FetchPackageDetailsFamily extends $Family
+    with $FunctionalFamilyOverride<FutureOr<Package>, String> {
+  FetchPackageDetailsFamily._()
+    : super(
+        retry: null,
+        name: r'fetchPackageDetailsProvider',
+        dependencies: null,
+        $allTransitiveDependencies: null,
+        isAutoDispose: true,
+      );
+
+  FetchPackageDetailsProvider call({required String packageName}) =>
+      FetchPackageDetailsProvider._(argument: packageName, from: this);
+
+  @override
+  String toString() => r'fetchPackageDetailsProvider';
+}
+
+@ProviderFor(likedPackages)
+final likedPackagesProvider = LikedPackagesProvider._();
+
+final class LikedPackagesProvider
+    extends
+        $FunctionalProvider<
+          AsyncValue<List<String>>,
+          List<String>,
+          FutureOr<List<String>>
+        >
+    with $FutureModifier<List<String>>, $FutureProvider<List<String>> {
+  LikedPackagesProvider._()
+    : super(
+        from: null,
+        argument: null,
+        retry: null,
+        name: r'likedPackagesProvider',
+        isAutoDispose: true,
+        dependencies: null,
+        $allTransitiveDependencies: null,
+      );
+
+  @override
+  String debugGetCreateSourceHash() => _$likedPackagesHash();
+
+  @$internal
+  @override
+  $FutureProviderElement<List<String>> $createElement(
+    $ProviderPointer pointer,
+  ) => $FutureProviderElement(pointer);
+
+  @override
+  FutureOr<List<String>> create(Ref ref) {
+    return likedPackages(ref);
+  }
+}
+
+String _$likedPackagesHash() => r'25a2bfafd29a094d3fbc81cee275a54e28cd2ce2';
+
+@ProviderFor(pubRepository)
+final pubRepositoryProvider = PubRepositoryProvider._();
+
+final class PubRepositoryProvider
+    extends $FunctionalProvider<PubRepository, PubRepository, PubRepository>
+    with $Provider<PubRepository> {
+  PubRepositoryProvider._()
+    : super(
+        from: null,
+        argument: null,
+        retry: null,
+        name: r'pubRepositoryProvider',
+        isAutoDispose: true,
+        dependencies: null,
+        $allTransitiveDependencies: null,
+      );
+
+  @override
+  String debugGetCreateSourceHash() => _$pubRepositoryHash();
+
+  @$internal
+  @override
+  $ProviderElement<PubRepository> $createElement($ProviderPointer pointer) =>
+      $ProviderElement(pointer);
+
+  @override
+  PubRepository create(Ref ref) {
+    return pubRepository(ref);
+  }
+
+  /// {@macro riverpod.override_with_value}
+  Override overrideWithValue(PubRepository value) {
+    return $ProviderOverride(
+      origin: this,
+      providerOverride: $SyncValueProvider<PubRepository>(value),
+    );
+  }
+}
+
+String _$pubRepositoryHash() => r'fd358feb202d2c34ad507ebf0a40bddbebc8ea98';
+
+/// A provider that fetches the likes count, popularity score and pub points
+/// for a given package.
+///
+/// It also exposes utilities to like/unlike a package, assuming the user
+/// is logged-in.
+
+@ProviderFor(PackageMetrics)
+final packageMetricsProvider = PackageMetricsFamily._();
+
+/// A provider that fetches the likes count, popularity score and pub points
+/// for a given package.
+///
+/// It also exposes utilities to like/unlike a package, assuming the user
+/// is logged-in.
+final class PackageMetricsProvider
+    extends $AsyncNotifierProvider<PackageMetrics, PackageMetricsScore> {
+  /// A provider that fetches the likes count, popularity score and pub points
+  /// for a given package.
+  ///
+  /// It also exposes utilities to like/unlike a package, assuming the user
+  /// is logged-in.
+  PackageMetricsProvider._({
+    required PackageMetricsFamily super.from,
+    required String super.argument,
+  }) : super(
+         retry: null,
+         name: r'packageMetricsProvider',
+         isAutoDispose: true,
+         dependencies: null,
+         $allTransitiveDependencies: null,
+       );
+
+  @override
+  String debugGetCreateSourceHash() => _$packageMetricsHash();
+
+  @override
+  String toString() {
+    return r'packageMetricsProvider'
+        ''
+        '($argument)';
+  }
+
+  @$internal
+  @override
+  PackageMetrics create() => PackageMetrics();
+
+  @override
+  bool operator ==(Object other) {
+    return other is PackageMetricsProvider && other.argument == argument;
+  }
+
+  @override
+  int get hashCode {
+    return argument.hashCode;
+  }
+}
+
+String _$packageMetricsHash() => r'67cd25e50357e6e970d432c1d255085a23b856ac';
+
+/// A provider that fetches the likes count, popularity score and pub points
+/// for a given package.
+///
+/// It also exposes utilities to like/unlike a package, assuming the user
+/// is logged-in.
+
+final class PackageMetricsFamily extends $Family
+    with
+        $ClassFamilyOverride<
+          PackageMetrics,
+          AsyncValue<PackageMetricsScore>,
+          PackageMetricsScore,
+          FutureOr<PackageMetricsScore>,
+          String
+        > {
+  PackageMetricsFamily._()
+    : super(
+        retry: null,
+        name: r'packageMetricsProvider',
+        dependencies: null,
+        $allTransitiveDependencies: null,
+        isAutoDispose: true,
+      );
+
+  /// A provider that fetches the likes count, popularity score and pub points
+  /// for a given package.
+  ///
+  /// It also exposes utilities to like/unlike a package, assuming the user
+  /// is logged-in.
+
+  PackageMetricsProvider call({required String packageName}) =>
+      PackageMetricsProvider._(argument: packageName, from: this);
+
+  @override
+  String toString() => r'packageMetricsProvider';
+}
+
+/// A provider that fetches the likes count, popularity score and pub points
+/// for a given package.
+///
+/// It also exposes utilities to like/unlike a package, assuming the user
+/// is logged-in.
+
+abstract class _$PackageMetrics extends $AsyncNotifier<PackageMetricsScore> {
+  late final _$args = ref.$arg as String;
+  String get packageName => _$args;
+
+  FutureOr<PackageMetricsScore> build({required String packageName});
+  @$mustCallSuper
+  @override
+  WhenComplete runBuild() {
+    final ref =
+        this.ref as $Ref<AsyncValue<PackageMetricsScore>, PackageMetricsScore>;
+    final element =
+        ref.element
+            as $ClassProviderElement<
+              AnyNotifier<AsyncValue<PackageMetricsScore>, PackageMetricsScore>,
+              AsyncValue<PackageMetricsScore>,
+              Object?,
+              Object?
+            >;
+    return element.handleCreate(ref, () => build(packageName: _$args));
+  }
+}

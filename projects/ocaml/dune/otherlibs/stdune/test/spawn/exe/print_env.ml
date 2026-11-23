@@ -1,0 +1,55 @@
+let write_file fn s =
+  let oc = open_out fn in
+  output_string oc s;
+  close_out oc
+;;
+
+let pdeathsig_child ready_file marker_file =
+  Sys.set_signal
+    Sys.sigusr1
+    (Sys.Signal_handle
+       (fun _ ->
+         write_file marker_file "got signal\n";
+         exit 0));
+  write_file ready_file "ready\n";
+  while true do
+    ignore (Unix.pause ())
+  done
+;;
+
+let pdeathsig_default_child ready_file marker_file =
+  Sys.set_signal Sys.sigterm Sys.Signal_ignore;
+  let parent = Unix.getppid () in
+  write_file ready_file "ready\n";
+  while Unix.getppid () = parent do
+    Unix.sleepf 0.01
+  done;
+  write_file marker_file "survived\n"
+;;
+
+let () =
+  match Array.to_list Sys.argv with
+  | _ :: "pdeathsig-child" :: ready_file :: marker_file :: _ ->
+    pdeathsig_child ready_file marker_file
+  | _ :: "pdeathsig-default-child" :: ready_file :: marker_file :: _ ->
+    pdeathsig_default_child ready_file marker_file
+  | argv0 :: "print-args" :: args -> List.iter print_endline (argv0 :: args)
+  | _ :: "nice-exit-code" :: adjustment :: _ ->
+    (* Observe niceness only after the parent has returned from spawning. *)
+    ignore (input_char stdin);
+    exit (20 + Unix.nice (int_of_string adjustment))
+  | _ ->
+    (* On Windows, Sys.getenv in OCaml 5.5.1 treats empty values as missing.
+       Inspect the environment block instead to test their propagation. *)
+    let foo =
+      Unix.environment ()
+      |> Array.to_list
+      |> List.find_map (fun binding ->
+        if String.starts_with ~prefix:"FOO=" binding
+        then Some (String.sub binding 4 (String.length binding - 4))
+        else None)
+    in
+    (match foo with
+     | None -> print_endline "None"
+     | Some str -> Printf.printf "Some %S\n" str)
+;;

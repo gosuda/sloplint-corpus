@@ -1,0 +1,591 @@
+open Import
+open Fiber.O
+
+include struct
+  open Dune_rpc
+  module Initialize = Initialize
+  module Progress = Progress
+  module Procedures = Procedures
+  module Diagnostic = Diagnostic
+  module Job = Job
+end
+
+include struct
+  open Dune_engine
+  module Action_builder = Action_builder
+  module Build_loop = Build_loop
+  module Diff_promotion = Diff_promotion
+  module Action_plugin = Action_plugin
+  module Action_runner = Action_runner
+end
+
+include struct
+  open Decl
+  module Status = Status
+end
+
+module Session = Rpc.Server.Session
+module Handler = Rpc.Server.Handler
+module Workspace = Source.Workspace
+module Source = Rpc.Long_poll.Source
+module Csexp_rpc = Rpc.Csexp_rpc
+
+type build_request =
+  | Build of Dune_lang.Dep_conf.t list
+  | Runtest of string list
+
+type build =
+  | Disabled
+  | Enabled of
+      { build_loop : Build_loop.t
+      ; build_action : build_request -> unit Action_builder.t
+      }
+
+module Rule_plugin = struct
+  type status =
+    | Starting
+    | Initialized
+    | Closed
+
+  type t =
+    { id : Dune_rpc.Id.t
+    ; mutable status : status
+    ; initialized : unit Session.t option Fiber.Ivar.t
+    }
+
+  let instances = Table.create (module Dune_rpc.Id) 16
+
+  let register ~id ~build ~exited =
+    let t = { id; status = Starting; initialized = Fiber.Ivar.create () } in
+    Dune_engine.Process.Build.register_rule_plugin
+      build
+      ~initialized:t.initialized
+      ~exited;
+    Table.add_exn instances id t;
+    t
+  ;;
+
+  let initialized t = Fiber.Ivar.read t.initialized
+
+  let close t =
+    let status = t.status in
+    t.status <- Closed;
+    Table.remove instances t.id;
+    let* () =
+      match status with
+      | Starting -> Fiber.Ivar.fill t.initialized None
+      | Initialized | Closed -> Fiber.return ()
+    in
+    initialized t
+    >>= function
+    | None -> Fiber.return ()
+    | Some session -> Session.close session
+  ;;
+
+  let on_upgrade session _menu =
+    match Session.initialize session |> Initialize.Request.id |> Table.find instances with
+    | None -> Fiber.return ()
+    | Some t ->
+      (match t.status with
+       | Initialized | Closed -> Session.close session
+       | Starting ->
+         t.status <- Initialized;
+         Fiber.Ivar.fill t.initialized (Some session))
+  ;;
+end
+
+module Clients = struct
+  type entry = { session : unit Session.Stage1.t }
+  type t = entry Session.Id.Map.t
+
+  let empty = Session.Id.Map.empty
+
+  let add_session t (session : _ Session.Stage1.t) =
+    let id = Session.Stage1.id session in
+    let result = { session } in
+    Session.Id.Map.add_exn t id result
+  ;;
+
+  let remove_session t (session : _ Session.Stage1.t) =
+    Session.Stage1.id session |> Session.Id.Map.remove t
+  ;;
+
+  let to_list = Session.Id.Map.to_list
+  let to_list_map = Session.Id.Map.to_list_map
+
+  let repr =
+    Session.Stage1.to_dyn Dyn.unit
+    |> Repr.abstract
+    |> Repr.list
+    |> Repr.view ~to_:(fun t ->
+      Session.Id.Map.values t |> List.map ~f:(fun { session } -> session))
+  ;;
+end
+
+type server =
+  { lifecycle : Rpc.Server.Lifecycle.t option
+  ; action_runner : Action_runner.t option
+  ; watch_mode : Watch_mode_config.t
+  ; mutable clients : Clients.t
+  }
+
+let repr =
+  Repr.record "rpc" [ Repr.field "connections" Clients.repr ~get:(fun t -> t.clients) ]
+;;
+
+let to_dyn = Repr.to_dyn repr
+let current : server option ref = ref None
+
+type t =
+  { server : server
+  ; build : build
+  }
+
+let () =
+  Debug.register ~name:"rpc" (fun () ->
+    match !current with
+    | None -> Dyn.Option None
+    | Some server -> to_dyn server)
+;;
+
+let stop (t : t) =
+  Fiber.fork_and_join_unit
+    (fun () ->
+       match t.server.action_runner with
+       | None -> Fiber.return ()
+       | Some runner -> Action_runner.stop runner)
+    (fun () ->
+       match t.server.lifecycle with
+       | None -> Fiber.return ()
+       | Some lifecycle -> Rpc.Server.Lifecycle.stop lifecycle)
+;;
+
+let current_errors () =
+  Fiber.Svar.read Build_system.errors
+  |> Build_system_error.Set.current
+  |> Build_system_error.Id.Map.values
+;;
+
+let diff_map_entry ~on_add ~on_remove last now =
+  match last, now with
+  | Some last, None -> Some (on_remove last)
+  | None, Some now -> Some (on_add now)
+  | Some _, Some _ | None, None -> None
+;;
+
+let submit_build_request t session request_id kind =
+  match t.build with
+  | Disabled ->
+    let error =
+      Dune_rpc.Response.Error.create
+        ~kind:Invalid_request
+        ~message:"Build requests require a watch-mode server."
+        ()
+    in
+    raise (Dune_rpc.Response.Error.E error)
+  | Enabled { build_loop; build_action } ->
+    Build_loop.submit_rpc_request
+      build_loop
+      ~session_id:(Session.id session)
+      ~request_id
+      ~build:(build_action kind)
+;;
+
+let cancel_build_requests_for_session t session =
+  match t.build with
+  | Disabled -> Fiber.return ()
+  | Enabled { build_loop; _ } ->
+    Build_loop.cancel_rpc_requests_by_session
+      build_loop
+      ~session_id:(Session.Stage1.id session)
+;;
+
+let cancel_all_build_requests t =
+  match t.build with
+  | Disabled -> Fiber.return ()
+  | Enabled { build_loop; _ } -> Build_loop.cancel_all_rpc_requests build_loop
+;;
+
+let handler (t : t Fdecl.t) : unit Handler.t =
+  let on_init session (_ : Initialize.Request.t) =
+    let t = Fdecl.get t in
+    t.server.clients <- Clients.add_session t.server.clients session;
+    Fiber.return ()
+  in
+  let on_terminate session =
+    let t = Fdecl.get t in
+    t.server.clients <- Clients.remove_session t.server.clients session;
+    cancel_build_requests_for_session t session
+  in
+  let rpc =
+    Handler.create
+      ~on_terminate
+      ~on_init
+      ~on_upgrade:Rule_plugin.on_upgrade
+      ~version:Dune_rpc.Version.latest
+      ()
+  in
+  let () =
+    let module Error = Build_system_error in
+    let diff ~last ~(now : Error.Set.t) =
+      match last with
+      | None ->
+        Error.Set.current now
+        |> Error.Id.Map.values
+        |> List.map ~f:(fun error ->
+          Diagnostics.diagnostic_event_of_error_event (Add error))
+      | Some prev ->
+        Error.Id.Map.merge
+          (Error.Set.current prev)
+          (Error.Set.current now)
+          ~f:(fun _ prev now ->
+            diff_map_entry
+              prev
+              now
+              ~on_add:(fun error ->
+                Diagnostics.diagnostic_event_of_error_event (Add error))
+              ~on_remove:(fun error ->
+                Diagnostics.diagnostic_event_of_error_event (Remove error)))
+        |> Error.Id.Map.values
+    in
+    Handler.implement_long_poll
+      rpc
+      Procedures.Poll.diagnostic
+      (Source.Svar Build_system.errors)
+      ~equal:Error.Set.equal
+      ~diff
+  in
+  let () =
+    let start_job { Running_jobs.pid; description; started_at; id } =
+      let id = Running_jobs.Id.to_int id |> Job.Id.create in
+      let pid = Pid.to_int pid in
+      let started_at = Time.to_secs started_at in
+      Job.Event.Start { Job.started_at; id; pid; description }
+    in
+    let stop_job id = Job.Event.Stop (Job.Id.create (Running_jobs.Id.to_int id)) in
+    let stop_running_job ({ Running_jobs.id; _ } : Running_jobs.job) = stop_job id in
+    let diff ~(last : Running_jobs.t option) ~(now : Running_jobs.t) =
+      match last with
+      | None ->
+        Running_jobs.current now |> Running_jobs.Id.Map.values |> List.map ~f:start_job
+      | Some last ->
+        (match Running_jobs.one_event_diff ~last ~now with
+         | Some event ->
+           [ (match event with
+              | Start job -> start_job job
+              | Stop id -> stop_job id)
+           ]
+         | None ->
+           Running_jobs.Id.Map.merge
+             (Running_jobs.current last)
+             (Running_jobs.current now)
+             ~f:(fun _ last now ->
+               diff_map_entry last now ~on_add:start_job ~on_remove:stop_running_job)
+           |> Running_jobs.Id.Map.values)
+    in
+    Handler.implement_long_poll
+      rpc
+      Procedures.Poll.running_jobs
+      (Source.Svar Running_jobs.jobs)
+      ~equal:Running_jobs.equal
+      ~diff
+  in
+  let () =
+    let diff
+          ~last:_
+          ~now:
+            ( (now : Build_system.State.t)
+            , running_jobs
+            , goals
+            , run
+            , started_at
+            , action_duration )
+      =
+      match now with
+      | Initializing -> Progress.Waiting
+      | Restarting_current_build -> Interrupted
+      | Build_succeeded__now_waiting_for_changes -> Success
+      | Build_failed__now_waiting_for_changes -> Failed
+      | Building now ->
+        In_progress
+          { complete = now.number_of_rules_validated
+          ; remaining = Build_system.Progress.number_of_rules_in_progress now
+          ; failed = now.number_of_rules_failed
+          ; running_jobs
+          ; goals
+          ; run
+          ; started_at
+          ; action_duration
+          }
+    in
+    let get () =
+      let jobs =
+        Fiber.Svar.read Running_jobs.jobs
+        |> Running_jobs.current
+        |> Running_jobs.Id.Map.cardinal
+      in
+      let goals, run, started_at =
+        match (Fdecl.get t).build with
+        | Disabled -> 0, None, None
+        | Enabled { build_loop; _ } ->
+          ( Build_loop.goals_count build_loop
+          , (match Build_loop.current_run_id build_loop with
+             | Some (Dune_engine.Run_id.Watch run) -> Some run
+             | Some Batch | None -> None)
+          , Option.map (Build_loop.current_build_started_at build_loop) ~f:Time.to_secs )
+      in
+      let action_duration = Time.Span.to_secs (Metrics.Build.action_duration ()) in
+      !Build_system.state, jobs, goals, run, started_at, action_duration
+    in
+    let equal
+          (state, jobs, goals, run, started_at, action_duration)
+          (state', jobs', goals', run', started_at', action_duration')
+      =
+      Build_system.State.equal state state'
+      && Int.equal jobs jobs'
+      && Int.equal goals goals'
+      && Option.equal Int.equal run run'
+      && Option.equal Float.equal started_at started_at'
+      && Float.equal action_duration action_duration'
+    in
+    Handler.implement_long_poll
+      rpc
+      Procedures.Poll.progress
+      (Source.Computed { get; poll_every = Time.Span.of_secs 0.2 })
+      ~equal
+      ~diff
+  in
+  let () =
+    Handler.declare_notification rpc Procedures.Server_side.abort;
+    Handler.declare_notification rpc Procedures.Server_side.log
+  in
+  let () = Handler.implement_request rpc Procedures.Public.ping (fun _ -> Fiber.return) in
+  let implement_build_request decl ~f =
+    let handler session request_id input =
+      let+ outcome = submit_build_request (Fdecl.get t) session request_id (f input) in
+      match outcome with
+      | Success -> Dune_rpc.Build_outcome_with_diagnostics.Success
+      | Failure ->
+        let diagnostics =
+          current_errors ()
+          |> List.map ~f:(fun error ->
+            match Build_system_error.description error with
+            | `Exn exn ->
+              Dune_rpc.Compound_user_error.make
+                ~main:(Dune_util.Report_error.user_message exn)
+                ~related:[]
+            | `Diagnostic compound_user_error -> compound_user_error)
+        in
+        Dune_rpc.Build_outcome_with_diagnostics.Failure diagnostics
+    in
+    Handler.implement_request_with_id rpc decl handler
+  in
+  let () =
+    implement_build_request Decl.build ~f:(fun targets ->
+      let targets = List.map targets ~f:Dune_rules_rpc.parse_build_arg in
+      Build targets)
+  in
+  let () =
+    implement_build_request Procedures.Public.runtest ~f:(fun paths -> Runtest paths)
+  in
+  let () =
+    let f session request_id dir =
+      let dir = For_handlers.source_path_of_string dir in
+      let alias =
+        Path.Source.relative dir "fmt"
+        |> Path.Source.to_string
+        |> Dune_lang.String_with_vars.make_text Loc.none
+      in
+      submit_build_request
+        (Fdecl.get t)
+        session
+        request_id
+        (Build [ Dune_lang.Dep_conf.Alias_rec alias ])
+      >>| function
+      (* A 'successful' formatting means there is nothing to promote. *)
+      | Success -> ()
+      | Failure ->
+        (match
+           Diff_promotion.promote_files_registered_in_last_run
+             ~matching:Exact
+             Dune_rpc.Files_to_promote.All
+         with
+         | [] -> ()
+         | (_non_empty : Path.Source.t list) ->
+           Code_error.raise
+             "promote_files_registered_in_last_run All should always return an empty list"
+             [])
+    in
+    Handler.implement_request_with_id rpc Procedures.Public.format f
+  in
+  let () =
+    let f _ () =
+      let t = Fdecl.get t in
+      match t.server.watch_mode with
+      | No -> Fiber.return `Not_in_watch_mode
+      | Yes _ ->
+        let+ () =
+          match t.build with
+          | Disabled -> Scheduler.flush_file_watcher ()
+          | Enabled { build_loop; _ } -> Build_loop.flush_file_watcher build_loop
+        in
+        `Ok
+    in
+    Handler.implement_request rpc Procedures.Public.flush_file_watcher f
+  in
+  let () =
+    let f session request_id () =
+      let t = Fdecl.get t in
+      let open Decl.Queue_overflow in
+      match t.server.watch_mode, t.build with
+      | No, _ | Yes _, Disabled -> Fiber.return Not_in_watch_mode
+      | Yes _, Enabled { build_loop; _ } ->
+        let* () = Build_loop.simulate_file_watcher_queue_overflow build_loop in
+        let+ outcome = submit_build_request t session request_id (Build []) in
+        (match outcome with
+         | Success -> Ok
+         | Failure -> Build_failed)
+    in
+    Handler.implement_request_with_id rpc Decl.simulate_file_watcher_queue_overflow f
+  in
+  let () =
+    let shutdown _ () =
+      let t = Fdecl.get t in
+      let terminate_sessions () =
+        Fiber.fork_and_join_unit
+          (fun () -> cancel_all_build_requests t)
+          (fun () ->
+             Clients.to_list t.server.clients
+             |> Fiber.parallel_iter ~f:(fun (_, (entry : Clients.entry)) ->
+               Session.Stage1.close entry.session))
+      in
+      let shutdown () =
+        let* () = stop t in
+        Scheduler.shutdown `Ok;
+        Fiber.return ()
+      in
+      Fiber.fork_and_join_unit terminate_sessions shutdown
+    in
+    Handler.implement_notification rpc Procedures.Public.shutdown shutdown
+  in
+  let () =
+    let f _ () =
+      let t = Fdecl.get t in
+      let clients =
+        Clients.to_list_map t.server.clients ~f:(fun _id (entry : Clients.entry) ->
+          ( Initialize.Request.id (Session.Stage1.initialize entry.session)
+          , match Session.Stage1.menu entry.session with
+            | None -> Status.Menu.Uninitialized
+            | Some menu -> Menu (Dune_rpc.Menu.to_list menu) ))
+      in
+      Fiber.return { Status.clients }
+    in
+    Handler.implement_request rpc Decl.status f
+  in
+  let () =
+    let f _ () =
+      let+ workspace = Memo.run (Workspace.workspace ()) in
+      Workspace.pkg_enabled workspace
+    in
+    Handler.implement_request rpc Decl.pkg_enabled f
+  in
+  let () =
+    let f _ () =
+      current_errors () |> List.map ~f:Diagnostics.diagnostic_of_error |> Fiber.return
+    in
+    Handler.implement_request rpc Procedures.Public.diagnostics f
+  in
+  let () =
+    let f _ { Dune_rpc.Promote_targets.files; matching } =
+      match Diff_promotion.promote_files_registered_in_last_run ~matching files with
+      | [] -> Fiber.return Dune_rpc.Build_outcome_with_diagnostics.Success
+      | missing ->
+        let warnings =
+          List.map missing ~f:(fun fn ->
+            Dune_rpc.Compound_user_error.make_with_severity
+              ~main:
+                (User_message.make
+                   [ Pp.paragraphf
+                       "Nothing to promote for %s."
+                       (Path.Source.to_string_maybe_quoted fn)
+                   ])
+              ~related:[]
+              ~severity:Dune_rpc.Diagnostic.Warning)
+        in
+        Fiber.return (Dune_rpc.Build_outcome_with_diagnostics.Failure warnings)
+    in
+    Handler.implement_request rpc Procedures.Public.promote_many f
+  in
+  let () =
+    let f _ path =
+      let files = For_handlers.source_path_of_string path in
+      let _ignored : Path.Source.t list =
+        Diff_promotion.promote_files_registered_in_last_run
+          ~matching:Exact
+          (These [ files ])
+      in
+      Fiber.return ()
+    in
+    Handler.implement_request rpc Procedures.Public.promote f
+  in
+  let () =
+    let f _ () = Fiber.return Path.Build.(to_string root) in
+    Handler.implement_request rpc Procedures.Public.build_dir f
+  in
+  Action_plugin.Server.implement_handler rpc;
+  Handler.declare_request rpc Dune_rpc.Rule_plugin.load_rules;
+  Dune_rules_rpc.register rpc;
+  rpc
+;;
+
+let create ~registry ~root ~build ~where ~action_runner ~required watch_mode =
+  Global_lock.lock_exn ();
+  let t = Fdecl.create Dyn.opaque in
+  let socket_file = Where.rpc_socket_file () in
+  Fpath.unlink_no_err (Path.Build.to_string socket_file);
+  let lifecycle =
+    try
+      let handler = Rpc.Server.make (handler t)
+      and server =
+        Path.mkdir_p (Path.build (Path.Build.parent_exn socket_file));
+        match Csexp_rpc.Server.create [ Where.to_socket where ] ~backlog:100 with
+        | Ok s ->
+          (match where with
+           | `Ip _ -> Io.write_file_exn (Path.build socket_file) (Where.to_string where)
+           | `Unix _ -> ());
+          at_exit (fun () -> Fpath.unlink_no_err (Path.Build.to_string socket_file));
+          s
+        | Error `Already_in_use ->
+          User_error.raise
+            [ Pp.textf
+                "Dune rpc is already running in this workspace. If this is not the case, \
+                 please delete %s"
+                (Path.Build.to_string_maybe_quoted (Where.rpc_socket_file ()))
+            ]
+      in
+      Some (Rpc.Server.Lifecycle.create ~handler ~root ~where ~registry ~server)
+    with
+    | Unix.Unix_error (error, syscall, _) when not required ->
+      Log.info
+        "RPC server unavailable"
+        [ "syscall", Dyn.string syscall; "error", Dyn.string (Unix.error_message error) ];
+      None
+  in
+  let server = { lifecycle; action_runner; watch_mode; clients = Clients.empty } in
+  let res = { server; build } in
+  current := Some server;
+  Fdecl.set t res;
+  res
+;;
+
+let run t =
+  Fiber.fork_and_join_unit
+    (fun () ->
+       match t.server.lifecycle with
+       | None -> Fiber.return ()
+       | Some lifecycle -> Rpc.Server.Lifecycle.run lifecycle)
+    (fun () ->
+       match t.server.action_runner with
+       | None -> Fiber.return ()
+       | Some runner -> Action_runner.run runner)
+;;

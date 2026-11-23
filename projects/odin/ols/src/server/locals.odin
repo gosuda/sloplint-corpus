@@ -1,0 +1,1405 @@
+package server
+
+import "core:log"
+import "core:odin/ast"
+
+import "src:spall"
+
+LocalFlag :: enum {
+	Mutable, // or constant
+	Variable, // or type
+	PolyType,
+}
+
+DocumentLocal :: struct {
+	lhs:             ^ast.Expr,
+	rhs:             ^ast.Expr,
+	type_expr:       ^ast.Expr,
+	value_expr:      ^ast.Expr,
+	initializer:     ^ast.Expr, // Keeps the original expression for Objc_Block hover and handler generation after rhs has been reduced to a type.
+	offset:          int,
+	resolved_global: bool, //Some locals have already been resolved and are now in global space
+	local_global:    bool, //Some locals act like globals, i.e. functions defined inside functions.
+	pkg:             string,
+	flags:           bit_set[LocalFlag],
+	parameter:       bool,
+	docs:            ^ast.Comment_Group,
+	comment:         ^ast.Comment_Group,
+}
+
+LocalGroup :: map[string][dynamic]DocumentLocal
+
+get_locals :: proc(ast_context: ^AstContext, position_context: ^DocumentPositionContext) {
+
+	spall.trace(#procedure, ast_context.fullpath)
+
+	if position_context.function != nil {
+		get_function_locals(ast_context.file, position_context.function, ast_context, position_context)
+	}
+	if position_context.enum_type != nil {
+		get_locals_enum_fields(position_context.enum_type, ast_context, position_context)
+	}
+	// TODO: add support and fix up the way poly types are handled
+	// if position_context.struct_type != nil {
+	// 	get_locals_poly(ast_context.file, position_context.struct_type.poly_params, ast_context)
+	// }
+	// if position_context.union_type != nil {
+	// 	get_locals_poly(ast_context.file, position_context.union_type.poly_params, ast_context)
+	// }
+}
+
+store_local :: proc(
+	ast_context: ^AstContext,
+	lhs: ^ast.Expr,
+	rhs: ^ast.Expr,
+	offset: int,
+	name: string,
+	local_global: bool,
+	resolved_global: bool,
+	flags: bit_set[LocalFlag],
+	pkg: string,
+	parameter: bool,
+	type_expr: ^ast.Expr = nil,
+	value_expr: ^ast.Expr = nil,
+	docs: ^ast.Comment_Group = nil,
+	comment: ^ast.Comment_Group = nil,
+	initializer: ^ast.Expr = nil,
+) {
+	local_group := get_local_group(ast_context)
+	local_stack := &local_group[name]
+
+	if local_stack == nil {
+		local_group[name] = make([dynamic]DocumentLocal, ast_context.allocator)
+		local_stack = &local_group[name]
+	}
+
+	append(
+		local_stack,
+		DocumentLocal {
+			lhs = lhs,
+			rhs = rhs,
+			type_expr = type_expr,
+			value_expr = value_expr,
+			initializer = initializer,
+			offset = offset,
+			resolved_global = resolved_global,
+			local_global = local_global,
+			pkg = pkg,
+			flags = flags,
+			parameter = parameter,
+			docs = docs,
+			comment = comment,
+		},
+	)
+}
+
+store_label :: proc(ast_context: ^AstContext, label: ^ast.Expr) {
+	if label == nil {
+		return
+	}
+
+	if ident, ok := label.derived.(^ast.Ident); ok {
+		ast_context.labels[ident.name] = ident
+	}
+}
+
+add_local_group :: proc(ast_context: ^AstContext) {
+	append(&ast_context.locals, make(LocalGroup, 100, ast_context.allocator))
+}
+
+pop_local_group :: proc(ast_context: ^AstContext) {
+	pop(&ast_context.locals)
+}
+
+get_local_group :: proc(ast_context: ^AstContext) -> ^LocalGroup {
+	if len(ast_context.locals) == 0 {
+		add_local_group(ast_context)
+	}
+	return &ast_context.locals[len(ast_context.locals) - 1]
+}
+
+get_local :: proc(ast_context: AstContext, ident: ast.Ident) -> (DocumentLocal, bool) {
+	#reverse for locals in ast_context.locals {
+		local_stack := locals[ident.name] or_continue
+
+		#reverse for local in local_stack {
+			// Ensure that if the identifier has a file, the local is also part of the same file
+			// and the context is in the correct package
+			correct_file := ident.pos.file == "" || local.lhs.pos.file == ident.pos.file
+			correct_package := ast_context.current_package == ast_context.document_package
+			if !correct_file || !correct_package {
+				continue
+			}
+
+			if local.local_global {
+				return local, true
+			}
+			if local.offset <= ident.pos.offset || local.lhs.pos.offset == ident.pos.offset {
+				// checking equal offsets is a hack to allow matching lhs ident in var decls
+				// because otherwise minimal offset begins after the decl
+				return local, true
+			}
+		}
+	}
+
+	return {}, false
+}
+
+get_local_offset :: proc(ast_context: ^AstContext, offset: int, name: string) -> int {
+	#reverse for locals in &ast_context.locals {
+		if local_stack, ok := locals[name]; ok {
+			#reverse for local, i in local_stack {
+				if local.offset <= offset || local.local_global {
+					if i < 0 {
+						return -1
+					} else {
+						return local.offset
+					}
+				}
+			}
+		}
+	}
+
+	return -1
+}
+
+GetGenericAssignmentFlag :: enum {
+	SameLhsRhsCount,
+}
+
+GetGenericAssignmentFlags :: bit_set[GetGenericAssignmentFlag]
+
+get_generic_assignment :: proc(
+	file: ast.File,
+	value: ^ast.Expr,
+	ast_context: ^AstContext,
+	results: ^[dynamic]^ast.Expr,
+	calls: ^map[int]struct{},
+	flags: GetGenericAssignmentFlags,
+	is_mutable: bool,
+) {
+	reset_ast_context(ast_context)
+
+	#partial switch v in value.derived {
+	case ^ast.Or_Return_Expr:
+		get_generic_assignment(file, v.expr, ast_context, results, calls, flags, is_mutable)
+	case ^ast.Or_Else_Expr:
+		get_generic_assignment(file, v.x, ast_context, results, calls, flags, is_mutable)
+	case ^ast.Or_Branch_Expr:
+		get_generic_assignment(file, v.expr, ast_context, results, calls, flags, is_mutable)
+	case ^ast.Call_Expr:
+
+		old_call := ast_context.call
+		ast_context.call = cast(^ast.Call_Expr)value
+		defer ast_context.call = old_call
+
+		// If we have a call expr followed immediately by another call expr, we want to return value
+		// of the second call. Eg a := foo()()
+		#partial switch _ in v.expr.derived {
+		case ^ast.Call_Expr:
+			symbol: Symbol
+
+			internal_resolve_type_expression(ast_context, v.expr, &symbol) or_break
+
+			value := symbol.value.(SymbolProcedureValue) or_break
+
+			if len(value.return_types) != 1 do break
+
+			#partial switch type in value.return_types[0].type.derived {
+			case ^ast.Proc_Type:
+				for return_item in type.results.list {
+					get_generic_assignment(file, return_item.type, ast_context, results, calls, flags, is_mutable)
+				}
+				return
+			case ^ast.Ident:
+				internal_resolve_type_expression(ast_context, type, &symbol) or_break
+				value := symbol.value.(SymbolProcedureValue) or_break
+				for return_item in value.return_types {
+					get_generic_assignment(file, return_item.type, ast_context, results, calls, flags, is_mutable)
+				}
+			}
+		case ^ast.Basic_Directive:
+			append(results, v)
+		}
+
+		//We have to resolve early and can't rely on lazy evalutation because it can have multiple returns.
+		if symbol, ok := resolve_type_expression(ast_context, v.expr); ok {
+			#partial switch symbol_value in symbol.value {
+			case SymbolProcedureValue:
+				if symbol.pkg == "$builtin" && !is_mutable {
+					append(results, value)
+				} else {
+					returns := get_proc_return_types(ast_context, symbol, v, is_mutable)
+					if len(returns) == 0 {
+						append(results, value)
+					} else {
+						for ret in returns {
+							calls[len(results)] = {}
+							append(results, ret)
+						}
+					}
+				}
+			case SymbolAggregateValue:
+				//In case we can't resolve the proc group, just save it anyway, so it won't cause any issues further down the line.
+				append(results, value)
+
+			case SymbolStructValue:
+				// Parametrized struct or type cast like My_Struct(123)
+				if symbol.type != .Function && symbol.type != .Type_Function && symbol.type != .Package {
+					append(results, value)
+				} else {
+					get_generic_assignment(file, v.expr, ast_context, results, calls, flags, is_mutable)
+				}
+			case SymbolUnionValue:
+				// Parametrized union or type cast like My_Union(123)
+				if symbol.type != .Function && symbol.type != .Type_Function && symbol.type != .Package {
+					append(results, value)
+				} else {
+					get_generic_assignment(file, v.expr, ast_context, results, calls, flags, is_mutable)
+				}
+			case SymbolBasicValue:
+				// Type alias like Bool :: bool; Bool(true)
+				if symbol.type != .Function && symbol.type != .Type_Function && symbol.type != .Package {
+					append(results, value)
+				} else {
+					get_generic_assignment(file, v.expr, ast_context, results, calls, flags, is_mutable)
+				}
+			case:
+				if ident, ok := v.expr.derived.(^ast.Ident); ok {
+					//TODO: Simple assumption that you are casting it the type.
+					type_ident := new_type(ast.Ident, ident.pos, ident.end, ast_context.allocator)
+					type_ident.name = ident.name
+					append(results, type_ident)
+				}
+			}
+		}
+	case ^ast.Comp_Lit:
+		if v.type != nil {
+			append(results, v.type)
+		}
+	case ^ast.Array_Type:
+		append(results, v)
+		if v.elem != nil {
+			append(results, v.elem)
+		}
+	case ^ast.Dynamic_Array_Type:
+		append(results, v)
+		if v.elem != nil {
+			append(results, v.elem)
+		}
+	case ^ast.Selector_Expr:
+		if v.expr != nil {
+			append(results, value)
+		}
+	case ^ast.Index_Expr:
+		append(results, v)
+		//In order to prevent having to actually resolve the expression, we make the assumption that we need to always add a bool node, if the lhs and rhs don't match.
+		if .SameLhsRhsCount not_in flags {
+			b := make_bool_ast(ast_context, v.expr.pos, v.expr.end)
+			append(results, b)
+		}
+	case ^ast.Type_Assertion:
+		if v.type != nil {
+			if unary, ok := v.type.derived.(^ast.Unary_Expr); ok && unary.op.kind == .Question {
+				append(results, cast(^ast.Expr)&v.node)
+			} else {
+				append(results, v.type)
+			}
+
+			b := make_bool_ast(ast_context, v.type.pos, v.type.end)
+
+			append(results, b)
+		}
+	case ^ast.Unary_Expr:
+		if v.op.kind == .Mul_Mul {
+			if ce, ok := expand_values(ast_context, v.expr, ast_context.allocator); ok {
+				if symbol, s_ok := resolve_type_expression(ast_context, ce.expr); s_ok {
+					if proc_val, p_ok := symbol.value.(SymbolProcedureValue); p_ok {
+						returns := get_proc_return_types(ast_context, symbol, ce, is_mutable)
+						if len(returns) == 0 {
+							append(results, cast(^ast.Expr)&ce.node)
+						} else {
+							for ret in returns {
+								calls[len(results)] = {}
+								append(results, ret)
+							}
+						}
+						break
+					}
+				}
+			}
+
+			append(results, value)
+			break
+		}
+		
+		append(results, value)
+
+		#partial switch n in v.expr.derived {
+		case ^ast.Type_Assertion:
+			b := make_bool_ast(ast_context, n.type.pos, n.type.end)
+			append(results, b)
+		case ^ast.Index_Expr:
+			b := make_bool_ast(ast_context, n.expr.pos, n.expr.end)
+			append(results, b)
+		}
+	case ^ast.Ternary_If_Expr:
+		get_generic_assignment(file, v.x, ast_context, results, calls, flags, is_mutable)
+	case ^ast.Ternary_When_Expr:
+		get_generic_assignment(file, v.x, ast_context, results, calls, flags, is_mutable)
+	case:
+		append(results, value)
+	}
+}
+
+get_locals_value_decl :: proc(file: ast.File, value_decl: ast.Value_Decl, ast_context: ^AstContext) {
+	if len(value_decl.names) <= 0 {
+		return
+	}
+
+	is_static := false
+	for attribute in value_decl.attributes {
+		for elem in attribute.elems {
+			if ident, _, ok := unwrap_attr_elem(elem); ok && ident.name == "static" {
+				is_static = true
+				break
+			}
+		}
+		if is_static {
+			break
+		}
+	}
+
+	//We have two stages of getting locals: local non mutable and mutables, since they are treated differently in scopes by Odin.
+	// Static variables are mutable, but remain visible to nested procedures.
+	if ast_context.non_mutable_only && value_decl.is_mutable && !is_static {
+		return
+	}
+
+	if value_decl.is_using {
+		if value_decl.type != nil {
+			get_locals_using(value_decl.type, ast_context)
+		} else {
+			for expr in value_decl.values {
+				get_locals_using(expr, ast_context)
+			}
+		}
+	}
+
+	if value_decl.type != nil {
+		for name, i in value_decl.names {
+			str := get_ast_node_string(value_decl.names[i], file.src)
+			flags: bit_set[LocalFlag]
+			if value_decl.is_mutable {
+				flags |= {.Mutable}
+			}
+			value_expr: ^ast.Expr
+			if len(value_decl.values) > i {
+				if is_variable_declaration(value_decl.values[i]) {
+					flags |= {.Variable}
+					value_expr = value_decl.values[i]
+				}
+			}
+			store_local(
+				ast_context,
+				name,
+				value_decl.type,
+				value_decl.end.offset,
+				str,
+				ast_context.non_mutable_only,
+				false,
+				flags,
+				"",
+				false,
+				value_decl.type,
+				value_expr,
+				value_decl.docs,
+				value_decl.comment,
+				len(value_decl.values) > i ? value_decl.values[i] : nil,
+			)
+		}
+		return
+	}
+
+	results := make([dynamic]^ast.Expr, context.temp_allocator)
+	calls := make(map[int]struct{}, 0, context.temp_allocator) //Have to track the calls, since they disallow use of variables afterwards
+	result_starts := make([dynamic]int, context.temp_allocator) // Track the start of each individual values so we can easily skip things like #optional_ok
+
+	flags: GetGenericAssignmentFlags
+
+	if len(value_decl.names) == len(value_decl.values) {
+		flags |= {.SameLhsRhsCount}
+	}
+
+	for value in value_decl.values {
+		append(&result_starts, len(results))
+		get_generic_assignment(file, value, ast_context, &results, &calls, flags, value_decl.is_mutable)
+	}
+
+	if len(results) == 0 {
+		for value in value_decl.values {
+			append(&results, value)
+		}
+	}
+
+	for name, i in value_decl.names {
+		str := get_ast_node_string(name, file.src)
+
+		result_i := min(len(results) - 1, i)
+		if .SameLhsRhsCount in flags && len(result_starts) > i {
+			result_i = min(len(results) - 1, result_starts[i])
+		}
+		expr := results[result_i]
+
+		flags: bit_set[LocalFlag]
+		value_expr: ^ast.Expr
+
+		if is_variable_declaration(expr) {
+			flags |= {.Variable}
+			if len(value_decl.values) > i {
+				value_expr = value_decl.values[i]
+			}
+		} else if len(value_decl.values) > i && is_variable_declaration(value_decl.values[i]) {
+			flags |= {.Variable}
+		}
+
+		if value_decl.is_mutable {
+			flags |= {.Mutable}
+		}
+
+		store_local(
+			ast_context,
+			name,
+			expr,
+			value_decl.end.offset,
+			str,
+			ast_context.non_mutable_only,
+			false, // calls[result_i] or_else false, // TODO: find a good way to handle this
+			flags,
+			get_package_from_node(expr^),
+			false,
+			value_decl.type,
+			value_expr,
+			value_decl.docs,
+			value_decl.comment,
+			len(value_decl.values) > i ? value_decl.values[i] : nil,
+		)
+	}
+}
+
+get_locals_enum_fields :: proc(enum_type: ^ast.Enum_Type, ast_context: ^AstContext, position_context: ^DocumentPositionContext) {
+	if enum_type == nil ||
+	   position_context.value_decl == nil ||
+	   len(position_context.value_decl.names) == 0 {
+		return
+	}
+
+	enum_name, ok := position_context.value_decl.names[0].derived.(^ast.Ident)
+	if !ok {
+		return
+	}
+	for field in enum_type.fields {
+		name := get_enum_field_name(field)
+		if name == nil {
+			continue
+		}
+
+		selector := new_type(ast.Selector_Expr, field.pos, field.end, ast_context.allocator)
+		selector.expr = enum_name
+		selector.field = name
+
+		store_local(
+			ast_context,
+			field,
+			selector,
+			field.pos.offset,
+			name.name,
+			false,
+			false,
+			{},
+			"",
+			false,
+		)
+	}
+}
+
+get_locals_stmt :: proc(
+	file: ast.File,
+	stmt: ^ast.Stmt,
+	ast_context: ^AstContext,
+	document_position: ^DocumentPositionContext,
+	save_assign := false,
+) {
+	reset_ast_context(ast_context)
+
+	set_ast_package_set_scoped(ast_context, ast_context.document_package)
+
+	if stmt == nil {
+		return
+	}
+
+	if stmt.pos.offset > document_position.position &&
+	   !position_in_node_or_label(stmt, document_position.position) {
+		return
+	}
+
+	#partial switch v in stmt.derived {
+	case ^ast.Value_Decl:
+		get_locals_value_decl(file, v^, ast_context)
+	case ^ast.Type_Switch_Stmt:
+		get_locals_type_switch_stmt(file, v, ast_context, document_position)
+	case ^ast.Switch_Stmt:
+		get_locals_switch_stmt(file, v, ast_context, document_position)
+	case ^ast.For_Stmt:
+		get_locals_for_stmt(file, v, ast_context, document_position)
+	case ^ast.Unroll_Range_Stmt:
+		get_locals_unroll_range_stmt(file, v, ast_context, document_position)
+	case ^ast.Range_Stmt:
+		get_locals_for_range_stmt(file, v, ast_context, document_position)
+	case ^ast.If_Stmt:
+		get_locals_if_stmt(file, v, ast_context, document_position)
+	case ^ast.Block_Stmt:
+		get_locals_block_stmt(file, v, ast_context, document_position)
+	case ^ast.Proc_Lit:
+		get_locals_stmt(file, v.body, ast_context, document_position)
+	case ^ast.Assign_Stmt:
+		if save_assign {
+			get_locals_assign_stmt(file, v^, ast_context)
+		}
+	case ^ast.Using_Stmt:
+		get_locals_using_stmt(v^, ast_context)
+	case ^ast.When_Stmt:
+		when_expr_map := make_when_expr_map()
+		register_when_consts_from_globals(&when_expr_map, ast_context.globals)
+		if stmt, ok := get_when_block_stmt(v, when_expr_map); ok {
+			get_locals_block_stmt(file, stmt, ast_context, document_position, true)
+		}
+	case ^ast.Case_Clause:
+		get_locals_case_clause(file, v, ast_context, document_position)
+	case ^ast.Defer_Stmt:
+		get_locals_stmt(file, v.stmt, ast_context, document_position)
+	case:
+	//log.debugf("default node local stmt %v", v);
+	}
+}
+
+get_locals_case_clause :: proc(
+	file: ast.File,
+	case_clause: ^ast.Case_Clause,
+	ast_context: ^AstContext,
+	document_position: ^DocumentPositionContext,
+) {
+	if !(case_clause.pos.offset <= document_position.position &&
+		   document_position.position <= case_clause.end.offset) {
+		return
+	}
+
+	for stmt in case_clause.body {
+		get_locals_stmt(file, stmt, ast_context, document_position)
+	}
+}
+
+get_locals_block_stmt :: proc(
+	file: ast.File,
+	block: ^ast.Block_Stmt,
+	ast_context: ^AstContext,
+	document_position: ^DocumentPositionContext,
+	skip_position_check := false,
+) {
+	/*
+	   We need to handle blocks for non mutable and mutable: non mutable has no order for their value declarations, except for nested blocks where they are hidden by scope
+	   For non_mutable_only we set the document_position.position to be the end of the function to get all the non-mutable locals, but that shouldn't apply to the nested block itself,
+	   but will for it's content.
+
+	   Therefore we use nested_position that is the exact token we are interested in.
+
+	   Example:
+	   my_proc :: proc() {
+			{
+				my_variable = get_value() <-- document_position.nested_position
+				get_value :: proc() --- This should not be hidden
+
+				{
+					get_value_2 :: proc() --- This will be hidden
+				}
+			}
+	   } <-- document_position.position
+	*/
+	if position_in_node_or_label(block, document_position.position) {
+		store_label(ast_context, block.label)
+	}
+
+	if !skip_position_check {
+		if ast_context.non_mutable_only {
+			if !(block.pos.offset <= document_position.nested_position &&
+				   document_position.nested_position <= block.end.offset) {
+				return
+			}
+		} else {
+			if !(block.pos.offset <= document_position.position && document_position.position <= block.end.offset) {
+				return
+			}
+		}
+	}
+
+
+	for stmt in block.stmts {
+		get_locals_stmt(file, stmt, ast_context, document_position)
+	}
+}
+
+get_locals_using :: proc(expr: ^ast.Expr, ast_context: ^AstContext) {
+	if symbol, expr, ok := unwrap_procedure_until_struct_bit_field_or_package(ast_context, expr); ok {
+		#partial switch v in symbol.value {
+		case SymbolPackageValue:
+			if ident, ok := expr.derived.(^ast.Ident); ok {
+				add_using(ast_context, ident.name, symbol.pkg)
+			}
+		case SymbolStructValue:
+			for name, i in v.names {
+				selector := new_type(ast.Selector_Expr, v.types[i].pos, v.types[i].end, ast_context.allocator)
+				selector.expr = expr
+				selector.field = new_type(ast.Ident, v.types[i].pos, v.types[i].end, ast_context.allocator)
+				selector.field.name = name
+				store_local(
+					ast_context,
+					expr,
+					selector,
+					0,
+					name,
+					false,
+					ast_context.non_mutable_only,
+					{.Mutable},
+					"",
+					false,
+				)
+			}
+		case SymbolBitFieldValue:
+			for name, i in v.names {
+				selector := new_type(ast.Selector_Expr, v.types[i].pos, v.types[i].end, ast_context.allocator)
+				selector.expr = expr
+				selector.field = new_type(ast.Ident, v.types[i].pos, v.types[i].end, ast_context.allocator)
+				selector.field.name = name
+				store_local(
+					ast_context,
+					expr,
+					selector,
+					0,
+					name,
+					false,
+					ast_context.non_mutable_only,
+					{.Mutable},
+					"",
+					false,
+				)
+			}
+		}
+	}
+}
+
+get_locals_using_stmt :: proc(stmt: ast.Using_Stmt, ast_context: ^AstContext) {
+	for u in stmt.list {
+		get_locals_using(u, ast_context)
+	}
+}
+
+get_locals_assign_stmt :: proc(file: ast.File, stmt: ast.Assign_Stmt, ast_context: ^AstContext) {
+	if stmt.lhs == nil || stmt.rhs == nil {
+		return
+	}
+
+	results := make([dynamic]^ast.Expr, context.temp_allocator)
+	calls := make(map[int]struct{}, 0, context.temp_allocator)
+
+	for rhs in stmt.rhs {
+		get_generic_assignment(file, rhs, ast_context, &results, &calls, {}, true)
+	}
+
+	if len(stmt.lhs) != len(results) {
+		return
+	}
+
+	for lhs, i in stmt.lhs {
+		if ident, ok := unwrap_ident(lhs); ok {
+			store_local(
+				ast_context,
+				ident,
+				results[i],
+				ident.pos.offset,
+				ident.name,
+				ast_context.non_mutable_only,
+				false,
+				{.Mutable},
+				"",
+				false,
+			)
+		}
+	}
+}
+
+get_locals_if_stmt :: proc(
+	file: ast.File,
+	stmt: ^ast.If_Stmt,
+	ast_context: ^AstContext,
+	document_position: ^DocumentPositionContext,
+) {
+	if position_in_node_or_label(stmt, document_position.position) {
+		store_label(ast_context, stmt.label)
+	}
+	if !(stmt.pos.offset <= document_position.position && document_position.position <= stmt.end.offset) {
+		return
+	}
+
+	get_locals_stmt(file, stmt.init, ast_context, document_position, false)
+	get_locals_stmt(file, stmt.body, ast_context, document_position)
+	get_locals_stmt(file, stmt.else_stmt, ast_context, document_position)
+}
+
+get_locals_for_range_stmt :: proc(
+	file: ast.File,
+	stmt: ^ast.Range_Stmt,
+	ast_context: ^AstContext,
+	document_position: ^DocumentPositionContext,
+) {
+	if position_in_node_or_label(stmt, document_position.position) {
+		store_label(ast_context, stmt.label)
+	}
+	if !(stmt.pos.offset <= document_position.position && document_position.position <= stmt.end.offset) {
+		return
+	}
+
+	if stmt.init != nil {
+		get_locals_stmt(file, stmt.init, ast_context, document_position)
+	}
+
+	get_locals_range_vals(file, stmt.vals, stmt.expr, stmt.body, ast_context, document_position)
+}
+
+get_locals_unroll_range_stmt :: proc(
+	file: ast.File,
+	stmt: ^ast.Unroll_Range_Stmt,
+	ast_context: ^AstContext,
+	document_position: ^DocumentPositionContext,
+) {
+	if position_in_node_or_label(stmt, document_position.position) {
+		store_label(ast_context, stmt.label)
+	}
+	if !(stmt.pos.offset <= document_position.position && document_position.position <= stmt.end.offset) {
+		return
+	}
+
+	vals: []^ast.Expr = {stmt.val0, stmt.val1} if stmt.val1 != nil else {stmt.val0}
+	get_locals_range_vals(file, vals, stmt.expr, stmt.body, ast_context, document_position)
+}
+
+get_locals_range_vals :: proc(
+	file: ast.File,
+	vals: []^ast.Expr,
+	expr: ^ast.Expr,
+	body: ^ast.Stmt,
+	ast_context: ^AstContext,
+	document_position: ^DocumentPositionContext,
+) {
+	results := make([dynamic]^ast.Expr, context.temp_allocator)
+
+	if expr == nil {
+		return
+	}
+
+	if binary, ok := expr.derived.(^ast.Binary_Expr); ok {
+		if binary.op.kind == .Range_Half || binary.op.kind == .Range_Full {
+			if len(vals) >= 1 {
+				if ident, ok := unwrap_ident(vals[0]); ok {
+					type_expr: ^ast.Expr = make_int_ast(ast_context, ident.pos, ident.end)
+					if range_symbol, ok := resolve_type_expression(ast_context, expr); ok {
+						if _, ok := range_symbol.value.(SymbolUntypedValue); !ok {
+							type_expr = expr
+						}
+					}
+					store_local(
+						ast_context,
+						ident,
+						type_expr,
+						ident.pos.offset,
+						ident.name,
+						ast_context.non_mutable_only,
+						false,
+						{.Mutable},
+						"",
+						false,
+					)
+				}
+			}
+		}
+	}
+
+	symbol, ok := resolve_type_expression(ast_context, expr)
+
+	if v, ok := symbol.value.(SymbolProcedureValue); ok {
+		if len(v.return_types) == 1 {
+			if v.return_types[0].type != nil {
+				symbol, ok = resolve_type_expression(ast_context, v.return_types[0].type)
+			} else if v.return_types[0].default_value != nil {
+				symbol, ok = resolve_type_expression(ast_context, v.return_types[0].default_value)
+			}
+		}
+	}
+
+	if ok {
+		#partial switch v in symbol.value {
+		case SymbolProcedureValue:
+			calls := make(map[int]struct{}, context.temp_allocator)
+			get_generic_assignment(file, expr, ast_context, &results, &calls, {}, false)
+			if len(results) > 0 {
+				for val, i in vals {
+					if ident, ok := unwrap_ident(val); ok {
+						result_i := min(len(results) - 1, i)
+						store_local(
+							ast_context,
+							ident,
+							results[result_i],
+							ident.pos.offset,
+							ident.name,
+							ast_context.non_mutable_only,
+							false,
+							{.Mutable},
+							get_package_from_node(results[result_i]^), // TODO: this may need to be used everywhere
+							false,
+						)
+					}
+				}
+			}
+		case SymbolUntypedValue:
+			if len(vals) == 1 {
+				if ident, ok := unwrap_ident(vals[0]); ok {
+					if v.type == .String {
+						store_local(
+							ast_context,
+							ident,
+							make_rune_ast(ast_context, ident.pos, ident.end),
+							ident.pos.offset,
+							ident.name,
+							ast_context.non_mutable_only,
+							false,
+							{.Mutable},
+							symbol.pkg,
+							false,
+						)
+					}
+				}
+			}
+		case SymbolBasicValue:
+			if len(vals) == 1 {
+				if ident, ok := unwrap_ident(vals[0]); ok {
+					if v.ident.name == "string" {
+						store_local(
+							ast_context,
+							ident,
+							make_rune_ast(ast_context, ident.pos, ident.end),
+							ident.pos.offset,
+							ident.name,
+							ast_context.non_mutable_only,
+							false,
+							{.Mutable},
+							symbol.pkg,
+							false,
+						)
+					}
+				}
+			}
+		case SymbolMapValue:
+			if len(vals) >= 1 {
+				if ident, ok := unwrap_ident(vals[0]); ok {
+					store_local(
+						ast_context,
+						ident,
+						v.key,
+						ident.pos.offset,
+						ident.name,
+						ast_context.non_mutable_only,
+						false,
+						{.Mutable},
+						symbol.pkg,
+						false,
+					)
+				}
+			}
+			if len(vals) >= 2 {
+				if ident, ok := unwrap_ident(vals[1]); ok {
+					value := v.value
+					if unary, ok := vals[1].derived.(^ast.Unary_Expr); ok {
+						value = make_pointer_ast(ast_context, v.value)
+					}
+					store_local(
+						ast_context,
+						ident,
+						value,
+						ident.pos.offset,
+						ident.name,
+						ast_context.non_mutable_only,
+						false,
+						{.Mutable},
+						symbol.pkg,
+						false,
+					)
+				}
+			}
+		case SymbolDynamicArrayValue:
+			if len(vals) >= 1 {
+				if ident, ok := unwrap_ident(vals[0]); ok {
+					store_local(
+						ast_context,
+						ident,
+						v.expr,
+						ident.pos.offset,
+						ident.name,
+						ast_context.non_mutable_only,
+						false,
+						{.Mutable},
+						symbol.pkg,
+						false,
+					)
+				}
+			}
+			if len(vals) >= 2 {
+				if ident, ok := unwrap_ident(vals[1]); ok {
+					store_local(
+						ast_context,
+						ident,
+						make_int_ast(ast_context, ident.pos, ident.end),
+						ident.pos.offset,
+						ident.name,
+						ast_context.non_mutable_only,
+						false,
+						{.Mutable},
+						symbol.pkg,
+						false,
+					)
+				}
+			}
+		case SymbolFixedArrayValue:
+			if len(vals) >= 1 {
+				if ident, ok := unwrap_ident(vals[0]); ok {
+					store_local(
+						ast_context,
+						ident,
+						v.expr,
+						ident.pos.offset,
+						ident.name,
+						ast_context.non_mutable_only,
+						false,
+						{.Mutable},
+						symbol.pkg,
+						false,
+					)
+				}
+			}
+
+			if len(vals) >= 2 {
+				if ident, ok := unwrap_ident(vals[1]); ok {
+					pkg := symbol.pkg
+					rhs: ^ast.Expr = make_int_ast(ast_context, ident.pos, ident.end)
+
+					//Look for enumarated arrays
+					if len_symbol, ok := resolve_type_expression(ast_context, v.len); ok {
+						if _, is_enum := len_symbol.value.(SymbolEnumValue); is_enum {
+							pkg = len_symbol.pkg
+							rhs = v.len
+						}
+					}
+					store_local(
+						ast_context,
+						ident,
+						rhs,
+						ident.pos.offset,
+						ident.name,
+						ast_context.non_mutable_only,
+						false,
+						{.Mutable},
+						pkg,
+						false,
+					)
+				}
+			}
+		case SymbolSliceValue:
+			if len(vals) >= 1 {
+				if ident, ok := unwrap_ident(vals[0]); ok {
+					store_local(
+						ast_context,
+						ident,
+						v.expr,
+						ident.pos.offset,
+						ident.name,
+						ast_context.non_mutable_only,
+						false,
+						{.Mutable},
+						symbol.pkg,
+						false,
+					)
+				}
+			}
+			if len(vals) >= 2 {
+				if ident, ok := unwrap_ident(vals[1]); ok {
+					store_local(
+						ast_context,
+						ident,
+						make_int_ast(ast_context, ident.pos, ident.end),
+						ident.pos.offset,
+						ident.name,
+						ast_context.non_mutable_only,
+						false,
+						{.Mutable},
+						symbol.pkg,
+						false,
+					)
+				}
+			}
+		case SymbolBitSetValue:
+			if len(vals) >= 1 {
+				if ident, ok := unwrap_ident(vals[0]); ok {
+					store_local(
+						ast_context,
+						ident,
+						v.expr,
+						ident.pos.offset,
+						ident.name,
+						ast_context.non_mutable_only,
+						false,
+						{.Mutable},
+						symbol.pkg,
+						false,
+					)
+				}
+			}
+			if len(vals) >= 2 {
+				if ident, ok := unwrap_ident(vals[1]); ok {
+					store_local(
+						ast_context,
+						ident,
+						make_int_ast(ast_context, ident.pos, ident.end),
+						ident.pos.offset,
+						ident.name,
+						ast_context.non_mutable_only,
+						false,
+						{.Mutable},
+						symbol.pkg,
+						false,
+					)
+				}
+			}
+		case SymbolEnumValue:
+			if len(vals) >= 1 {
+				if ident, ok := unwrap_ident(vals[0]); ok {
+					store_local(
+						ast_context,
+						ident,
+						expr,
+						ident.pos.offset,
+						ident.name,
+						ast_context.non_mutable_only,
+						false,
+						{.Mutable},
+						symbol.pkg,
+						false,
+					)
+				}
+			}
+			if len(vals) >= 2 {
+				if ident, ok := unwrap_ident(vals[1]); ok {
+					store_local(
+						ast_context,
+						ident,
+						make_int_ast(ast_context, ident.pos, ident.end),
+						ident.pos.offset,
+						ident.name,
+						ast_context.non_mutable_only,
+						false,
+						{.Mutable},
+						symbol.pkg,
+						false,
+					)
+				}
+			}
+		}
+	}
+
+	get_locals_stmt(file, body, ast_context, document_position)
+}
+
+get_locals_for_stmt :: proc(
+	file: ast.File,
+	stmt: ^ast.For_Stmt,
+	ast_context: ^AstContext,
+	document_position: ^DocumentPositionContext,
+) {
+	if position_in_node_or_label(stmt, document_position.position) {
+		store_label(ast_context, stmt.label)
+	}
+
+	if !(stmt.pos.offset <= document_position.position && document_position.position <= stmt.end.offset) {
+		return
+	}
+
+	get_locals_stmt(file, stmt.init, ast_context, document_position, false)
+	get_locals_stmt(file, stmt.body, ast_context, document_position)
+}
+
+get_locals_switch_stmt :: proc(
+	file: ast.File,
+	stmt: ^ast.Switch_Stmt,
+	ast_context: ^AstContext,
+	document_position: ^DocumentPositionContext,
+) {
+	if position_in_node_or_label(stmt, document_position.position) {
+		store_label(ast_context, stmt.label)
+	}
+	if !(stmt.pos.offset <= document_position.position && document_position.position <= stmt.end.offset) {
+		return
+	}
+
+	get_locals_stmt(file, stmt.init, ast_context, document_position)
+	get_locals_stmt(file, stmt.body, ast_context, document_position)
+}
+
+get_locals_type_switch_stmt :: proc(
+	file: ast.File,
+	stmt: ^ast.Type_Switch_Stmt,
+	ast_context: ^AstContext,
+	document_position: ^DocumentPositionContext,
+) {
+	if position_in_node_or_label(stmt, document_position.position) {
+		store_label(ast_context, stmt.label)
+	}
+	if !(stmt.pos.offset <= document_position.position && document_position.position <= stmt.end.offset) {
+		return
+	}
+
+	if stmt.body == nil {
+		return
+	}
+
+	get_locals_stmt(file, stmt.tag, ast_context, document_position, true)
+
+	if block, ok := stmt.body.derived.(^ast.Block_Stmt); ok {
+		for block_stmt, i in block.stmts {
+			upper_bound := stmt.end.offset
+			if i < len(block.stmts) - 1 {
+				upper_bound = block.stmts[i + 1].pos.offset
+			}
+			if cause, ok := block_stmt.derived.(^ast.Case_Clause);
+			   ok && cause.pos.offset <= document_position.position && document_position.position <= upper_bound {
+				tag := stmt.tag.derived.(^ast.Assign_Stmt)
+
+				if len(tag.lhs) == 1 && len(cause.list) == 1 {
+					if ident, ok := unwrap_ident(tag.lhs[0]); ok {
+						store_local(
+							ast_context,
+							ident,
+							cause.list[0],
+							ident.pos.offset,
+							ident.name,
+							ast_context.non_mutable_only,
+							false,
+							{.Mutable},
+							"",
+							false,
+						)
+					}
+				}
+
+				for b in cause.body {
+					get_locals_stmt(file, b, ast_context, document_position)
+				}
+			}
+		}
+	}
+}
+
+get_locals_proc_param_and_results :: proc(
+	file: ast.File,
+	function: ast.Proc_Lit,
+	ast_context: ^AstContext,
+	document_position: ^DocumentPositionContext,
+) {
+	proc_lit, ok := function.derived.(^ast.Proc_Lit)
+
+	if !ok || proc_lit.body == nil {
+		return
+	}
+
+	if proc_lit.type != nil && proc_lit.type.params != nil {
+		get_locals_poly(file, proc_lit.type.params, ast_context)
+		for arg in proc_lit.type.params.list {
+			for name in arg.names {
+				flags: bit_set[LocalFlag] = {.Mutable}
+				if _, ok := name.derived.(^ast.Poly_Type); ok {
+					flags |= {.PolyType}
+				}
+
+				if arg.type != nil {
+					str := get_ast_node_string(name, file.src)
+					store_local(
+						ast_context,
+						name,
+						arg.type,
+						name.pos.offset,
+						str,
+						ast_context.non_mutable_only,
+						false,
+						flags,
+						"",
+						true,
+					)
+
+					if .Using in arg.flags {
+						using_stmt: ast.Using_Stmt
+						using_stmt.list = make([]^ast.Expr, 1, context.temp_allocator)
+						using_stmt.list[0] = arg.type
+						get_locals_using_stmt(using_stmt, ast_context)
+					}
+				} else {
+					str := get_ast_node_string(name, file.src)
+					store_local(
+						ast_context,
+						name,
+						arg.default_value,
+						name.pos.offset,
+						str,
+						ast_context.non_mutable_only,
+						false,
+						flags,
+						"",
+						true,
+					)
+				}
+			}
+		}
+	}
+
+	if proc_lit.type != nil && proc_lit.type.results != nil {
+		for result in proc_lit.type.results.list {
+			for name in result.names {
+				if ident, ok := name.derived.(^ast.Ident); ok && ident.name == "_" {
+					continue
+				}
+				if result.type != nil {
+					str := get_ast_node_string(name, file.src)
+					store_local(
+						ast_context,
+						name,
+						result.type,
+						name.pos.offset,
+						str,
+						ast_context.non_mutable_only,
+						false,
+						{.Mutable},
+						"",
+						false,
+					)
+				} else {
+					str := get_ast_node_string(name, file.src)
+					store_local(
+						ast_context,
+						name,
+						result.default_value,
+						name.pos.offset,
+						str,
+						ast_context.non_mutable_only,
+						false,
+						{.Mutable},
+						"",
+						false,
+					)
+				}
+			}
+		}
+	}
+}
+
+get_locals_poly :: proc(file: ast.File, params: ^ast.Field_List, ast_context: ^AstContext) {
+	if params == nil {
+		return
+	}
+
+	visit :: proc(visitor: ^ast.Visitor, node: ^ast.Node) -> ^ast.Visitor {
+		if node == nil {
+			return nil
+		}
+		if poly, ok := node.derived.(^ast.Poly_Type); ok && poly.type != nil {
+			ast_context := cast(^AstContext)visitor.data
+			store_local(
+				ast_context,
+				poly.type,
+				poly,
+				poly.type.pos.offset,
+				poly.type.name,
+				false,
+				false,
+				{.PolyType},
+				"",
+				false,
+			)
+		}
+		return visitor
+	}
+
+	visitor := ast.Visitor {data = ast_context, visit = visit}
+	for param in params.list {
+		if param == nil {
+			continue
+		}
+		for name in param.names {
+			if poly, ok := name.derived.(^ast.Poly_Type); ok {
+				str := get_ast_node_string(poly.type, file.src)
+				store_local(ast_context, name, param.type, name.pos.offset, str, false, false, {.PolyType}, "", false)
+			}
+		}
+		ast.walk(&visitor, param.type)
+	}
+}
+
+get_function_locals :: proc(
+	file: ast.File,
+	function: ^ast.Node,
+	ast_context: ^AstContext,
+	document_position: ^DocumentPositionContext,
+) {
+	ast_context.resolving_locals = true
+	defer ast_context.resolving_locals = false
+
+	proc_lit, ok := function.derived.(^ast.Proc_Lit)
+
+	if !ok || proc_lit.body == nil {
+		return
+	}
+
+	get_locals_proc_param_and_results(file, proc_lit^, ast_context, document_position)
+
+	block: ^ast.Block_Stmt
+	block, ok = proc_lit.body.derived.(^ast.Block_Stmt)
+
+	if !ok {
+		log.error("Proc_List body not block")
+		return
+	}
+
+	document_position.nested_position = document_position.position
+
+	for function in document_position.functions {
+		ast_context.non_mutable_only = true
+		document_position.position = function.end.offset
+		get_locals_stmt(file, function.body, ast_context, document_position)
+	}
+
+	document_position.position = document_position.nested_position
+	ast_context.non_mutable_only = false
+
+	for stmt in block.stmts {
+		get_locals_stmt(file, stmt, ast_context, document_position)
+	}
+}
+
+clear_locals :: proc(ast_context: ^AstContext) {
+	clear(&ast_context.locals)
+	clear(&ast_context.usings)
+}

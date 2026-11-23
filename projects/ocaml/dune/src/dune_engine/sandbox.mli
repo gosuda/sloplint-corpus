@@ -1,0 +1,38 @@
+(** Creation and management of sandboxes *)
+
+open Import
+
+type t
+
+val root : t -> Path.t option
+
+(** [map_path t p] returns the path corresponding to [p] inside the sandbox. *)
+val map_path : t -> Path.Build.t -> Path.Build.t
+
+val add_deps : t -> Dep.Facts.t -> expand_aliases:bool -> unit Fiber.t
+
+(** Run [f] with a sandboxing context.
+
+    [mode = None] maps paths to themselves and removes targets if [f] fails.
+    It is not affected by the live-sandbox throttle. *)
+val with_
+  :  mode:Sandbox_mode.some option
+  -> Corrections.t
+  -> rule_loc:Loc.t
+  -> dirs:Path.Build.Set.t
+  -> deps:Path.Set.t
+  -> rule_dir:Path.Build.t
+  -> rule_digest:Digest.t
+  -> targets:Targets.Validated.t
+  -> f:(t -> 'a Fiber.t)
+  -> 'a Fiber.t
+
+(** Move all targets created by the action from the sandbox to the build
+    directory, except for [skip_files].
+
+    Expands [targets] with the set of files discovered in directory targets. *)
+val move_targets_to_build_dir
+  :  t
+  -> skip_files:Path.Build.Set.t
+  -> targets:Targets.Validated.t
+  -> unit Fiber.t

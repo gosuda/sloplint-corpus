@@ -1,0 +1,89 @@
+(** rules for packages built by dune *)
+
+open Import
+
+(** The package management rules setup two rules for every package:
+
+    - A rule for fetching the source to produce .pkg/$package/source
+
+    - A rule to build the package and produce the artifacts in
+      .pkg/$package/target.
+
+    It setups an alias rules to trigger the fetch and build of the
+    package universe. *)
+
+val setup_rules
+  :  components:string list
+  -> dir:Path.Build.t
+  -> Context_name.t
+  -> Build_config.Gen_rules.t Memo.t
+
+val lock_dir_path : Context_name.t -> Path.t option Memo.t
+val lock_dir_active : Context_name.t -> bool Memo.t
+val ocaml_toolchain : Context_name.t -> Ocaml_toolchain.t Action_builder.t option Memo.t
+
+(** [which ~packages context program] looks [program] up among the binaries
+    installed by [packages] in the lock directory. Only those packages are
+    considered, not their dependencies. [All] means the whole lock
+    directory. *)
+val which
+  :  packages:Package.Name.Selection.t
+  -> Context_name.t
+  -> Filename.t
+  -> Path.t option Memo.t
+
+(** [env_for_packages ~packages context] is an env holding environment
+    variables constructed from the [packages] in the lock directory. Only those
+    packages are included, not their dependencies. [All] means the whole lock
+    directory. Empty when the context has no lock directory. *)
+val env_for_packages : packages:Package.Name.Selection.t -> Context_name.t -> Env.t Memo.t
+
+(** [bin_paths_for_packages ~packages context] returns a list of bin
+    directories of [packages] in the lock directory. [All] means the whole lock
+    directory. Empty when the context has no lock directory. *)
+val bin_paths_for_packages
+  :  packages:Package.Name.Selection.t
+  -> Context_name.t
+  -> Path.t list Memo.t
+
+(** [compiler_bin_paths context] are the bin directories of the compiler package
+    of the lock directory of [context]. *)
+val compiler_bin_paths : Context_name.t -> Path.t list Memo.t
+
+val exported_env : Context_name.t -> Env.t Memo.t
+val project_ocamlpath : Context_name.t -> Path.t list Memo.t
+val dev_tool_ocamlpath : Dune_pkg.Dev_tool.t -> Path.t list Memo.t
+val find_package : Context_name.t -> Package.Name.t -> unit Action_builder.t option Memo.t
+
+(* CR-someday Alizter: These prefixes would be [Path.Build.t] if not for
+   the "toolchain" mechanism, which installs outside the build directory. *)
+
+(** Installation prefixes and owning packages from the context's lock directory. *)
+val package_prefixes : Context_name.t -> (Path.t * Package.Name.t) list Memo.t
+
+val resolve_installed_file
+  :  loc:Loc.t
+  -> context_name:Context_name.t
+  -> pkg_name:Package.Name.t
+  -> section:Section.t
+  -> file:Path.Local.t
+  -> Path.t Action_builder.t
+
+val dev_tool_env : Dune_pkg.Dev_tool.t -> Env.t Memo.t
+val all_filtered_depexts : Context_name.t -> string list Memo.t
+
+val setup_pkg_install_alias
+  :  dir:Path.Build.t
+  -> Context_name.t
+  -> Build_config.Gen_rules.t
+
+module Pkg_digest : sig
+  type t
+
+  val to_string : t -> string
+end
+
+val pkg_digest_of_project_dependency
+  :  Context_name.t
+  -> Package.Name.t
+  -> Pkg_digest.t option Memo.t
