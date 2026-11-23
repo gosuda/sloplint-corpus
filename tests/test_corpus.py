@@ -125,9 +125,25 @@ class TestSpdx(unittest.TestCase):
     def test_public_allowlist(self):
         self.assertTrue(corpus.public_spdx_ok("MIT"))
         self.assertTrue(corpus.public_spdx_ok("MIT OR Apache-2.0"))
+        self.assertTrue(corpus.public_spdx_ok("(MIT OR Apache-2.0)"))
         self.assertFalse(corpus.public_spdx_ok("MIT AND BSD-3-Clause"))
+        self.assertFalse(corpus.public_spdx_ok("MIT AND Apache-2.0"))
+        self.assertFalse(corpus.public_spdx_ok("Apache-2.0 WITH LLVM-exception"))
+        self.assertFalse(corpus.public_spdx_ok("MIT WITH nonallowlisted-exception"))
         self.assertFalse(corpus.public_spdx_ok("GPL-3.0-only"))
         self.assertFalse(corpus.public_spdx_ok("NOASSERTION"))
+        self.assertFalse(corpus.public_spdx_ok("MIT OR"))
+
+    def test_and_header_fails_public(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        projdir = add_synthetic_project(root, files={
+            "src/lib.rs": "// SPDX-License-Identifier: MIT AND Apache-2.0\n"
+                          "pub fn f() {}\n"})
+        errors = []
+        corpus.check_headers(projdir, "rust", {"MIT", "Apache-2.0"}, True, errors,
+                             "project demo")
+        self.assertTrue(any("outside the public allowlist" in e for e in errors), errors)
 
     def test_noassertion_ids(self):
         self.assertEqual(corpus.spdx_ids("NOASSERTION"), {"NOASSERTION"})

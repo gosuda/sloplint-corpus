@@ -150,9 +150,22 @@ def spdx_ids(expr):
     return ids
 
 
+def _spdx_public_ok(expr):
+    core = expr.replace("(", " ").replace(")", " ")
+    parts = core.split()
+    if not parts or len(parts) % 2 == 0:
+        return False
+    for index, part in enumerate(parts):
+        if index % 2 == 0:
+            if part not in PUBLIC_ALLOWLIST:
+                return False
+        elif part != "OR":
+            return False
+    return True
+
+
 def public_spdx_ok(expr):
-    ids = spdx_ids(expr)
-    return bool(ids) and ids <= set(PUBLIC_ALLOWLIST)
+    return _spdx_public_ok(expr)
 
 
 def extension_ok(language, relpath):
@@ -310,12 +323,12 @@ def check_headers(projdir, language, declared_ids, public, errors, tag):
             continue
         ids = header_spdx_ids(text)
         if public:
-            bad = {i for i in ids if i not in PUBLIC_ALLOWLIST}
-            if bad:
-                errors.append("%s: %s header names non-allowlisted license %s" %
-                              (tag, rel, sorted(bad)[0]))
-                continue
-            if has_copyleft_phrase(text):
+            bad_expr = next((match.group(1) for match in SPDX_HEADER_RE.finditer(text)
+                             if not _spdx_public_ok(match.group(1))), None)
+            if bad_expr is not None:
+                errors.append("%s: %s header expression %r is outside the public allowlist "
+                              "(MIT, Apache-2.0, OR only)" % (tag, rel, bad_expr))
+            elif has_copyleft_phrase(text):
                 errors.append("%s: %s header carries copyleft license text" % (tag, rel))
         else:
             bad = {i for i in ids if i not in declared_ids}
