@@ -1297,6 +1297,35 @@ class TestMeasureSeeds(unittest.TestCase):
         self.assertTrue(os.path.isfile(os.path.join(out, rsname)))
         self.assertTrue(os.path.isfile(os.path.join(out, stray)))
 
+    def test_seeds_ledger_lives_outside_output(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        add_synthetic_project(root, lang="python", name="demo", files={
+            "src/a.py": "0123456789"})
+        out = os.path.join(root, "seeds")
+        proc = run_tool(root, "seeds", "python", "--out", out, "--max-bytes", "0")
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertIn("0 files", proc.stdout)
+        self.assertEqual(os.listdir(out), [])
+        ledger = out + ".corpus-seeds.python.json"
+        self.assertTrue(os.path.isfile(ledger))
+        total = sum(os.path.getsize(os.path.join(out, n)) for n in os.listdir(out))
+        self.assertEqual(total, 0)
+
+    def test_seeds_sibling_ledger_still_prunes_stale(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        add_synthetic_project(root, lang="python", name="demo", files={
+            "src/a.py": "0123456789"})
+        out = os.path.join(root, "seeds")
+        full = run_tool(root, "seeds", "python", "--out", out, "--max-bytes", "10")
+        self.assertEqual(full.returncode, 0, full.stdout)
+        want = corpus.seed_name("demo", "src/a.py")
+        self.assertTrue(os.path.isfile(os.path.join(out, want)))
+        slim = run_tool(root, "seeds", "python", "--out", out, "--max-bytes", "4")
+        self.assertEqual(slim.returncode, 0, slim.stdout)
+        self.assertEqual(os.listdir(out), [])
+        self.assertTrue(os.path.isfile(out + ".corpus-seeds.python.json"))
 
 class TestStats(unittest.TestCase):
     def test_stats_counts_copied_files(self):
