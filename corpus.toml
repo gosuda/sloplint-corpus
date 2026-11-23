@@ -298,3 +298,101 @@ added_by = "CorpusPopC6"
 added_on = "2026-11-23"
 reason = "own linter Alloy fixtures incl near-miss edge cases; vendored copies out of subset scope"
 notice_present_upstream = false
+
+[[project]]
+name = "evm-dafny"
+language = "dafny"
+url = "https://github.com/Consensys/evm-dafny"
+rev = "e2e52e86d6623d48d0849f5ce1664f88c8f0e547"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["*.dfy"]
+tree_hash = "sha256:ac17715fcd53823735a3564d04d49b4d788704829157e8bd06d3cd7dbb6dd305"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "EVM-in-Dafny systems proofs; EVM bytecode semantics spread"
+notice_present_upstream = false
+
+[[project]]
+name = "dafnybench"
+language = "dafny"
+url = "https://github.com/sun-wendy/DafnyBench"
+rev = "0cd28feed9cd0179b07fdb9d002f8c39063658e4"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["*.dfy"]
+tree_hash = "sha256:aa5a4fa2a99ad6d370e3daf6aba0726d3c4482cc35ca3c1d56ace43339714acd"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "large benchmark suite; machine-generated tmp names noted, dedupe at measure time"
+notice_present_upstream = false
+
+[[project]]
+name = "b3"
+language = "dafny"
+url = "https://github.com/dafny-lang/b3"
+rev = "b24a2b2d6101df900e67d3bb151c4e85af4cd16d"
+spdx = "MIT"
+storage = "copied"
+paths = ["*.dfy"]
+tree_hash = "sha256:1d64c9fe1dd49be8d2d892a6bcd9f1bab45473c8d2fa7ca288212991803590a3"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "small-language test programs"
+notice_present_upstream = false
+
+[[project]]
+name = "veri-titan"
+language = "dafny"
+url = "https://github.com/secure-foundations/veri-titan"
+rev = "1c0e64fd6728b20a0e123c4f77d925436a6f32c5"
+spdx = "MIT"
+storage = "copied"
+paths = ["*.dfy"]
+tree_hash = "sha256:28023078bd64397fd576326da0ae67ce09454b1e450cde2122d6e1bd8b3fede6"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "verified crypto titan code"
+notice_present_upstream = false
+
+[[project]]
+name = "humaneval-dafny"
+language = "dafny"
+url = "https://github.com/JetBrains-Research/HumanEval-Dafny"
+rev = "69c950c138d83ef13f92c59e00af472cd18f1f79"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["*.dfy"]
+tree_hash = "sha256:bd98962d504a1c3c832d8d892aaeffc484611ae229872540dfd32e2310c2058b"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "benchmark task programs"
+notice_present_upstream = false
+
+[[project]]
+name = "daisy-nfsd"
+language = "dafny"
+url = "https://github.com/mit-pdos/daisy-nfsd"
+rev = "68530c3b62abe31ce280e71a2b0d40026a70e5ee"
+spdx = "MIT"
+storage = "copied"
+paths = ["*.dfy"]
+tree_hash = "sha256:923a34f266aa35f0cf2ff73d7a2f8bd5a64ef144e33e7f4114931e796a43dac1"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "verified NFS filesystem code"
+notice_present_upstream = false
+
+[[project]]
+name = "clover"
+language = "dafny"
+url = "https://github.com/ChuyueSun/Clover"
+rev = "02144bec1bbf8d38951ef2df6f0c2870965a214e"
+spdx = "MIT"
+storage = "copied"
+paths = ["*.dfy"]
+tree_hash = "sha256:15f80372de5c074429d1567829a7f182279deb70ffb07c920cb214bc9d43826d"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "verifier benchmark suite; dataset and clover_mbpp spread"
+notice_present_upstream = false
