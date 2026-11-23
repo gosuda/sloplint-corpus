@@ -1378,7 +1378,7 @@ def cmd_seeds(args):
     def order(item):
         rel, full, pname, size, digest = item
         short = "%s/%s" % (pname, rel)
-        return (0 if short in priority or rel in priority else 1, size, short)
+        return (0 if short in priority else 1, size, short)
 
     candidates = []
     for project in sorted(projects, key=lambda p: p.get("name", "")):
