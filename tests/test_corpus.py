@@ -939,6 +939,39 @@ class TestAddLocal(unittest.TestCase):
         self.assertIn("governed by nested src/NOTICE", proc.stdout)
 
     @unittest.skipUnless(HAS_GIT, "needs git")
+    def test_add_rejects_nested_license_variant_names(self):
+        for nested in ("COPYING.LESSER", "LICENSE-MIT", "license.txt", "Licence.md",
+                       "COPYRIGHT", "UNLICENSE"):
+            with self.subTest(nested=nested):
+                upstream, rev = self._nest_upstream({
+                    "LICENSE": MIT_TEXT,
+                    "src/lib.rs": "pub fn f() {}\n",
+                    "src/vendor/lib.rs": "pub fn vendored() {}\n",
+                    "src/vendor/" + nested: "Different third-party license text\n",
+                })
+                self.addCleanup(shutil.rmtree, upstream, True)
+                root = make_repo()
+                self.addCleanup(shutil.rmtree, root, True)
+                proc = run_tool(root, "add", "--url", upstream, "--rev", rev,
+                                "--lang", "rust", "--spdx", "MIT", "--name", "nest-variant",
+                                "--paths", "src/**", "--reason", "nested license variant")
+                self.assertNotEqual(proc.returncode, 0, proc.stdout)
+                self.assertIn("governed by nested src/vendor/" + nested, proc.stdout)
+                self.assertFalse(os.path.exists(
+                    os.path.join(root, "projects", "rust", "nest-variant")))
+
+    def test_nesting_ignores_source_files_named_like_licenses(self):
+        cache = tempfile.mkdtemp(prefix="corpus-nest-")
+        self.addCleanup(shutil.rmtree, cache, True)
+        write(os.path.join(cache, "src", "license.rs"), "pub fn spdx() {}\n")
+        write(os.path.join(cache, "src", "notice.ts"), "export const n = 1;\n")
+        errors = []
+        corpus.check_upstream_nesting(
+            cache, [("src/license.rs", os.path.join(cache, "src", "license.rs"))],
+            [MIT_TEXT.encode()], errors, "project t")
+        self.assertEqual(errors, [])
+
+    @unittest.skipUnless(HAS_GIT, "needs git")
     def test_add_pinned_no_files(self):
         upstream, rev = make_local_git_repo(MIT_TEXT)
         self.addCleanup(shutil.rmtree, upstream, True)

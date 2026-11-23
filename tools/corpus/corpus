@@ -71,6 +71,9 @@ STARLARK_SPECIAL = frozenset({"BUILD", "WORKSPACE"})
 LICENSE_NAMES = ("LICENSE", "LICENSE.txt", "LICENSE.md", "LICENCE", "LICENCE.txt",
                  "COPYING", "COPYING.txt")
 NOTICE_NAMES = ("NOTICE", "NOTICE.txt", "NOTICE.md")
+LICENSE_LIKE_RE = re.compile(r"(?:licen[cs]e|copying|copyright|notice|unlicense)"
+                             r"(?:[-._][A-Za-z0-9.+-]*)?", re.IGNORECASE)
+SOURCE_SUFFIXES = frozenset(ext for exts in EXTENSIONS.values() for ext in exts)
 
 COPYLEFT_IDS = frozenset({
     "GPL-2.0-only", "GPL-2.0-or-later", "GPL-3.0-only", "GPL-3.0-or-later",
@@ -829,24 +832,37 @@ def record_entry(root, args, url, patterns, excludes, storage, tree_hash, stamp,
     return 0
 
 
+def license_like(name):
+    return (LICENSE_LIKE_RE.fullmatch(name) is not None
+            and os.path.splitext(name)[1] not in SOURCE_SUFFIXES)
+
+
+def differing_license_file(scopedir, root_texts):
+    for base in sorted(os.listdir(scopedir)):
+        candidate = os.path.join(scopedir, base)
+        if not license_like(base) or os.path.islink(candidate) or not os.path.isfile(candidate):
+            continue
+        with open(candidate, "rb") as fh:
+            if fh.read() not in root_texts:
+                return base
+    return None
+
+
 def check_upstream_nesting(cache, selected, root_texts, errors, tag):
+    verdicts = {}
     for rel, full in selected:
         if os.path.islink(full):
             continue
         scopes = rel.split("/")[:-1]
         for depth in range(1, len(scopes) + 1):
             scope = "/".join(scopes[:depth])
-            for base in LICENSE_NAMES + NOTICE_NAMES:
-                candidate = os.path.join(cache, scope, base)
-                if not os.path.isfile(candidate) or os.path.islink(candidate):
-                    continue
-                with open(candidate, "rb") as fh:
-                    content = fh.read()
-                if content not in root_texts:
-                    errors.append("%s: %s is governed by nested %s/%s, which differs "
-                                  "from the project license; vendored third-party code "
-                                  "is excluded" % (tag, rel, scope, base))
-                    return
+            if scope not in verdicts:
+                verdicts[scope] = differing_license_file(os.path.join(cache, scope), root_texts)
+            if verdicts[scope] is not None:
+                errors.append("%s: %s is governed by nested %s/%s, which differs "
+                              "from the project license; vendored third-party code "
+                              "is excluded" % (tag, rel, scope, verdicts[scope]))
+                return
 
 
 def cmd_add(args):
