@@ -279,6 +279,9 @@ tree_hash = "sha256:e193066434d82c42ed98078b2e10bfe1a7f56fc0ba1038d4f7ece6d6ce43
 added_by = "CorpusPopC3"
 added_on = "2026-11-23"
 reason = "Git prompt module with global state; small class"
+notice_present_upstream = false
+
+[[project]]
 name = "mathlib-algebra"
 language = "lean"
 url = "https://github.com/leanprover-community/mathlib4"
@@ -578,6 +581,9 @@ tree_hash = "sha256:3a45e9af19de5902326b27b9359e3b0ffa8d4d1cd4d335948ca164a945a8
 added_by = "CorpusPopC5"
 added_on = "2026-11-23"
 reason = "Rust rules minus vendored crate BUILD files (selection slot: libraries)"
+notice_present_upstream = false
+
+[[project]]
 name = "alamofire"
 language = "swift"
 url = "https://github.com/Alamofire/Alamofire"
