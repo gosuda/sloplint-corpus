@@ -555,6 +555,12 @@ def verify_project(root, project, mode, errors):
     if notice_flag and not notice_present:
         errors.append("%s: notice_present_upstream is true but no NOTICE file is present" % tag)
     total = check_project_files(projdir, language, errors, tag)
+    sources = 0
+    for rel, full in list_project_files(projdir):
+        if extension_ok(language, rel) and os.path.isfile(full) and not os.path.islink(full):
+            sources += 1
+    if sources == 0:
+        errors.append("%s: copied entry has no source files for %s" % (tag, language))
     if total > MAX_PROJECT_BYTES:
         errors.append("%s: project is %d bytes, above the %d cap" %
                       (tag, total, MAX_PROJECT_BYTES))
@@ -932,6 +938,12 @@ def cmd_add(args):
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         shutil.copyfile(full, dest)
         copied.append((rel, full))
+    if not copied:
+        shutil.rmtree(cache, ignore_errors=True)
+        shutil.rmtree(projdir, ignore_errors=True)
+        fail("path subset copied no source files for %s; refusing empty entry" %
+             args.lang)
+        return 1
     license_src = None
     for base in LICENSE_NAMES:
         candidate = os.path.join(cache, base)
