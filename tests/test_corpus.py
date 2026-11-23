@@ -661,5 +661,16 @@ class TestMeasureSeeds(unittest.TestCase):
         self.assertEqual(contents, [b"x = 1\n", b"y = 22\n"])
 
 
+class TestStats(unittest.TestCase):
+    def test_stats_counts_copied_files(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        add_synthetic_project(root, lang="rust", name="syn-rust")
+        proc = run_tool(root, "stats")
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertIn("copied=1", proc.stdout)
+        self.assertIn("files=3", proc.stdout)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -1197,6 +1197,7 @@ def cmd_stats(args):
         storage = project.get("storage", "")
         if storage == "copied":
             row["copied"] += 1
+            projdir = os.path.join(root, "projects", language, project.get("name", ""))
             for rel, full in list_project_files(projdir):
                 if extension_ok(language, rel) and os.path.isfile(full) and not os.path.islink(full):
                     row["files"] += 1
