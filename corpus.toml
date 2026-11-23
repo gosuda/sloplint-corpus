@@ -397,4 +397,377 @@ tree_hash = "sha256:15f80372de5c074429d1567829a7f182279deb70ffb07c920cb214bc9d43
 added_by = "CorpusPopC6"
 added_on = "2026-11-23"
 reason = "verifier benchmark suite; dataset and clover_mbpp spread"
+name = "tokio"
+language = "rust"
+url = "https://github.com/tokio-rs/tokio"
+rev = "675ba8164071a6eee3dd1f3cb4fbdc1d3664396e"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:6920c15caaaaf89f738ddf71e4274a85cf3b9dbc204d3f12a43f4724252039eb"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "mid-size async runtime, library"
+notice_present_upstream = false
+
+[[project]]
+name = "nushell"
+language = "rust"
+url = "https://github.com/nushell/nushell"
+rev = "3dbf0506045e21baf875e868e7bd5bc2822ef946"
+spdx = "MIT"
+storage = "copied"
+paths = ["crates/nu-parser/**", "crates/nu-parser/*/**", "crates/nu-parser/*/*/**", "crates/nu-parser/*/*/*/**", "crates/nu-parser/*/*/*/*/**", "crates/nu-parser/*/*/*/*/*/**", "crates/nu-protocol/**", "crates/nu-protocol/*/**", "crates/nu-protocol/*/*/**", "crates/nu-protocol/*/*/*/**", "crates/nu-protocol/*/*/*/*/**", "crates/nu-protocol/*/*/*/*/*/**", "crates/nu-engine/**", "crates/nu-engine/*/**", "crates/nu-engine/*/*/**", "crates/nu-engine/*/*/*/**", "crates/nu-engine/*/*/*/*/**", "crates/nu-engine/*/*/*/*/*/**", "crates/nu-command/**", "crates/nu-command/*/**", "crates/nu-command/*/*/**", "crates/nu-command/*/*/*/**", "crates/nu-command/*/*/*/*/**", "crates/nu-command/*/*/*/*/*/**", "crates/nu-cli/**", "crates/nu-cli/*/**", "crates/nu-cli/*/*/**", "crates/nu-cli/*/*/*/**", "crates/nu-cli/*/*/*/*/**", "crates/nu-cli/*/*/*/*/*/**"]
+exclude = ["src/reedline_config.rs"]
+tree_hash = "sha256:015329df6f7bf4eea6dadc2d1445946064df8aa3ed6442ae2792c33cfe1d4ca3"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "mid-size shell/DSL with custom parser, application"
+notice_present_upstream = false
+
+[[project]]
+name = "nest"
+language = "typescript"
+url = "https://github.com/nestjs/nest"
+rev = "94df49d7898df2009fc6dd4900ed77847eb8aaab"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:01e07893d629997f81e14dafd23550e6ab17211edea9e0e6b8bf8c78821d12c1"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "mid-size decorator-heavy server framework, library"
+notice_present_upstream = false
+
+[[project]]
+name = "antd"
+language = "typescript"
+url = "https://github.com/ant-design/ant-design"
+rev = "3e3b72052c1fd99b92bec1151261755d1806dd87"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:2a412a2595446d1d9ea989e362c789f3a287ed149c2ed3b5ef7de9bb37bc4426"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "mid-size component library, TSX-heavy"
+notice_present_upstream = false
+
+[[project]]
+name = "vscode-editor"
+language = "typescript"
+url = "https://github.com/microsoft/vscode"
+rev = "a902b1c8a50d432e738bec7e31a233e82ce63db6"
+spdx = "MIT"
+storage = "copied"
+paths = ["src/vs/editor/**", "src/vs/editor/*/**", "src/vs/editor/*/*/**", "src/vs/editor/*/*/*/**", "src/vs/editor/*/*/*/*/**", "src/vs/editor/*/*/*/*/*/**", "src/vs/editor/*/*/*/*/*/*/**", "src/vs/editor/*/*/*/*/*/*/*/**", "src/vs/editor/*/*/*/*/*/*/*/*/**"]
+tree_hash = "sha256:c764af95e8a79eba228aa7ea97e263381145e6c754e2b7eabe1a5415b5580d01"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "large editor core subset, application"
+notice_present_upstream = false
+
+[[project]]
+name = "angular-compiler"
+language = "typescript"
+url = "https://github.com/angular/angular"
+rev = "8b15295e8c7f1543d41dadb5955279702be52c16"
+spdx = "MIT"
+storage = "copied"
+paths = ["packages/compiler/**", "packages/compiler/*/**", "packages/compiler/*/*/**", "packages/compiler/*/*/*/**", "packages/compiler/*/*/*/*/**", "packages/compiler/*/*/*/*/*/**", "packages/compiler/*/*/*/*/*/*/**", "packages/compiler/*/*/*/*/*/*/*/**", "packages/compiler/*/*/*/*/*/*/*/*/**"]
+tree_hash = "sha256:1623e0843268b1e8548309b0c55c55226935c884e3cc7d310938fa286b2ec9a5"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "framework compiler package, decorators"
+notice_present_upstream = false
+
+[[project]]
+name = "mui"
+language = "typescript"
+url = "https://github.com/mui/material-ui"
+rev = "b4bd6e8b207c335cd5662e1bf0d3663a83c97017"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+exclude = ["GoogleMaps.tsx"]
+tree_hash = "sha256:51dc31b4cfb364439f0406689f7aa94f6e68ead9b2f2694fc1b49db8d9b2cc1d"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "mid-size component library, TSX-heavy"
+notice_present_upstream = false
+
+[[project]]
+name = "vue"
+language = "typescript"
+url = "https://github.com/vuejs/vue"
+rev = "9e88707940088cb1f4cd7dd210c9168a50dc347c"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:211e5d75c46c0aeb617f656595e57a753240959251e67b1b5e6268dc784c7e60"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "small reactive UI framework, library"
+notice_present_upstream = false
+
+[[project]]
+name = "eslint"
+language = "javascript"
+url = "https://github.com/eslint/eslint"
+rev = "b377b08f95646ac450551a5b73486ab95b9b09cf"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+exclude = ["lib/languages/js/index.js"]
+tree_hash = "sha256:c28965309d01f8e884b7540ca7a0558742a728ae41fb9f21cf6c81d24811cccd"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "linter, tool (excludes lib/languages/js/index.js: embeds BSD-3-Clause ESQuery text)"
+
+[[project]]
+name = "express"
+language = "javascript"
+url = "https://github.com/expressjs/express"
+rev = "43fca52d28a422c8be48fd489cbd4f2d6152bab6"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:98bf3188539dd189d2d2d1fac183346675a7e3885536125fe058d4c575737231"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "small server framework, library"
+notice_present_upstream = false
+
+[[project]]
+name = "axios"
+language = "javascript"
+url = "https://github.com/axios/axios"
+rev = "9f0f4ddfe72b4c06afafe1a658e6ee53d35b5760"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+exclude = ["dist/**", "dist/*/**", "dist/*/*/**", "dist/*/*/*/**", "dist/*/*/*/*/**", "dist/*/*/*/*/*/**", "dist/*/*/*/*/*/*/**", "dist/*/*/*/*/*/*/*/**", "dist/*/*/*/*/*/*/*/*/**"]
+tree_hash = "sha256:0fe736009d2273d53dcf64ea99ac244da067048894ca2d7e7599dd8e5a8e41f7"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "small HTTP client, library"
+notice_present_upstream = false
+
+[[project]]
+name = "svelte"
+language = "javascript"
+url = "https://github.com/sveltejs/svelte"
+rev = "90ad4e870c72aa76db35ecc7e46f0b027ffe175a"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+exclude = ["packages/svelte/src/compiler/utils/fuzzymatch.js"]
+tree_hash = "sha256:dbe9da640caf32e85449048f38874d16dbd16f02411a86a44f2072bf69c4bd23"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "compiler-driven UI framework, library (excludes fuzzymatch.js: BSD-licensed fuzzyset.js derivation)"
+notice_present_upstream = false
+
+[[project]]
+name = "jquery"
+language = "javascript"
+url = "https://github.com/jquery/jquery"
+rev = "effd615f0009e927dfd1f41d04fb6073478076d4"
+spdx = "MIT"
+storage = "copied"
+paths = ["src/**", "src/*/**", "src/*/*/**", "src/*/*/*/**", "src/*/*/*/*/**", "src/*/*/*/*/*/**", "src/*/*/*/*/*/*/**", "src/*/*/*/*/*/*/*/**", "src/*/*/*/*/*/*/*/*/**"]
+tree_hash = "sha256:09f098a2ca732dcbd80a611110b6fd1de7b92fd07d1c848a17016fe2b55ddfbb"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "UMD/global-script relic, library"
+notice_present_upstream = false
+
+[[project]]
+name = "react"
+language = "javascript"
+url = "https://github.com/facebook/react"
+rev = "33e52451f2ab39e0a4d186256b2b4d55277e6041"
+spdx = "MIT"
+storage = "copied"
+paths = ["packages/**", "packages/*/**", "packages/*/*/**", "packages/*/*/*/**", "packages/*/*/*/*/**", "packages/*/*/*/*/*/**", "packages/*/*/*/*/*/*/**", "packages/*/*/*/*/*/*/*/**", "packages/*/*/*/*/*/*/*/*/**", "packages/*/*/*/*/*/*/*/*/*/**", "packages/*/*/*/*/*/*/*/*/*/*/**", "packages/*/*/*/*/*/*/*/*/*/*/*/**", "packages/*/*/*/*/*/*/*/*/*/*/*/*/**"]
+exclude = ["packages/react-devtools*/**", "packages/react-devtools*/*/**", "packages/react-devtools*/*/*/**", "packages/react-devtools*/*/*/*/**", "packages/react-devtools*/*/*/*/*/**", "packages/react-devtools*/*/*/*/*/*/**", "packages/react-devtools*/*/*/*/*/*/*/**", "packages/react-devtools*/*/*/*/*/*/*/*/**", "packages/react-devtools*/*/*/*/*/*/*/*/*/**", "packages/react-devtools*/*/*/*/*/*/*/*/*/*/**", "packages/react-devtools*/*/*/*/*/*/*/*/*/*/*/**", "packages/react-devtools*/*/*/*/*/*/*/*/*/*/*/*/**", "packages/react-devtools*/*/*/*/*/*/*/*/*/*/*/*/*/**", "compiler/**", "compiler/*/**", "compiler/*/*/**", "compiler/*/*/*/**", "compiler/*/*/*/*/**", "compiler/*/*/*/*/*/**", "compiler/*/*/*/*/*/*/**", "compiler/*/*/*/*/*/*/*/**", "compiler/*/*/*/*/*/*/*/*/**", "compiler/*/*/*/*/*/*/*/*/*/**", "compiler/*/*/*/*/*/*/*/*/*/*/**", "compiler/*/*/*/*/*/*/*/*/*/*/*/**", "compiler/*/*/*/*/*/*/*/*/*/*/*/*/**"]
+tree_hash = "sha256:f1f694c48aded3cd6fe5e8aa29fec545c6c2214163a7532e25400e6617913a1d"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "large UI framework with inline JSX, library"
+notice_present_upstream = false
+
+[[project]]
+name = "webpack"
+language = "javascript"
+url = "https://github.com/webpack/webpack"
+rev = "545f13bed085bdd7143ecb91a6a449647fbf70fc"
+spdx = "MIT"
+storage = "copied"
+paths = ["lib/**", "lib/*/**", "lib/*/*/**", "lib/*/*/*/**", "lib/*/*/*/*/**", "lib/*/*/*/*/*/**", "lib/*/*/*/*/*/*/**", "lib/*/*/*/*/*/*/*/**", "lib/*/*/*/*/*/*/*/*/**", "lib/*/*/*/*/*/*/*/*/*/**", "lib/*/*/*/*/*/*/*/*/*/*/**", "lib/*/*/*/*/*/*/*/*/*/*/*/**", "lib/*/*/*/*/*/*/*/*/*/*/*/*/**"]
+exclude = ["syntax-printer.js", "test/**", "test/*/**", "test/*/*/**", "test/*/*/*/**", "test/*/*/*/*/**", "test/*/*/*/*/*/**", "test/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/*/*/*/**", "examples/**", "examples/*/**", "examples/*/*/**", "examples/*/*/*/**", "examples/*/*/*/*/**", "examples/*/*/*/*/*/**", "examples/*/*/*/*/*/*/**", "examples/*/*/*/*/*/*/*/**", "examples/*/*/*/*/*/*/*/*/**", "examples/*/*/*/*/*/*/*/*/*/**", "examples/*/*/*/*/*/*/*/*/*/*/**", "examples/*/*/*/*/*/*/*/*/*/*/*/**", "examples/*/*/*/*/*/*/*/*/*/*/*/*/**", "lib/define/DotenvPlugin.js"]
+tree_hash = "sha256:ff4f257fe89df9720f61a1a0abc93dd2b356fd13799b801f4a29157d957aea29"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "bundler core, tool (excludes lib/define/DotenvPlugin.js: ports BSD-2-Clause dotenv code)"
+notice_present_upstream = false
+
+[[project]]
+name = "babel"
+language = "javascript"
+url = "https://github.com/babel/babel"
+rev = "5122561237cfbbc78b356a24e96eea9bdc558fd2"
+spdx = "MIT"
+storage = "copied"
+paths = ["packages/**", "packages/*/**", "packages/*/*/**", "packages/*/*/*/**", "packages/*/*/*/*/**", "packages/*/*/*/*/*/**", "packages/*/*/*/*/*/*/**", "packages/*/*/*/*/*/*/*/**", "packages/*/*/*/*/*/*/*/*/**", "packages/*/*/*/*/*/*/*/*/*/**", "packages/*/*/*/*/*/*/*/*/*/*/**", "packages/*/*/*/*/*/*/*/*/*/*/*/**", "packages/*/*/*/*/*/*/*/*/*/*/*/*/**"]
+exclude = ["*/generated/**", "*/generated/*/**", "*/generated/*/*/**", "*/generated/*/*/*/**", "*/generated/*/*/*/*/**", "*/generated/*/*/*/*/*/**", "*/generated/*/*/*/*/*/*/**", "*/generated/*/*/*/*/*/*/*/**", "*/generated/*/*/*/*/*/*/*/*/**", "*/generated/*/*/*/*/*/*/*/*/*/**", "*/generated/*/*/*/*/*/*/*/*/*/*/**", "*/generated/*/*/*/*/*/*/*/*/*/*/*/**", "*/generated/*/*/*/*/*/*/*/*/*/*/*/*/**", "edgecase/large-file-concise/input.js", "edgecase/large-file-concise/output.js", "core/uncategorised/318/input.js", "packages/babel-generator/test/fixtures/comments/simple-a-lot-of-line-comment/input.js", "packages/babel-generator/test/fixtures/comments/simple-a-lot-of-line-comment/output.js", "packages/babel-generator/test/fixtures/comments/simple-a-lot-of-multi-comment/input.js", "packages/babel-generator/test/fixtures/comments/simple-a-lot-of-multi-comment/output.js", "packages/babel-plugin-transform-block-scoped-functions/test/fixtures/block-scoped-functions/scope-lex-async-generator/exec.js", "packages/babel-plugin-transform-block-scoped-functions/test/fixtures/block-scoped-functions/scope-lex-async-generator/input.js", "packages/babel-plugin-transform-block-scoped-functions/test/fixtures/block-scoped-functions/scope-lex-async-generator/output.js", "packages/babel-plugin-transform-block-scoped-functions/test/fixtures/block-scoped-functions/switch-dflt-decl-onlystrict/exec.js", "packages/babel-plugin-transform-block-scoped-functions/test/fixtures/block-scoped-functions/switch-dflt-decl-onlystrict/input.js", "packages/babel-plugin-transform-block-scoped-functions/test/fixtures/block-scoped-functions/switch-dflt-decl-onlystrict/output.js", "packages/babel-plugin-transform-regenerator/test/fixtures/regression/star-rhs-iter-rtrn-no-rtrn/exec.js", "packages/babel-plugin-transform-regenerator/test/fixtures/regression/star-rhs-iter-rtrn-no-rtrn/input.js", "packages/babel-plugin-transform-regenerator/test/fixtures/regression/star-rhs-iter-rtrn-no-rtrn/output.js", "packages/babel-plugin-transform-regenerator/test/fixtures/regression/star-rhs-iter-rtrn-res-done-no-value/exec.js", "packages/babel-plugin-transform-regenerator/test/fixtures/regression/star-rhs-iter-rtrn-res-done-no-value/input.js", "packages/babel-plugin-transform-regenerator/test/fixtures/regression/star-rhs-iter-rtrn-res-done-no-value/output.js", "packages/babel-plugin-transform-regenerator/test/fixtures/regression/yield-star-from-finally/exec.js", "packages/babel-plugin-transform-regenerator/test/fixtures/regression/yield-star-from-finally/input.js", "packages/babel-plugin-transform-regenerator/test/fixtures/regression/yield-star-from-finally/output.js", "packages/babel-plugin-transform-regenerator/test/fixtures/v8/generators-iteration/exec.js"]
+tree_hash = "sha256:1d77f4f19e690e1f68db30bb702ad071ebf7fc53d44a690121783f33a6a70577"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "compiler toolchain, tool (excludes 20 test fixtures carrying BSD test262/V8 license text)"
+notice_present_upstream = false
+
+[[project]]
+name = "pytest"
+language = "python"
+url = "https://github.com/pytest-dev/pytest"
+rev = "718929265449ca33040264152ba5e7022e766a52"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:939db238725068875128c57e82f6f3ed9bf9604fce4092e6908969afe6efab5e"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "test framework, small-mid library"
+notice_present_upstream = false
+
+[[project]]
+name = "aiohttp"
+language = "python"
+url = "https://github.com/aio-libs/aiohttp"
+rev = "b60c6125c1039152013aa130ab4c2005ba52ccd1"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+exclude = ["vendor/**"]
+tree_hash = "sha256:5acc99b63fc7922e84630789cce37b4517bb4bb6849412412533e2f2320963b3"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "async HTTP client and server, library"
+notice_present_upstream = false
+
+[[project]]
+name = "keras"
+language = "python"
+url = "https://github.com/keras-team/keras"
+rev = "e1705782f99a692cd5b5aef181590f69342847c2"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:8802a69a11e7444db4fc1e8fd2b8ec8d5935780356fcd03d87f6e1c03cafd459"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "ML framework, mid-size application"
+notice_present_upstream = false
+
+[[project]]
+name = "homeassistant"
+language = "python"
+url = "https://github.com/home-assistant/core"
+rev = "ccb48381c79dfee73c6356339778fd9f1eadf742"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["homeassistant/helpers/**", "homeassistant/components/sensor/**", "homeassistant/components/automation/**"]
+tree_hash = "sha256:c6ad3102b02f9117ab75b97a2a1eb338d1489abc0e52f2d8bf27e72076533d76"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "IoT application helpers plus two integrations"
+notice_present_upstream = false
+
+[[project]]
+name = "gin"
+language = "go"
+url = "https://github.com/gin-gonic/gin"
+rev = "0f09c3a9b4626d9fe9979cf4d0521d6ae32ab646"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:b794e861a9a10732be3b8cbca2d95f0b8798cc601b97f1b2200ab69631bbf7ec"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "web framework, small library"
+notice_present_upstream = false
+
+[[project]]
+name = "grpc-go"
+language = "go"
+url = "https://github.com/grpc/grpc-go"
+rev = "341c59808a9aaaf920baa4f1c1cd6c9087cae229"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:5d2f5818970baa60da39a5d7015a63625ba2ce5c7c3fdc18a76b59f1bb7aaf82"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "RPC framework, mid-size library"
+notice_present_upstream = true
+
+[[project]]
+name = "moby"
+language = "go"
+url = "https://github.com/moby/moby"
+rev = "8b0c45e42959ea5322cfb33bfb97a40ed64d4a07"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["daemon/**", "pkg/**"]
+exclude = ["daemon/logger/syslog/internal/srslog/**", "daemon/server/httputils/internal/httputil/**"]
+tree_hash = "sha256:1b60cdd3c59ed6cc49479efacbd9cb125e0e40281da0574c24b8261f7f7d6f62"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "container runtime subset (daemon, pkg), application"
+notice_present_upstream = true
+
+[[project]]
+name = "k8s-api"
+language = "go"
+url = "https://github.com/kubernetes/kubernetes"
+rev = "43cbb94ee845ad387717fe851bf5f421b7284329"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["staging/src/k8s.io/api/**", "pkg/apis/**"]
+exclude = ["**/*.pb.go", "**/*zz_generated*", "pkg/apis/core/validation/validation_test.go"]
+tree_hash = "sha256:a2aa965413c254e5d392bfcfca21f38d83217c25f73d84901390f61e72907cfb"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "orchestrator API types, application"
+notice_present_upstream = false
+
+[[project]]
+name = "cli"
+language = "go"
+url = "https://github.com/cli/cli"
+rev = "de06af2c2ea536d5722fda35dc2001565f9b9f64"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+exclude = ["api/queries_repo_test.go", "pkg/cmd/repo/create/create_test.go", "pkg/cmd/repo/license/list/list_test.go"]
+tree_hash = "sha256:4fe735db21208625b0826d991551e32913534849965dd616bff8ad2661b18ac7"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "CLI application, tool (3 license-text testdata files excluded)"
+notice_present_upstream = false
+
+[[project]]
+name = "testify"
+language = "go"
+url = "https://github.com/stretchr/testify"
+rev = "87a7b9d57689f6579db2da795ab8deeab29cb724"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+exclude = ["internal/difflib/**", "internal/spew/**"]
+tree_hash = "sha256:620b3713fcb8ffdd4cd2bd95f61fb675ba12efd31fb3dd1440440ebaffb48dea"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "test helpers, small library"
 notice_present_upstream = false

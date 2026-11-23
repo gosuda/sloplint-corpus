@@ -1,0 +1,627 @@
+//! A sharded queue for the blocking pool's tasks.
+//!
+//! Tasks live in `NUM_SHARDS` queues, each with its own mutex. Spawners push
+//! to a shard chosen via the thread-local RNG; workers pop by scanning the
+//! shards in a per-worker pseudo-random permutation. Workers take at most
+//! `TASKS_PER_SHARD` tasks from each shard before moving on. A mask tracks
+//! which shards have tasks so scans rarely lock empty shards.
+//!
+//! Worker lifecycle (thread spawning, parking/waking, timeouts, shutdown) is
+//! coordinated by the `coord` mutex + `condvar`, using the same claim
+//! protocol as the default single-mutex queue. Unlike that queue, `coord` is
+//! held only for the claim-or-spawn decision and for a worker's transition
+//! to idle — never around queue operations or task execution — so spawners
+//! and workers contend mostly on `1/NUM_SHARDS` of a shard lock each.
+
+use crate::loom::sync::atomic::{AtomicBool, AtomicUsize};
+use crate::loom::sync::{Condvar, Mutex};
+use crate::loom::thread;
+use crate::util::rand::{FastRand, RngSeed};
+
+use std::collections::VecDeque;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+
+use super::pool::{ShutdownHandles, SpawnError, SpawnerMetrics, Task, ThreadManagementState};
+
+/// Number of shards. Must be a power of two.
+///
+/// Under loom, use a small shard count to keep the state space tractable
+/// while still exercising the cross-shard scanning in `pop`.
+#[cfg(not(loom))]
+const NUM_SHARDS: usize = 16;
+#[cfg(loom)]
+const NUM_SHARDS: usize = 2;
+
+// Bound each worker's preference for one shard while retaining some locality.
+const TASKS_PER_SHARD: usize = 8;
+
+struct PopCursor {
+    order: [u8; NUM_SHARDS],
+    pos: usize,
+    remaining: usize,
+}
+
+impl PopCursor {
+    fn new(worker_thread_id: usize) -> Self {
+        let mut cursor = Self {
+            order: std::array::from_fn(|i| i as u8),
+            pos: 0,
+            remaining: TASKS_PER_SHARD,
+        };
+        cursor.shuffle(FastRand::from_seed(RngSeed::from_bytes(
+            &worker_thread_id.to_ne_bytes(),
+        )));
+        cursor
+    }
+
+    fn shuffle(&mut self, mut rng: FastRand) {
+        for i in (1..NUM_SHARDS).rev() {
+            let j = rng.fastrand_n((i + 1) as u32) as usize;
+            self.order.swap(i, j);
+        }
+    }
+
+    #[cfg(test)]
+    fn new_for_test() -> Self {
+        Self {
+            order: std::array::from_fn(|i| i as u8),
+            pos: 0,
+            remaining: TASKS_PER_SHARD,
+        }
+    }
+
+    fn current_shard(&self) -> usize {
+        self.order[self.pos] as usize
+    }
+
+    fn move_to_next_shard(&mut self) {
+        self.pos = (self.pos + 1) % NUM_SHARDS;
+        self.remaining = TASKS_PER_SHARD;
+    }
+
+    fn record_pop(&mut self) {
+        self.remaining -= 1;
+        if self.remaining == 0 {
+            self.move_to_next_shard();
+        }
+    }
+}
+
+struct Shard {
+    queue: VecDeque<Task>,
+    /// Set (under the shard's lock) when the shard is drained for shutdown;
+    /// pushes to a sealed shard are rejected. This is what guarantees that a
+    /// spawner racing with shutdown cannot leave a task behind: a push
+    /// either loses (rejected, task is shut down) or wins, in which case the
+    /// sealer that later drains this shard collects the task.
+    sealed: bool,
+}
+
+pub(super) struct ShardedImpl {
+    shards: [Mutex<Shard>; NUM_SHARDS],
+    /// One bit per shard, set when that shard's queue is non-empty. Only
+    /// updated while holding that shard's lock, so it is exact at every
+    /// lock release; unlocked loads may be stale (see `pop`).
+    non_empty_mask: AtomicUsize,
+    coord: Mutex<ShardedCoord>,
+    condvar: Condvar,
+    /// Mirror of `ThreadManagementState::shutdown`, to let spawners reject
+    /// tasks without taking `coord`.
+    is_shutdown: AtomicBool,
+    /// Round-robin push counter, used to pick a shard when the thread-local
+    /// RNG is unavailable (loom requires each execution to be deterministic).
+    #[cfg(loom)]
+    push_index: AtomicUsize,
+}
+
+/// State protected by `ShardedImpl::coord`. This mirrors `LockedInner`,
+/// except that the queue itself lives in the shards.
+struct ShardedCoord {
+    /// Pending worker wakeups. A spawner claims an idle worker by
+    /// decrementing `num_idle_threads` and incrementing this; a woken worker
+    /// acknowledges by decrementing it. Distinguishes real wakeups from
+    /// spurious ones.
+    num_notify: u32,
+    thread_mgmt_state: ThreadManagementState,
+}
+
+impl ShardedImpl {
+    pub(super) fn new(thread_mgmt_state: ThreadManagementState) -> ShardedImpl {
+        ShardedImpl {
+            shards: std::array::from_fn(|_| {
+                Mutex::new(Shard {
+                    queue: VecDeque::new(),
+                    sealed: false,
+                })
+            }),
+            non_empty_mask: AtomicUsize::new(0),
+            coord: Mutex::new(ShardedCoord {
+                num_notify: 0,
+                thread_mgmt_state,
+            }),
+            condvar: Condvar::new(),
+            is_shutdown: AtomicBool::new(false),
+            #[cfg(loom)]
+            push_index: AtomicUsize::new(0),
+        }
+    }
+
+    /// Pick a shard to push to. Use the thread-local RNG so that concurrent
+    /// spawners spread across the shards.
+    #[cfg(not(loom))]
+    fn push_shard_index(&self) -> usize {
+        crate::runtime::context::thread_rng_n(NUM_SHARDS as u32) as usize
+    }
+
+    /// Under loom the RNG would make each execution take a different path,
+    /// breaking loom's requirement that executions be deterministic, so use
+    /// round-robin selection instead.
+    #[cfg(loom)]
+    fn push_shard_index(&self) -> usize {
+        self.push_index.fetch_add(1, Ordering::Relaxed) % NUM_SHARDS
+    }
+
+    /// Push a task onto one of the shards, or hand it back if the chosen
+    /// shard has been sealed for shutdown.
+    ///
+    /// The queue-depth metric is incremented under the shard lock so that
+    /// the pop that consumes this task (whose decrement is ordered after
+    /// this lock's release) can never transiently wrap the counter.
+    fn push(&self, task: Task, metrics: &SpawnerMetrics) -> Result<(), Task> {
+        let index = self.push_shard_index();
+        let mut shard = self.shards[index].lock();
+        if shard.sealed {
+            return Err(task);
+        }
+        shard.queue.push_back(task);
+        metrics.inc_queue_depth();
+        if shard.queue.len() == 1 {
+            self.non_empty_mask.fetch_or(1 << index, Ordering::Relaxed);
+        }
+        Ok(())
+    }
+
+    /// Pop a task, advancing the worker's cursor after a bounded number of
+    /// tasks from one shard so busy shards cannot starve later ones.
+    fn pop(&self, cursor: &mut PopCursor) -> Option<Task> {
+        let mask = self.non_empty_mask.load(Ordering::Relaxed);
+        if mask == 0 {
+            return None;
+        }
+
+        for _ in 0..NUM_SHARDS {
+            let index = cursor.current_shard();
+            if mask & (1 << index) == 0 {
+                cursor.move_to_next_shard();
+                continue;
+            }
+
+            let mut shard = self.shards[index].lock();
+            match shard.queue.pop_front() {
+                Some(task) => {
+                    if shard.queue.is_empty() {
+                        self.non_empty_mask
+                            .fetch_and(!(1 << index), Ordering::Relaxed);
+                    }
+                    cursor.record_pop();
+                    return Some(task);
+                }
+                None => cursor.move_to_next_shard(),
+            }
+        }
+
+        None
+    }
+
+    /// Drain every shard, sealing each so that later pushes are rejected,
+    /// and run-or-cancel the collected tasks. Called by workers during
+    /// shutdown (and by `begin_shutdown` when there are no workers left to
+    /// do it). Sealing is idempotent, so concurrent callers are fine.
+    fn drain_and_seal(&self, metrics: &SpawnerMetrics, preferred_shard: usize) {
+        let start = preferred_shard % NUM_SHARDS;
+        for i in 0..NUM_SHARDS {
+            let index = (start + i) % NUM_SHARDS;
+            let tasks = {
+                let mut shard = self.shards[index].lock();
+                shard.sealed = true;
+                self.non_empty_mask
+                    .fetch_and(!(1 << index), Ordering::Relaxed);
+                std::mem::take(&mut shard.queue)
+            };
+            for task in tasks {
+                metrics.dec_queue_depth();
+                task.shutdown_or_run_if_mandatory();
+            }
+        }
+    }
+
+    /// Push a task and either notify an idle worker or invoke
+    /// `on_no_idle` (which is responsible for spawning a new worker if
+    /// possible).
+    pub(super) fn spawn_task<F>(
+        &self,
+        task: Task,
+        metrics: &SpawnerMetrics,
+        on_no_idle: F,
+    ) -> Result<(), SpawnError>
+    where
+        F: FnOnce(&mut ThreadManagementState) -> Result<(), SpawnError>,
+    {
+        if self.is_shutdown.load(Ordering::Acquire) {
+            // It's fine to shutdown this task (even if mandatory): it was
+            // scheduled after the shutdown of the runtime began.
+            task.shutdown();
+            return Err(SpawnError::ShuttingDown);
+        }
+
+        // Push before taking `coord`, so spawners don't serialize on a
+        // pool-wide lock held across the queue operation.
+        if let Err(task) = self.push(task, metrics) {
+            // The shard was already drained and sealed for shutdown: reject
+            // the task, exactly as if the shutdown check above had caught it.
+            task.shutdown();
+            return Err(SpawnError::ShuttingDown);
+        }
+
+        let mut coord = self.coord.lock();
+
+        if coord.thread_mgmt_state.shutdown {
+            // Shutdown raced with our push, but the push beat the seal, so
+            // whichever worker (or `begin_shutdown`) seals that shard is
+            // guaranteed to collect the task and run it (if mandatory) or
+            // shut it down. Nothing to do here.
+            return Ok(());
+        }
+
+        if metrics.num_idle_threads() == 0 {
+            on_no_idle(&mut coord.thread_mgmt_state)?;
+        } else {
+            // Claim an idle worker (see `num_notify`). Signal after
+            // releasing `coord` so the woken worker doesn't immediately
+            // block on it; the counter increment, made under `coord`, is
+            // what guarantees the wakeup cannot be lost.
+            metrics.dec_num_idle_threads();
+            coord.num_notify += 1;
+            drop(coord);
+            self.condvar.notify_one();
+        }
+
+        Ok(())
+    }
+
+    /// Run a worker thread's main loop.
+    pub(super) fn run_worker(
+        &self,
+        metrics: &SpawnerMetrics,
+        keep_alive: Duration,
+        worker_thread_id: usize,
+    ) -> Option<thread::JoinHandle<()>> {
+        let mut join_on_thread = None;
+        let mut coord;
+        let mut cursor = PopCursor::new(worker_thread_id);
+
+        'main: loop {
+            // BUSY: run tasks without holding `coord`, so that spawners and
+            // other workers are not blocked on this worker.
+            while let Some(task) = self.pop(&mut cursor) {
+                metrics.dec_queue_depth();
+                task.run();
+            }
+
+            coord = self.coord.lock();
+
+            // Re-check the shards under `coord` before going idle: a task
+            // may have been pushed after the scan above, its spawner seeing
+            // this worker as busy and so neither notifying nor spawning.
+            // `coord` orders this re-check against every claim-or-spawn
+            // decision: a spawner that decided first pushed (and set the
+            // mask bit) before its `coord` critical section, so the task is
+            // visible here; one that decides later sees this worker counted
+            // idle and claims it.
+            if let Some(task) = self.pop(&mut cursor) {
+                metrics.dec_queue_depth();
+                drop(coord);
+                task.run();
+                continue 'main;
+            }
+
+            // IDLE
+            metrics.inc_num_idle_threads();
+
+            while !coord.thread_mgmt_state.shutdown {
+                let lock_result = self.condvar.wait_timeout(coord, keep_alive).unwrap();
+
+                coord = lock_result.0;
+                let timeout_result = lock_result.1;
+
+                if coord.num_notify != 0 {
+                    // A legitimate wakeup; the spawner already decremented
+                    // `num_idle_threads` on this worker's behalf.
+                    coord.num_notify -= 1;
+                    drop(coord);
+                    continue 'main;
+                }
+
+                // Even if the condvar "timed out", if the pool is
+                // entering the shutdown phase, we want to perform
+                // the cleanup logic.
+                if !coord.thread_mgmt_state.shutdown && timeout_result.timed_out() {
+                    join_on_thread = coord.thread_mgmt_state.worker_timed_out(worker_thread_id);
+
+                    break 'main;
+                }
+
+                // Spurious wakeup detected, go back to sleep.
+            }
+
+            // The pool is shutting down: drain and seal the shards, so that
+            // a spawner racing with shutdown either gets its task collected
+            // here or gets its push rejected (see `spawn_task`).
+            drop(coord);
+            self.drain_and_seal(metrics, worker_thread_id);
+
+            coord = self.coord.lock();
+            break 'main;
+        }
+
+        // Thread exit
+        metrics.dec_num_threads();
+
+        // Unlike `LockedImpl`, this worker is always counted in
+        // `num_idle_threads` here: both loop exits (timeout and shutdown)
+        // are reached after the IDLE transition without a spawner having
+        // claimed this worker.
+        let prev_idle = metrics.dec_num_idle_threads();
+        assert_ne!(
+            prev_idle, 0,
+            "`num_idle_threads` underflowed on thread exit"
+        );
+
+        if coord.thread_mgmt_state.shutdown && metrics.num_threads() == 0 {
+            self.condvar.notify_one();
+        }
+
+        drop(coord);
+
+        join_on_thread
+    }
+
+    /// Begin pool shutdown: set the shutdown flag, drop the shutdown
+    /// sender, wake all waiting workers, and hand back the worker
+    /// `JoinHandle`s for the caller to join.
+    pub(super) fn begin_shutdown(&self, metrics: &SpawnerMetrics) -> Option<ShutdownHandles> {
+        let mut coord = self.coord.lock();
+        let handles = coord.thread_mgmt_state.begin_shutdown()?;
+        self.is_shutdown.store(true, Ordering::Release);
+        self.condvar.notify_all();
+
+        // Every live worker seals the shards on its way out, but if there
+        // are no workers (and none can be spawned now that `shutdown` is
+        // set), seal here so a racing spawner's push can't be stranded.
+        let no_workers = metrics.num_threads() == 0;
+        drop(coord);
+        if no_workers {
+            self.drain_and_seal(metrics, 0);
+        }
+
+        Some(handles)
+    }
+}
+
+#[cfg(all(test, not(loom)))]
+mod tests {
+    use super::*;
+    use crate::runtime::blocking::pool::Mandatory;
+    use crate::runtime::blocking::schedule::BlockingSchedule;
+    use crate::runtime::blocking::task::BlockingTask;
+    #[cfg(not(target_family = "wasm"))]
+    use crate::runtime::Runtime;
+    use crate::runtime::{task, Builder, Handle};
+    use crate::util::trace::{blocking_task, SpawnMeta};
+    use std::collections::HashMap;
+    use std::sync::mpsc;
+    #[cfg(not(target_family = "wasm"))]
+    const TIMEOUT: Duration = Duration::from_secs(10);
+
+    fn blocking_task_for_test<F>(handle: &Handle, f: F) -> Task
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        let id = task::Id::next();
+        let fut = blocking_task::<F, BlockingTask<F>>(
+            BlockingTask::new(f),
+            SpawnMeta::new_unnamed(std::mem::size_of::<F>()),
+            id.as_u64(),
+        );
+        let (task, _) = task::unowned(
+            fut,
+            BlockingSchedule::new(handle),
+            id,
+            task::SpawnLocation::capture(),
+        );
+        Task::new(task, Mandatory::NonMandatory)
+    }
+
+    // Bypass only random shard selection, leaving worker execution and its
+    // queue-depth accounting intact.
+    #[cfg(not(target_family = "wasm"))]
+    fn push_to_shard(
+        handle: &Handle,
+        queue: &ShardedImpl,
+        metrics: &SpawnerMetrics,
+        index: usize,
+        f: impl FnOnce() + Send + 'static,
+    ) {
+        let task = blocking_task_for_test(handle, f);
+        let mut shard = queue.shards[index].lock();
+        assert!(!shard.sealed);
+        shard.queue.push_back(task);
+        metrics.inc_queue_depth();
+        queue.non_empty_mask.fetch_or(1 << index, Ordering::Relaxed);
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn sharded_runtime() -> Runtime {
+        let mut builder = Builder::new_current_thread();
+        builder.sharded_blocking_queue = true;
+        builder
+            .max_blocking_threads(1)
+            .thread_keep_alive(Duration::from_secs(60))
+            .build()
+            .unwrap()
+    }
+
+    // Keep the hot shard replenished, but bound the chain so a regression
+    // fails an ordering assertion instead of hanging runtime shutdown.
+    #[cfg(not(target_family = "wasm"))]
+    fn replenish_hot_shard(handle: Handle, hot: usize, remaining: usize, tx: mpsc::Sender<usize>) {
+        let next_handle = handle.clone();
+        let (queue, metrics) = handle.inner.blocking_spawner().sharded_queue();
+        push_to_shard(&handle, queue, metrics, hot, move || {
+            tx.send(hot).unwrap();
+            if remaining > 1 {
+                replenish_hot_shard(next_handle, hot, remaining - 1, tx);
+            }
+        });
+    }
+
+    #[test]
+    #[cfg(not(target_family = "wasm"))]
+    fn worker_services_cold_shard_while_hot_shard_is_replenished() {
+        let rt = sharded_runtime();
+        let (queue, metrics) = rt.handle().inner.blocking_spawner().sharded_queue();
+        // The first blocking worker has ID 0. Start it in the hot shard so
+        // the cold shard cannot win just because of the shuffled scan order.
+        let cursor = PopCursor::new(0);
+        let hot = cursor.current_shard();
+        let cold = cursor.order[NUM_SHARDS - 1] as usize;
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        push_to_shard(rt.handle(), queue, metrics, hot, move || {
+            started_tx.send(()).unwrap();
+            release_rx.recv_timeout(TIMEOUT).unwrap();
+        });
+        let wakeup = rt.spawn_blocking(|| {});
+        started_rx.recv_timeout(TIMEOUT).unwrap();
+
+        let (tx, rx) = mpsc::channel();
+        let cold_tx = tx.clone();
+        push_to_shard(rt.handle(), queue, metrics, cold, move || {
+            cold_tx.send(cold).unwrap();
+        });
+        let hot_tasks = TASKS_PER_SHARD * 2 + 1;
+        replenish_hot_shard(rt.handle().clone(), hot, hot_tasks, tx);
+        release_tx.send(()).unwrap();
+
+        let order: Vec<_> = (0..hot_tasks + 1)
+            .map(|_| rx.recv_timeout(TIMEOUT).unwrap())
+            .collect();
+        rt.block_on(wakeup).unwrap();
+        // The cold task must run after at most one hot batch.
+        assert!(
+            order[..TASKS_PER_SHARD + 1].contains(&cold),
+            "execution order: {order:?}"
+        );
+        assert_eq!(
+            order.iter().filter(|&&index| index == hot).count(),
+            hot_tasks
+        );
+    }
+
+    // Control shard placement so fairness does not depend on the RNG or timing.
+    fn drain_order(handle: &Handle, shards: &[usize], tasks: usize) -> Vec<(usize, usize)> {
+        let queue = ShardedImpl::new(ThreadManagementState {
+            shutdown: false,
+            shutdown_tx: None,
+            last_exiting_thread: None,
+            worker_threads: HashMap::new(),
+            worker_thread_index: 0,
+        });
+        let (tx, rx) = mpsc::channel();
+
+        for &index in shards {
+            for sequence in 0..tasks {
+                let tx = tx.clone();
+                let task =
+                    blocking_task_for_test(handle, move || tx.send((index, sequence)).unwrap());
+                queue.shards[index].lock().queue.push_back(task);
+                queue.non_empty_mask.fetch_or(1 << index, Ordering::Relaxed);
+            }
+        }
+        drop(tx);
+
+        let mut cursor = PopCursor::new_for_test();
+        while let Some(task) = queue.pop(&mut cursor) {
+            task.run();
+        }
+        rx.try_iter().collect()
+    }
+
+    fn expected_order(shards: &[usize], tasks: usize) -> Vec<(usize, usize)> {
+        (0..tasks)
+            .step_by(TASKS_PER_SHARD)
+            .flat_map(|base| {
+                shards.iter().flat_map(move |&index| {
+                    (base..(base + TASKS_PER_SHARD).min(tasks))
+                        .map(move |sequence| (index, sequence))
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn pop_rotates_through_busy_shards() {
+        let rt = Builder::new_current_thread().build().unwrap();
+        // Leave each shard non-empty across two complete batches.
+        let tasks = TASKS_PER_SHARD * 2 + 1;
+        let shards: Vec<_> = (0..NUM_SHARDS).collect();
+        assert_eq!(
+            drain_order(rt.handle(), &shards, tasks),
+            expected_order(&shards, tasks)
+        );
+    }
+
+    #[test]
+    fn pop_cursor_randomizes_complete_scan_order() {
+        fn scan_order(cursor: &mut PopCursor) -> Vec<usize> {
+            (0..NUM_SHARDS)
+                .map(|_| {
+                    let index = cursor.current_shard();
+                    cursor.move_to_next_shard();
+                    index
+                })
+                .collect()
+        }
+
+        let mut first = PopCursor::new(1);
+        let mut second = PopCursor::new(2);
+        let first_order = scan_order(&mut first);
+        let second_order = scan_order(&mut second);
+
+        let mut sorted = first_order.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, (0..NUM_SHARDS).collect::<Vec<_>>());
+        assert_ne!(first_order, second_order);
+        assert_eq!(first_order, scan_order(&mut PopCursor::new(1)));
+
+        let mut worker = PopCursor::new(1);
+        let worker_order = scan_order(&mut worker);
+        assert_eq!(worker_order, scan_order(&mut worker));
+        assert_eq!(worker_order, scan_order(&mut PopCursor::new(1)));
+    }
+
+    #[test]
+    fn pop_rotates_past_empty_shards() {
+        let rt = Builder::new_current_thread().build().unwrap();
+        // Cross a batch boundary, then drain each shard on the next visit.
+        let tasks = TASKS_PER_SHARD + 1;
+        assert!(drain_order(rt.handle(), &[], tasks).is_empty());
+        for shards in [&[NUM_SHARDS - 1][..], &[0, NUM_SHARDS - 1][..]] {
+            assert_eq!(
+                drain_order(rt.handle(), shards, tasks),
+                expected_order(shards, tasks)
+            );
+        }
+    }
+}
