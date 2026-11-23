@@ -1315,6 +1315,11 @@ def cmd_seeds(args):
                 priority = set(json.load(fh).get("parse_error_files", []))
         except Exception:
             pass
+    def order(item):
+        rel, full, pname, size, digest = item
+        short = "%s/%s" % (pname, rel)
+        return (0 if short in priority or rel in priority else 1, size, short)
+
     candidates = []
     for project in sorted(projects, key=lambda p: p.get("name", "")):
         projdir = os.path.join(root, "projects", language, project["name"])
@@ -1329,6 +1334,7 @@ def cmd_seeds(args):
             with open(full, "rb") as fh:
                 digest = hashlib.sha256(fh.read()).hexdigest()
             candidates.append((rel, full, project["name"], size, digest))
+    candidates.sort(key=order)
     seen = set()
     unique = []
     for item in candidates:
@@ -1336,13 +1342,6 @@ def cmd_seeds(args):
             continue
         seen.add(item[4])
         unique.append(item)
-
-    def order(item):
-        rel, full, pname, size, digest = item
-        short = "%s/%s" % (pname, rel)
-        return (0 if short in priority or rel in priority else 1, size, short)
-
-    unique.sort(key=order)
     out = os.path.abspath(args.out)
     os.makedirs(out, exist_ok=True)
     used = 0

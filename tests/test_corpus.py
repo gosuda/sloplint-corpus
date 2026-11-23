@@ -1120,6 +1120,22 @@ class TestMeasureSeeds(unittest.TestCase):
                      if os.path.isfile(os.path.join(out, n))]
         self.assertEqual(leftovers, [])
 
+    def test_seeds_priority_survives_deduplication(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        add_synthetic_project(root, lang="typescript", name="demo", files={
+            "src/a_first.ts": "0123456789abcdef\n",
+            "src/b_second.ts": "0123456789abcdef\n"})
+        write(os.path.join(root, "reports", "typescript.json"),
+              json.dumps({"parse_error_files": ["demo/src/b_second.ts"]}))
+        out = os.path.join(root, "seeds")
+        proc = run_tool(root, "seeds", "typescript", "--out", out, "--max-bytes", "17")
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertIn("1 files", proc.stdout)
+        want = corpus.seed_name("demo", "src/b_second.ts")
+        self.assertEqual(sorted(os.listdir(out)), [want])
+
+
 
 class TestStats(unittest.TestCase):
     def test_stats_counts_copied_files(self):
