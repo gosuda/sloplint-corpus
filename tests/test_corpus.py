@@ -264,6 +264,28 @@ class TestVerify(unittest.TestCase):
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("belongs in the public repo", proc.stdout)
 
+    def test_unindexed_project_dir_fails(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        write(os.path.join(root, "projects", "rust", "unindexed", "src", "lib.rs"),
+              "// SPDX-License-Identifier: GPL-3.0-only\npub fn f() {}\n")
+        proc = run_tool(root, "verify", "--offline")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("not owned by a copied manifest entry", proc.stdout)
+
+    def test_removed_entry_leaves_unowned_dir(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        add_synthetic_project(root, name="demo")
+        manifest = open(os.path.join(root, "corpus.toml")).read()
+        open(os.path.join(root, "corpus.toml"), "w").write(
+            "schema_version = 1\n\n[corpus]\nmode = \"public\"\n")
+        self.assertIn("demo", manifest)
+        proc = run_tool(root, "verify", "--offline")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("not owned by a copied manifest entry", proc.stdout)
+
+
     @unittest.skipUnless(HAS_ASKALONO, "askalono binary not installed")
     def test_clean_tree_passes(self):
         root = make_repo()

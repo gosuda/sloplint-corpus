@@ -450,6 +450,33 @@ def verify_project(root, project, mode, errors):
     return total
 
 
+def check_unowned_tree(root, projects, errors):
+    owned = set()
+    for project in projects:
+        if not isinstance(project, dict):
+            continue
+        if project.get("storage") == "copied" and project.get("language") in EXTENSIONS:
+            name = project.get("name")
+            if isinstance(name, str) and NAME_RE.match(name):
+                owned.add((project["language"], name))
+    top = os.path.join(root, "projects")
+    if not os.path.isdir(top):
+        return
+    for lang in sorted(os.listdir(top)):
+        langdir = os.path.join(top, lang)
+        if not os.path.isdir(langdir) or os.path.islink(langdir):
+            errors.append("projects/%s is not a project directory" % lang)
+            continue
+        if lang not in EXTENSIONS:
+            errors.append("projects/%s is not a known language" % lang)
+            continue
+        for name in sorted(os.listdir(langdir)):
+            full = os.path.join(langdir, name)
+            if (lang, name) in owned and os.path.isdir(full) and not os.path.islink(full):
+                continue
+            errors.append("projects/%s/%s is not owned by a copied manifest entry" % (lang, name))
+
+
 def cmd_verify(args):
     root = os.path.abspath(args.root)
     data, problems = load_manifest(root, args.manifest)
@@ -480,6 +507,7 @@ def cmd_verify(args):
                 lang = project.get("language")
                 if isinstance(lang, str):
                     sizes[lang] = sizes.get(lang, 0) + total
+            check_unowned_tree(root, projects, errors)
             for lang, total in sorted(sizes.items()):
                 if total > MAX_LANG_BYTES:
                     errors.append("language %s: %d bytes, above the %d cap" %
