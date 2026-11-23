@@ -242,3 +242,59 @@ added_by = "CorpusPopC6"
 added_on = "2026-11-23"
 reason = "own linter TLA fixtures incl near-miss edge cases; vendored tree-sitter copy excluded by subset scope"
 notice_present_upstream = false
+
+[[project]]
+name = "alloy-models"
+language = "alloy"
+url = "https://github.com/AlloyTools/models"
+rev = "886447d3369a9036aa4c3b49a82d7c557ab2e5f9"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["*.als"]
+tree_hash = "sha256:9273ea810b0664c3665e6c00bf7a5fd9e1c4eb8e0f17f999a86ad8052e148ae1"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "algorithm, protocol and puzzle models incl software-abstractions-book"
+notice_present_upstream = false
+
+[[project]]
+name = "git-for-data"
+language = "alloy"
+url = "https://github.com/BauplanLabs/git_for_data"
+rev = "18b23f841625500f9d985c62b2626833da482b1f"
+spdx = "MIT"
+storage = "copied"
+paths = ["*.als"]
+tree_hash = "sha256:4fd85b3ac8bd9f2164e778291e8698f06cb191c6782611da02925c24e4658a90"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "git data-model specs"
+notice_present_upstream = false
+
+[[project]]
+name = "mualloy"
+language = "alloy"
+url = "https://github.com/kaiyuanw/MuAlloy"
+rev = "1083004d6968e92ada75e52f21dcf8bf61a80b26"
+spdx = "MIT"
+storage = "copied"
+paths = ["*.als"]
+tree_hash = "sha256:3a028b9becccff689f13cffe5d85f6d579d91526af3b5c6c8293517a51dfb127"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "mutation-testing dialect models"
+notice_present_upstream = false
+
+[[project]]
+name = "sloplint-alloy-fixtures"
+language = "alloy"
+url = "https://github.com/gosuda/sloplint"
+rev = "d9d257c83580879f5b742ef7d78a3df202b317f4"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["crates/sloplint/tests/fixtures/*/*/*.als"]
+tree_hash = "sha256:b99f2f58dd6f7d24587f40bc54cb71612457748ccf8369e921d5acb77a14d2b5"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "own linter Alloy fixtures incl near-miss edge cases; vendored copies out of subset scope"
+notice_present_upstream = false
