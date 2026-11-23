@@ -1,0 +1,384 @@
+package server
+
+import "core:fmt"
+import "core:mem"
+import "core:odin/ast"
+import path "core:path/slashpath"
+
+import "src:common"
+import "src:spall"
+
+@(private)
+create_remove_edit :: proc(
+	position_context: ^DocumentPositionContext,
+	strip_leading_period := false,
+) -> (
+	[]TextEdit,
+	bool,
+) {
+	range, ok := get_range_from_selection_start_to_dot(position_context)
+
+	if !ok {
+		return {}, false
+	}
+
+	remove_range := common.Range {
+		start = range.start,
+		end   = range.end,
+	}
+
+	if strip_leading_period {
+		remove_range.end.character -= 1
+	}
+
+	remove_edit := TextEdit {
+		range   = remove_range,
+		newText = "",
+	}
+
+	additionalTextEdits := make([]TextEdit, 1, context.temp_allocator)
+	additionalTextEdits[0] = remove_edit
+
+	return additionalTextEdits, true
+}
+
+append_method_completion :: proc(
+	ast_context: ^AstContext,
+	selector_symbol: Symbol,
+	position_context: ^DocumentPositionContext,
+	results: ^[dynamic]CompletionResult,
+	receiver: string,
+) {
+	spall.trace(#procedure, ast_context.fullpath)
+
+	if selector_symbol.type != .Variable && selector_symbol.type != .Struct && selector_symbol.type != .Field {
+		return
+	}
+
+	remove_edit, ok := create_remove_edit(position_context)
+	if !ok do return
+
+	if value, is_untyped := selector_symbol.value.(SymbolUntypedValue); is_untyped {
+		for c in untyped_map[value.type] {
+			method := Method {
+				name = c,
+				pkg  = "$builtin", // Untyped values are always builtin types
+			}
+			collect_methods(
+				ast_context,
+				position_context,
+				method,
+				selector_symbol.pointers,
+				receiver,
+				remove_edit,
+				results,
+			)
+		}
+	} else {
+		seen := make(map[^ast.Expr]struct {}, context.temp_allocator)
+		seen_objc := make(map[ObjcStructKey]struct {}, context.temp_allocator)
+		seen[selector_symbol.type_expr] = {}
+		_collect_type_methods(ast_context, selector_symbol, position_context, results, receiver, remove_edit, &seen, &seen_objc)
+	}
+
+	_collect_type_methods :: proc (
+		ast_context:      ^AstContext,
+		symbol:           Symbol,
+		position_context: ^DocumentPositionContext,
+		results:          ^[dynamic]CompletionResult,
+		receiver:         string,
+		remove_edit:      []TextEdit,
+		seen:             ^map[^ast.Expr]struct {},
+		seen_objc:        ^map[ObjcStructKey]struct {},
+	) {
+		if .ObjC in symbol.flags {
+			key := ObjcStructKey{pkg = symbol.pkg, name = symbol.name}
+			if key in seen_objc^ do return
+			seen_objc[key] = {}
+		}
+
+		method := Method {
+			name = symbol.name,
+			// For typed values, check if it's a builtin type
+			pkg  = symbol.pkg if !is_builtin_type_name(symbol.name) else "$builtin",
+		}
+		collect_methods(
+			ast_context,
+			position_context,
+			method,
+			symbol.pointers,
+			receiver,
+			remove_edit,
+			results,
+		)
+
+		if struct_value, is_struct := symbol.value.(SymbolStructValue); is_struct {
+			// Handle using fields in structs
+			for using_idx in struct_value.usings {
+				if using_idx >= len(struct_value.types) do continue
+
+				using_type_expr := struct_value.types[using_idx]
+				if using_type_expr == nil do continue
+
+				// Prevent infinite recursion when using types are cyclic
+				if using_type_expr in seen do continue
+				seen[using_type_expr] = {}
+
+				using_symbol := resolve_type_expression(ast_context, using_type_expr) or_continue
+
+				// Recursively collect methods for the using field's type
+				_collect_type_methods(
+					ast_context,
+					using_symbol,
+					position_context,
+					results,
+					receiver,
+					remove_edit,
+					seen,
+					seen_objc,
+				)
+			}
+		}
+	}
+}
+
+@(private = "file")
+collect_methods :: proc(
+	ast_context: ^AstContext,
+	position_context: ^DocumentPositionContext,
+	method: Method,
+	pointers: int,
+	receiver: string,
+	remove_edit: []TextEdit,
+	results: ^[dynamic]CompletionResult,
+) {
+	for k, v in indexer.index.collection.packages {
+		symbols, ok := &v.methods[method]
+		if !ok {
+			continue
+		}
+
+		for &symbol in symbols {
+			if should_skip_private_symbol(symbol, ast_context.current_package, ast_context.uri) {
+				continue
+			}
+			resolve_unresolved_symbol(ast_context, &symbol)
+
+			#partial switch &sym_value in symbol.value {
+			case SymbolProcedureValue:
+				add_proc_method_completion(
+					ast_context,
+					position_context,
+					&symbol,
+					sym_value,
+					pointers,
+					receiver,
+					remove_edit,
+					results,
+				)
+			case SymbolProcedureGroupValue:
+				add_proc_group_method_completion(
+					ast_context,
+					position_context,
+					&symbol,
+					sym_value,
+					pointers,
+					receiver,
+					remove_edit,
+					results,
+				)
+			}
+		}
+	}
+}
+
+@(private = "file")
+add_proc_method_completion :: proc(
+	ast_context: ^AstContext,
+	position_context: ^DocumentPositionContext,
+	symbol: ^Symbol,
+	value: SymbolProcedureValue,
+	pointers: int,
+	receiver: string,
+	remove_edit: []TextEdit,
+	results: ^[dynamic]CompletionResult,
+) {
+	if len(value.arg_types) == 0 || value.arg_types[0].type == nil {
+		return
+	}
+
+	range, ok := get_range_from_selection_start_to_dot(position_context)
+	if !ok {
+		return
+	}
+
+	first_arg_pointers, receiver_ok := get_method_receiver_pointers(
+		ast_context,
+		value.arg_types[0].type,
+	)
+	if !receiver_ok do return
+
+	references, dereferences := compute_pointer_adjustments(first_arg_pointers, pointers)
+
+	new_text := build_method_call_text(
+		ast_context,
+		symbol,
+		receiver,
+		references,
+		dereferences,
+		len(value.arg_types) > 1,
+	)
+
+	item := CompletionItem {
+		label = symbol.name,
+		kind = symbol_type_to_completion_kind(symbol.type),
+		detail = get_short_signature(ast_context, symbol^),
+		additionalTextEdits = remove_edit,
+		textEdit = TextEdit{newText = new_text, range = {start = range.end, end = range.end}},
+		insertTextFormat = .Snippet,
+		InsertTextMode = .adjustIndentation,
+		documentation = construct_symbol_docs(symbol^),
+	}
+
+	append(results, CompletionResult{completion_item = item})
+}
+
+@(private = "file")
+add_proc_group_method_completion :: proc(
+	ast_context: ^AstContext,
+	position_context: ^DocumentPositionContext,
+	symbol: ^Symbol,
+	value: SymbolProcedureGroupValue,
+	pointers: int,
+	receiver: string,
+	remove_edit: []TextEdit,
+	results: ^[dynamic]CompletionResult,
+) {
+	proc_group, is_group := value.group.derived.(^ast.Proc_Group)
+	if !is_group || len(proc_group.args) == 0 {
+		return
+	}
+
+	range, ok := get_range_from_selection_start_to_dot(position_context)
+	if !ok {
+		return
+	}
+
+	// Get first member to determine pointer adjustments
+	first_member: Symbol
+	first_member, ok = resolve_type_expression(ast_context, proc_group.args[0])
+	if !ok {
+		return
+	}
+
+	member_proc, is_proc := first_member.value.(SymbolProcedureValue)
+	if !is_proc || len(member_proc.arg_types) == 0 || member_proc.arg_types[0].type == nil {
+		return
+	}
+
+	first_arg_pointers, receiver_ok := get_method_receiver_pointers(
+		ast_context,
+		member_proc.arg_types[0].type,
+	)
+	if !receiver_ok do return
+
+	references, dereferences := compute_pointer_adjustments(first_arg_pointers, pointers)
+
+	// Check if any member of the proc group has additional arguments beyond the receiver
+	has_additional_args := false
+	for member_expr in proc_group.args {
+		member: Symbol
+		member, ok = resolve_type_expression(ast_context, member_expr)
+		if !ok {
+			continue
+		}
+		if proc_val, is_proc_val := member.value.(SymbolProcedureValue); is_proc_val {
+			if len(proc_val.arg_types) > 1 {
+				has_additional_args = true
+				break
+			}
+		}
+	}
+
+	new_text := build_method_call_text(ast_context, symbol, receiver, references, dereferences, has_additional_args)
+
+	item := CompletionItem {
+		label = symbol.name,
+		kind = symbol_type_to_completion_kind(symbol.type),
+		detail = get_short_signature(ast_context, symbol^),
+		additionalTextEdits = remove_edit,
+		textEdit = TextEdit{newText = new_text, range = {start = range.end, end = range.end}},
+		insertTextFormat = .Snippet,
+		InsertTextMode = .adjustIndentation,
+		documentation = construct_symbol_docs(symbol^),
+	}
+
+	append(results, CompletionResult{completion_item = item})
+}
+
+@(private = "file")
+get_method_receiver_pointers :: proc(ast_context: ^AstContext, expr: ^ast.Expr) -> (int, bool) {
+	// Fake-method completion only needs pointer depth. Avoid expanding the same
+	// receiver type for every method (hundreds on Objective-C classes).
+	if _, pointers, ok := unwrap_pointer_ident(expr); ok {
+		return pointers, true
+	}
+
+	if symbol, ok := resolve_type_expression(ast_context, expr); ok {
+		return symbol.pointers, true
+	}
+	return 0, false
+}
+
+@(private = "file")
+compute_pointer_adjustments :: proc(
+	first_arg_pointers: int,
+	current_pointers: int,
+) -> (
+	references: string,
+	dereferences: string,
+) {
+	pointers_to_add := first_arg_pointers - current_pointers
+
+	if pointers_to_add > 0 {
+		for _ in 0 ..< pointers_to_add {
+			references = fmt.tprintf("%v&", references)
+		}
+	} else if pointers_to_add < 0 {
+		for _ in pointers_to_add ..< 0 {
+			dereferences = fmt.tprintf("%v^", dereferences)
+		}
+	}
+
+	return references, dereferences
+}
+
+@(private = "file")
+build_method_call_text :: proc(
+	ast_context: ^AstContext,
+	symbol: ^Symbol,
+	receiver: string,
+	references: string,
+	dereferences: string,
+	has_additional_args: bool,
+) -> string {
+	new_text: string
+
+	if symbol.pkg != ast_context.document_package {
+		new_text = fmt.tprintf(
+			"%v.%v",
+			path.base(get_symbol_pkg_name(ast_context, symbol), false, ast_context.allocator),
+			symbol.name,
+		)
+	} else {
+		new_text = fmt.tprintf("%v", symbol.name)
+	}
+
+	if has_additional_args {
+		new_text = fmt.tprintf("%v(%v%v%v$0)", new_text, references, receiver, dereferences)
+	} else {
+		new_text = fmt.tprintf("%v(%v%v%v)$0", new_text, references, receiver, dereferences)
+	}
+
+	return new_text
+}

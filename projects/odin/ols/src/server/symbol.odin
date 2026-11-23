@@ -1,0 +1,1188 @@
+package server
+
+import "core:mem"
+import "core:odin/ast"
+import "core:odin/tokenizer"
+import "core:slice"
+
+import "src:common"
+import "src:spall"
+
+SymbolAndNode :: struct {
+	symbol:                            Symbol,
+	node:                              ^ast.Node,
+	is_unresolved:                     bool,
+	is_selector_expression_unresolved: bool,
+}
+
+SymbolStructTag :: enum {
+	Is_Packed,
+	Is_Raw_Union,
+	Is_No_Copy,
+	Is_All_Or_None,
+	Is_Simple,
+}
+
+SymbolStructTags :: bit_set[SymbolStructTag]
+
+SymbolStructValue :: struct {
+	names:             []string,
+	ranges:            []common.Range,
+	types:             []^ast.Expr,
+	usings:            []int,
+	from_usings:       []int,
+	unexpanded_usings: []int,
+	objc_ivars:        []int,
+	poly:              ^ast.Field_List,
+	poly_names:        []string, // The resolved names for the poly fields
+	args:              []^ast.Expr, //The arguments in the call expression for poly
+	docs:              []^ast.Comment_Group,
+	comments:          []^ast.Comment_Group,
+	where_clauses:     []^ast.Expr,
+
+	// Extra fields for embedded bit fields via usings
+	backing_types:     map[int]^ast.Expr, // the base type for the bit field
+	bit_sizes:         map[int]^ast.Expr, // the bit size of the bit field field
+
+	// Tag information
+	align:             ^ast.Expr,
+	min_field_align:   ^ast.Expr,
+	max_field_align:   ^ast.Expr,
+	tags:              SymbolStructTags,
+}
+
+symbol_struct_value_has_using :: proc(v: SymbolStructValue, index: int) -> bool {
+	for u in v.usings {
+		if u == index {
+			return true
+		}
+	}
+	return false
+}
+
+symbol_struct_value_has_objc_ivar :: proc(v: SymbolStructValue, index: int) -> bool {
+	for ivar in v.objc_ivars {
+		if ivar == index {
+			return true
+		}
+	}
+	return false
+}
+
+SymbolBitFieldValue :: struct {
+	backing_type: ^ast.Expr,
+	names:        []string,
+	ranges:       []common.Range,
+	types:        []^ast.Expr,
+	docs:         []^ast.Comment_Group,
+	comments:     []^ast.Comment_Group,
+	bit_sizes:    []^ast.Expr,
+}
+
+SymbolPackageValue :: struct {}
+
+SymbolProcedureValue :: struct {
+	return_types:       []^ast.Field,
+	arg_types:          []^ast.Field,
+	orig_return_types:  []^ast.Field, //When generics have overloaded the types, we store the original version here.
+	orig_arg_types:     []^ast.Field, //When generics have overloaded the types, we store the original version here.
+	generic:            bool,
+	diverging:          bool,
+	calling_convention: ast.Proc_Calling_Convention,
+	tags:               ast.Proc_Tags,
+	attributes:         []^ast.Attribute,
+	inlining:           ast.Proc_Inlining,
+	where_clauses:      []^ast.Expr,
+}
+
+SymbolProcedureGroupValue :: struct {
+	group: ^ast.Expr,
+}
+
+// currently only used for proc group references
+// TODO needs a better name
+SymbolAggregateValue :: struct {
+	symbols: []Symbol,
+}
+
+SymbolEnumValue :: struct {
+	names:     []string,
+	values:    []^ast.Expr,
+	base_type: ^ast.Expr,
+	ranges:    []common.Range,
+	uri:       string,
+	docs:      []^ast.Comment_Group,
+	comments:  []^ast.Comment_Group,
+}
+
+SymbolUnionValue :: struct {
+	types:         []^ast.Expr,
+	poly:          ^ast.Field_List,
+	poly_names:    []string,
+	docs:          []^ast.Comment_Group,
+	comments:      []^ast.Comment_Group,
+	kind:          ast.Union_Type_Kind,
+	align:         ^ast.Expr,
+	where_clauses: []^ast.Expr,
+}
+
+SymbolDynamicArrayValue :: struct {
+	expr: ^ast.Expr,
+	cap:  ^ast.Expr, // Possibly nil; non nil if it's a Fixed_Capacity_Dynamic_Array_Type
+}
+
+SymbolMultiPointerValue :: struct {
+	expr: ^ast.Expr,
+}
+
+SymbolFixedArrayValue :: struct {
+	len:  ^ast.Expr,
+	expr: ^ast.Expr,
+}
+
+SymbolSliceValue :: struct {
+	expr: ^ast.Expr,
+}
+
+SymbolBasicValue :: struct {
+	ident: ^ast.Ident,
+}
+
+SymbolLabelValue :: struct{}
+
+SymbolBitSetValue :: struct {
+	expr:       ^ast.Expr,
+	underlying: ^ast.Expr, // possibly nil
+}
+
+SymbolUntypedValueType :: enum {
+	Integer,
+	Float,
+	Complex,
+	Quaternion,
+	String,
+	Bool,
+	Rune,
+}
+
+SymbolUntypedValue :: struct {
+	type: SymbolUntypedValueType,
+	tok:  tokenizer.Token,
+}
+
+SymbolMapValue :: struct {
+	key:   ^ast.Expr,
+	value: ^ast.Expr,
+}
+
+SymbolMatrixValue :: struct {
+	x:    ^ast.Expr,
+	y:    ^ast.Expr,
+	expr: ^ast.Expr,
+}
+
+SymbolPolyTypeValue :: struct {
+	ident: ^ast.Ident,
+}
+
+/*
+	Generic symbol that is used by the indexer for any variable type(constants, defined global variables, etc),
+*/
+SymbolGenericValue :: struct {
+	expr:        ^ast.Expr,
+	field_names: []string,
+	ranges:      []common.Range,
+}
+
+SymbolValue :: union {
+	SymbolStructValue,
+	SymbolPackageValue,
+	SymbolProcedureValue,
+	SymbolGenericValue,
+	SymbolProcedureGroupValue,
+	SymbolUnionValue,
+	SymbolEnumValue,
+	SymbolBitSetValue,
+	SymbolAggregateValue,
+	SymbolDynamicArrayValue,
+	SymbolFixedArrayValue,
+	SymbolMultiPointerValue,
+	SymbolMapValue,
+	SymbolSliceValue,
+	SymbolBasicValue,
+	SymbolUntypedValue,
+	SymbolMatrixValue,
+	SymbolBitFieldValue,
+	SymbolPolyTypeValue,
+	SymbolLabelValue,
+}
+
+SymbolFlag :: enum {
+	Builtin,
+	Distinct,
+	Deprecated,
+	PrivateFile,
+	PrivatePackage,
+	Anonymous, //Usually applied to structs that are defined inline inside another struct
+	Variable, // or type
+	Mutable, // or constant
+	Local,
+	ObjC,
+	ObjCIsClassMethod, // should be set true only when ObjC is enabled
+	Soa,
+	SoaPointer,
+	Simd,
+	Parameter, //If the symbol is a procedure argument
+	PolyType,
+}
+
+SymbolFlags :: bit_set[SymbolFlag]
+
+Symbol :: struct {
+	range:       common.Range, //the range of the symbol in the file
+	uri:         string, //uri of the file the symbol resides
+	pkg:         string, //absolute directory path where the symbol resides
+	name:        string, //name of the symbol
+	doc:         string,
+	comment:     string,
+	signature:   string, //type signature
+	type:        SymbolType,
+	parent_name: string, // When symbol is a field, this is the name of the parent symbol it is a field of
+	type_pkg:    string,
+	type_name:   string,
+	value:       SymbolValue,
+	pointers:    int, //how many `^` are applied to the symbol
+	flags:       SymbolFlags,
+	type_expr:   ^ast.Expr,
+	value_expr:  ^ast.Expr,
+}
+
+SymbolType :: enum {
+	Function      = 3,
+	Field         = 5,
+	Variable      = 6,
+	Package       = 9,
+	Enum          = 13,
+	Keyword       = 14,
+	EnumMember    = 20,
+	Constant      = 21,
+	Struct        = 22,
+	Type_Function = 23,
+	Union         = 7,
+	Type          = 8, //For maps, arrays, slices, dyn arrays, matrixes, etc
+	Unresolved    = 1, //Use text if not being able to resolve it.
+}
+
+SymbolStructValueBuilder :: struct {
+	symbol:            Symbol,
+	names:             [dynamic]string,
+	types:             [dynamic]^ast.Expr,
+	args:              [dynamic]^ast.Expr, //The arguments in the call expression for poly
+	ranges:            [dynamic]common.Range,
+	docs:              [dynamic]^ast.Comment_Group,
+	comments:          [dynamic]^ast.Comment_Group,
+	usings:            [dynamic]int,
+	from_usings:       [dynamic]int,
+	unexpanded_usings: [dynamic]int,
+	objc_ivars:        [dynamic]int,
+	poly:              ^ast.Field_List,
+	poly_names:        [dynamic]string,
+	where_clauses:     [dynamic]^ast.Expr,
+
+	// Extra fields for embedded bit fields via usings
+	backing_types:     map[int]^ast.Expr,
+	bit_sizes:         map[int]^ast.Expr,
+
+	// Tag information
+	align:             ^ast.Expr,
+	min_field_align:   ^ast.Expr,
+	max_field_align:   ^ast.Expr,
+	tags:              SymbolStructTags,
+}
+
+symbol_struct_value_builder_make_none :: proc(allocator := context.allocator) -> SymbolStructValueBuilder {
+	return SymbolStructValueBuilder {
+		names = make([dynamic]string, allocator),
+		types = make([dynamic]^ast.Expr, allocator),
+		args = make([dynamic]^ast.Expr, allocator),
+		ranges = make([dynamic]common.Range, allocator),
+		docs = make([dynamic]^ast.Comment_Group, allocator),
+		comments = make([dynamic]^ast.Comment_Group, allocator),
+		usings = make([dynamic]int, allocator),
+		from_usings = make([dynamic]int, allocator),
+		unexpanded_usings = make([dynamic]int, allocator),
+		objc_ivars = make([dynamic]int, allocator),
+		poly_names = make([dynamic]string, allocator),
+		backing_types = make(map[int]^ast.Expr, allocator),
+		bit_sizes = make(map[int]^ast.Expr, allocator),
+		where_clauses = make([dynamic]^ast.Expr, allocator),
+	}
+}
+
+symbol_struct_value_builder_make_symbol :: proc(
+	symbol: Symbol,
+	allocator := context.allocator,
+) -> SymbolStructValueBuilder {
+	return SymbolStructValueBuilder {
+		symbol = symbol,
+		names = make([dynamic]string, allocator),
+		types = make([dynamic]^ast.Expr, allocator),
+		args = make([dynamic]^ast.Expr, allocator),
+		ranges = make([dynamic]common.Range, allocator),
+		docs = make([dynamic]^ast.Comment_Group, allocator),
+		comments = make([dynamic]^ast.Comment_Group, allocator),
+		usings = make([dynamic]int, allocator),
+		from_usings = make([dynamic]int, allocator),
+		unexpanded_usings = make([dynamic]int, allocator),
+		objc_ivars = make([dynamic]int, allocator),
+		poly_names = make([dynamic]string, allocator),
+		backing_types = make(map[int]^ast.Expr, allocator),
+		bit_sizes = make(map[int]^ast.Expr, allocator),
+		where_clauses = make([dynamic]^ast.Expr, allocator),
+	}
+}
+
+symbol_struct_value_builder_make_symbol_symbol_struct_value :: proc(
+	symbol: Symbol,
+	v: SymbolStructValue,
+	allocator := context.allocator,
+) -> SymbolStructValueBuilder {
+	return SymbolStructValueBuilder {
+		symbol = symbol,
+		names = slice.to_dynamic(v.names, allocator),
+		types = slice.to_dynamic(v.types, allocator),
+		args = slice.to_dynamic(v.args, allocator),
+		ranges = slice.to_dynamic(v.ranges, allocator),
+		docs = slice.to_dynamic(v.docs, allocator),
+		comments = slice.to_dynamic(v.comments, allocator),
+		usings = slice.to_dynamic(v.usings, allocator),
+		from_usings = slice.to_dynamic(v.from_usings, allocator),
+		unexpanded_usings = slice.to_dynamic(v.unexpanded_usings, allocator),
+		objc_ivars = slice.to_dynamic(v.objc_ivars, allocator),
+		poly_names = slice.to_dynamic(v.poly_names, allocator),
+		backing_types = v.backing_types,
+		bit_sizes = v.bit_sizes,
+		tags = v.tags,
+		align = v.align,
+		max_field_align = v.max_field_align,
+		min_field_align = v.min_field_align,
+		where_clauses = slice.to_dynamic(v.where_clauses, allocator),
+	}
+}
+
+symbol_struct_value_builder_make :: proc {
+	symbol_struct_value_builder_make_none,
+	symbol_struct_value_builder_make_symbol,
+	symbol_struct_value_builder_make_symbol_symbol_struct_value,
+}
+
+to_symbol :: proc(b: SymbolStructValueBuilder) -> Symbol {
+	symbol := b.symbol
+	symbol.value = to_symbol_struct_value(b)
+	return symbol
+}
+
+to_symbol_struct_value :: proc(b: SymbolStructValueBuilder) -> SymbolStructValue {
+	return SymbolStructValue {
+		names = b.names[:],
+		types = b.types[:],
+		ranges = b.ranges[:],
+		args = b.args[:],
+		docs = b.docs[:],
+		comments = b.comments[:],
+		usings = b.usings[:],
+		from_usings = b.from_usings[:],
+		unexpanded_usings = b.unexpanded_usings[:],
+		objc_ivars = b.objc_ivars[:],
+		poly = b.poly,
+		poly_names = b.poly_names[:],
+		backing_types = b.backing_types,
+		bit_sizes = b.bit_sizes,
+		align = b.align,
+		max_field_align = b.max_field_align,
+		min_field_align = b.min_field_align,
+		tags = b.tags,
+		where_clauses = b.where_clauses[:],
+	}
+}
+
+write_struct_type :: proc(
+	ast_context: ^AstContext,
+	b: ^SymbolStructValueBuilder,
+	v: ^ast.Struct_Type,
+	attributes: []^ast.Attribute,
+	base_using_index: int,
+) {
+	b.poly = v.poly_params
+	for field in v.fields.list {
+		for n in field.names {
+			if identifier, ok := n.derived.(^ast.Ident); ok && field.type != nil {
+				if .Using in field.flags {
+					append(&b.unexpanded_usings, len(b.types))
+					append(&b.usings, len(b.types))
+				}
+
+				append(&b.names, identifier.name)
+				if v.poly_params != nil {
+					append(&b.types, clone_type(field.type, ast_context.allocator, nil))
+				} else {
+					append(&b.types, field.type)
+				}
+
+				append(&b.ranges, common.get_token_range(n, ast_context.file.src))
+				append(&b.docs, field.docs)
+				append(&b.comments, field.comment)
+				append(&b.from_usings, base_using_index)
+			}
+		}
+	}
+
+	s: Symbol
+	if _, ok := get_attribute_objc_class_name(attributes); ok {
+		b.symbol.flags |= {.ObjC}
+		if get_attribute_objc_is_class_method(attributes) {
+			b.symbol.flags |= {.ObjCIsClassMethod}
+		}
+	}
+
+	if v.poly_params != nil {
+		resolve_poly_struct(ast_context, b, v.poly_params)
+	}
+
+	if base_using_index == -1 {
+		// only map tags for the base struct
+		b.align = v.align
+		b.max_field_align = v.max_field_align
+		b.min_field_align = v.min_field_align
+		if v.is_all_or_none {
+			b.tags |= {.Is_All_Or_None}
+		}
+		if v.is_no_copy {
+			b.tags |= {.Is_No_Copy}
+		}
+		if v.is_packed {
+			b.tags |= {.Is_Packed}
+		}
+		if v.is_raw_union {
+			b.tags |= {.Is_Raw_Union}
+		}
+		if v.is_simple {
+			b.tags |= {.Is_Simple}
+		}
+		for clause in v.where_clauses {
+			append(&b.where_clauses, clause)
+		}
+	}
+
+	expand_objc(ast_context, b)
+	expand_usings(ast_context, b)
+}
+
+write_symbol_struct_value :: proc(
+	ast_context: ^AstContext,
+	b: ^SymbolStructValueBuilder,
+	v: SymbolStructValue,
+	base_using_index: int,
+) {
+	base_index := len(b.names)
+	for name in v.names {
+		append(&b.names, name)
+	}
+	for type in v.types {
+		append(&b.types, type)
+	}
+	for arg in v.args {
+		append(&b.args, arg)
+	}
+	for range in v.ranges {
+		append(&b.ranges, range)
+	}
+	for doc in v.docs {
+		append(&b.docs, doc)
+	}
+	for comment in v.comments {
+		append(&b.comments, comment)
+	}
+	for u in v.from_usings {
+		if u == -1 {
+			append(&b.from_usings, base_using_index)
+		} else {
+			append(&b.from_usings, u + base_index)
+		}
+	}
+	for u in v.unexpanded_usings {
+		append(&b.unexpanded_usings, u + base_index)
+	}
+	for ivar in v.objc_ivars {
+		append(&b.objc_ivars, ivar + base_index)
+	}
+	for k, value in v.backing_types {
+		b.backing_types[k + base_index] = value
+	}
+	for k, value in v.bit_sizes {
+		b.bit_sizes[k + base_index] = value
+	}
+	for k in v.usings {
+		append(&b.usings, k + base_index)
+	}
+	expand_usings(ast_context, b)
+}
+
+write_symbol_bitfield_value :: proc(
+	ast_context: ^AstContext,
+	b: ^SymbolStructValueBuilder,
+	v: SymbolBitFieldValue,
+	base_using_index: int,
+) {
+	base_index := len(b.names)
+	for name, i in v.names {
+		append(&b.names, name)
+		append(&b.from_usings, base_using_index)
+	}
+	for type in v.types {
+		append(&b.types, type)
+	}
+	for range in v.ranges {
+		append(&b.ranges, range)
+	}
+	for doc in v.docs {
+		append(&b.docs, doc)
+	}
+	for comment in v.comments {
+		append(&b.comments, comment)
+	}
+	b.backing_types[base_using_index] = v.backing_type
+	for bit_size, i in v.bit_sizes {
+		b.bit_sizes[i + base_index] = bit_size
+	}
+	expand_usings(ast_context, b)
+}
+
+expand_usings :: proc(ast_context: ^AstContext, b: ^SymbolStructValueBuilder) {
+	spall.trace(#procedure, ast_context.fullpath)
+
+	base := len(b.names) - 1
+	for len(b.unexpanded_usings) > 0 {
+		u := pop_front(&b.unexpanded_usings)
+
+		field_expr := b.types[u]
+		pkg := get_package_from_node(field_expr.expr_base)
+		set_ast_package_set_scoped(ast_context, pkg)
+
+
+		if field_expr == nil {
+			continue
+		}
+
+		append(&b.usings, u)
+
+		derived := field_expr.derived
+		if param, ok := derived.(^ast.Paren_Expr); ok {
+			derived = param.expr.derived
+		}
+
+		if ptr, ok := derived.(^ast.Pointer_Type); ok {
+			(ptr.elem != nil) or_continue
+			derived = ptr.elem.derived
+		}
+
+		#partial switch n in derived {
+		case ^ast.Ident:
+			if v, ok := struct_type_from_identifier(ast_context, n^); ok {
+				write_struct_type(ast_context, b, v, {}, u)
+			} else {
+				clear(&ast_context.recursion_map)
+				if symbol, ok := resolve_type_identifier(ast_context, n^); ok {
+					if v, ok := symbol.value.(SymbolStructValue); ok {
+						write_symbol_struct_value(ast_context, b, v, u)
+					} else if v, ok := symbol.value.(SymbolBitFieldValue); ok {
+						write_symbol_bitfield_value(ast_context, b, v, u)
+					}
+				}
+			}
+		case ^ast.Selector_Expr:
+			if symbol, ok := resolve_selector_expression(ast_context, n); ok {
+				if v, ok := symbol.value.(SymbolStructValue); ok {
+					write_symbol_struct_value(ast_context, b, v, u)
+				} else if v, ok := symbol.value.(SymbolBitFieldValue); ok {
+					write_symbol_bitfield_value(ast_context, b, v, u)
+				}
+			}
+		case ^ast.Struct_Type:
+			write_struct_type(ast_context, b, n, {}, u)
+		case ^ast.Bit_Field_Type:
+			if symbol, ok := resolve_type_expression(ast_context, field_expr); ok {
+				if v, ok := symbol.value.(SymbolBitFieldValue); ok {
+					write_symbol_bitfield_value(ast_context, b, v, u)
+				}
+			}
+		case ^ast.Call_Expr:
+			if symbol, ok := resolve_type_expression(ast_context, n); ok {
+				if v, ok := symbol.value.(SymbolStructValue); ok {
+					write_symbol_struct_value(ast_context, b, v, u)
+				}
+			}
+		}
+		delete_key(&ast_context.recursion_map, b.types[u])
+	}
+}
+
+ObjcStructKey :: struct {
+	pkg:  string,
+	name: string,
+}
+
+get_objc_struct_reference :: proc(expr: ^ast.Expr, default_pkg: string) -> (name, pkg: string, ok: bool) {
+	if expr == nil {
+		return
+	}
+
+	#partial switch value in expr.derived {
+	case ^ast.Ident:
+		return value.name, default_pkg, true
+	case ^ast.Selector_Expr:
+		base, base_ok := value.expr.derived.(^ast.Ident)
+		if base_ok && value.field != nil {
+			return value.field.name, base.name, true
+		}
+	case ^ast.Paren_Expr:
+		return get_objc_struct_reference(value.expr, default_pkg)
+	case ^ast.Helper_Type:
+		return get_objc_struct_reference(value.type, default_pkg)
+	}
+	return
+}
+
+// Add storage fields child-first so the nearest ivar wins a name conflict.
+// Mark their field indexes for completion ranking and source-file lookup.
+append_objc_ivars :: proc(
+	ast_context: ^AstContext,
+	b: ^SymbolStructValueBuilder,
+	name: string,
+	objc_struct: ObjcStruct,
+	visited: ^map[ObjcStructKey]struct{},
+) {
+	key := ObjcStructKey{pkg = objc_struct.pkg, name = name}
+	if key in visited^ {
+		return
+	}
+	visited^[key] = {}
+
+	if objc_struct.ivar != nil {
+		if ivar_symbol, ok := resolve_type_expression(ast_context, objc_struct.ivar); ok {
+			if ivar, ok := ivar_symbol.value.(SymbolStructValue); ok {
+				_ivar_field: for ivar_name, i in ivar.names {
+					if ivar_name == "_" {
+						continue
+					}
+					for existing_name in b.names {
+						if existing_name == ivar_name {
+							continue _ivar_field
+						}
+					}
+
+					append(&b.objc_ivars, len(b.names))
+					append(&b.names, ivar_name)
+					append(&b.types, ivar.types[i])
+					append(&b.ranges, ivar.ranges[i])
+					append(&b.docs, ivar.docs[i])
+					append(&b.comments, ivar.comments[i])
+					append(&b.from_usings, -1)
+				}
+			}
+		}
+	}
+
+	if objc_struct.superclass != nil {
+		if superclass_name, superclass_pkg, ok := get_objc_struct_reference(
+			objc_struct.superclass,
+			objc_struct.pkg,
+		); ok {
+			if pkg, ok := indexer.index.collection.packages[superclass_pkg]; ok {
+				if parent, ok := pkg.objc_structs[superclass_name]; ok {
+					append_objc_ivars(ast_context, b, superclass_name, parent, visited)
+					return
+				}
+			}
+		}
+
+		// Preserve aliases and other uncommon superclass expressions without paying
+		// for full type resolution on ordinary qualified class references.
+		if superclass, ok := resolve_type_expression(ast_context, objc_struct.superclass); ok {
+			if pkg, ok := indexer.index.collection.packages[superclass.pkg]; ok {
+				if parent, ok := pkg.objc_structs[superclass.name]; ok {
+					append_objc_ivars(ast_context, b, superclass.name, parent, visited)
+				}
+			}
+		}
+	}
+}
+
+expand_objc :: proc(ast_context: ^AstContext, b: ^SymbolStructValueBuilder) {
+	symbol := b.symbol
+	if .ObjC in symbol.flags {
+		pkg := indexer.index.collection.packages[symbol.pkg]
+
+		if obj_struct, ok := pkg.objc_structs[symbol.name]; ok {
+			if obj_struct.ivar != nil || obj_struct.superclass != nil {
+				visited := make(map[ObjcStructKey]struct{}, context.temp_allocator)
+				append_objc_ivars(ast_context, b, symbol.name, obj_struct, &visited)
+			}
+
+			_objc_function: for function, i in obj_struct.functions {
+				pos := tokenizer.Pos {
+					file = function.fullpath,
+				}
+
+				base := new_type(ast.Ident, pos, pos, context.temp_allocator)
+				base.name = obj_struct.pkg
+
+				field := new_type(ast.Ident, pos, pos, context.temp_allocator)
+				field.name = function.physical_name
+
+				selector := new_type(ast.Selector_Expr, pos, pos, context.temp_allocator)
+
+				selector.field = field
+				selector.expr = base
+
+				//Check if the base functions need to be overridden. Potentially look at some faster approach than a linear loop.
+				for name, j in b.names {
+					if name == function.logical_name {
+						b.names[j] = function.logical_name
+						b.types[j] = selector
+						b.ranges[j] = obj_struct.ranges[i]
+						continue _objc_function
+					}
+				}
+
+				append(&b.names, function.logical_name)
+				append(&b.types, selector)
+				append(&b.ranges, obj_struct.ranges[i])
+				append(&b.docs, nil)
+				append(&b.comments, nil)
+				append(&b.from_usings, -1)
+			}
+		}
+	}
+}
+
+is_struct_field_using :: proc(v: SymbolStructValue, index: int) -> bool {
+	for i in v.usings {
+		if i == index {
+			return true
+		}
+	}
+	return false
+}
+
+get_proc_arg_count :: proc(v: SymbolProcedureValue) -> int {
+	total := 0
+	for proc_arg in v.arg_types {
+		for name in proc_arg.names {
+			total += 1
+		}
+	}
+	return total
+}
+
+// Gets the call argument type at the specified index
+get_proc_arg_type_from_index :: proc(value: SymbolProcedureValue, parameter_index: int) -> (^ast.Field, bool) {
+	index := 0
+	for arg in value.arg_types {
+		// We're in a variadic arg, so return true
+		if arg.type != nil {
+			if _, ok := arg.type.derived.(^ast.Ellipsis); ok {
+				return arg, true
+			}
+		}
+		for name in arg.names {
+			if index == parameter_index {
+				return arg, true
+			}
+			index += 1
+		}
+	}
+	return nil, false
+}
+
+get_proc_arg_type_from_name :: proc(v: SymbolProcedureValue, name: string) -> (^ast.Field, bool) {
+	for arg in v.arg_types {
+		for arg_name in arg.names {
+			if ident, ok := arg_name.derived.(^ast.Ident); ok {
+				if name == ident.name {
+					return arg, true
+				}
+			}
+		}
+	}
+	return nil, false
+}
+
+get_proc_arg_name_from_name :: proc(v: SymbolProcedureValue, name: string) -> (^ast.Ident, bool) {
+	for arg in v.arg_types {
+		for arg_name in arg.names {
+			if ident, ok := arg_name.derived.(^ast.Ident); ok {
+				if name == ident.name {
+					return ident, true
+				}
+			}
+		}
+	}
+	return nil, false
+}
+
+new_clone_symbol :: proc(data: Symbol, allocator := context.allocator) -> ^Symbol {
+	new_symbol := new(Symbol, allocator)
+	new_symbol^ = data
+	new_symbol.value = data.value
+	return new_symbol
+}
+
+free_symbol :: proc(symbol: Symbol, allocator: mem.Allocator) {
+
+	spall.trace(#procedure, symbol.name)
+
+	if symbol.signature != "" &&
+	   symbol.signature != "struct" &&
+	   symbol.signature != "union" &&
+	   symbol.signature != "enum" &&
+	   symbol.signature != "bitset" &&
+	   symbol.signature != "bit_field" {
+		delete(symbol.signature, allocator)
+	}
+
+	if symbol.doc != "" {
+		delete(symbol.doc, allocator)
+	}
+
+	if symbol.comment != "" {
+		delete(symbol.comment, allocator)
+	}
+
+	free_ast(symbol.type_expr, allocator)
+	free_ast(symbol.value_expr, allocator)
+
+	switch v in symbol.value {
+	case SymbolMatrixValue:
+		free_ast(v.expr, allocator)
+		free_ast(v.x, allocator)
+		free_ast(v.y, allocator)
+	case SymbolMultiPointerValue:
+		free_ast(v.expr, allocator)
+	case SymbolProcedureValue:
+		free_ast(v.return_types, allocator)
+		free_ast(v.arg_types, allocator)
+		free_ast(v.attributes, allocator)
+		free_ast(v.where_clauses, allocator)
+	case SymbolStructValue:
+		delete(v.names, allocator)
+		delete(v.ranges, allocator)
+		free_ast(v.types, allocator)
+		delete(v.usings, allocator)
+		delete(v.from_usings, allocator)
+		delete(v.unexpanded_usings, allocator)
+		delete(v.objc_ivars, allocator)
+		for p in v.poly_names {
+			delete(p, allocator)
+		}
+		delete(v.poly_names, allocator)
+		free_ast(v.args, allocator)
+		free_ast(v.docs, allocator)
+		free_ast(v.comments, allocator)
+		free_ast(v.where_clauses, allocator)
+		free_ast(v.poly, allocator)
+		free_ast(v.align, allocator)
+		free_ast(v.min_field_align, allocator)
+		free_ast(v.max_field_align, allocator)
+		for _, e in v.backing_types {
+			free_ast(e, allocator)
+		}
+		delete(v.backing_types)
+		for _, e in v.bit_sizes {
+			free_ast(e, allocator)
+		}
+		delete(v.bit_sizes)
+	case SymbolGenericValue:
+		free_ast(v.expr, allocator)
+		delete(v.field_names, allocator)
+		delete(v.ranges, allocator)
+	case SymbolProcedureGroupValue:
+		free_ast(v.group, allocator)
+	case SymbolEnumValue:
+		for n in v.names {
+			delete(n, allocator)
+		}
+		delete(v.names, allocator)
+		delete(v.ranges, allocator)
+		free_ast(v.values, allocator)
+		free_ast(v.base_type, allocator)
+		free_ast(v.docs, allocator)
+		free_ast(v.comments, allocator)
+	case SymbolUnionValue:
+		free_ast(v.types, allocator)
+		free_ast(v.poly, allocator)
+		for p in v.poly_names {
+			delete(p, allocator)
+		}
+		delete(v.poly_names, allocator)
+		free_ast(v.docs, allocator)
+		free_ast(v.comments, allocator)
+		free_ast(v.align, allocator)
+		free_ast(v.where_clauses, allocator)
+	case SymbolBitSetValue:
+		free_ast(v.expr, allocator)
+		free_ast(v.underlying, allocator)
+	case SymbolDynamicArrayValue:
+		free_ast(v.expr, allocator)
+		free_ast(v.cap, allocator)
+	case SymbolFixedArrayValue:
+		free_ast(v.expr, allocator)
+		free_ast(v.len, allocator)
+	case SymbolSliceValue:
+		free_ast(v.expr, allocator)
+	case SymbolBasicValue:
+		free_ast(v.ident, allocator)
+	case SymbolPolyTypeValue:
+		free_ast(v.ident, allocator)
+	case SymbolAggregateValue:
+		for s in v.symbols {
+			free_symbol(s, allocator)
+		}
+		delete(v.symbols, allocator)
+	case SymbolMapValue:
+		free_ast(v.key, allocator)
+		free_ast(v.value, allocator)
+	case SymbolUntypedValue:
+		// tok.text borrows parser / interned memory — do NOT free.
+	case SymbolPackageValue:
+	case SymbolBitFieldValue:
+		delete(v.names, allocator)
+		delete(v.ranges, allocator)
+		free_ast(v.types, allocator)
+		free_ast(v.docs, allocator)
+		free_ast(v.comments, allocator)
+		free_ast(v.bit_sizes, allocator)
+		free_ast(v.backing_type, allocator)
+	case SymbolLabelValue:
+	}
+}
+
+symbol_type_to_completion_kind :: proc(type: SymbolType) -> CompletionItemKind {
+	switch type {
+	case .Function:
+		return .Function
+	case .Field:
+		return .Field
+	case .Variable:
+		return .Variable
+	case .Package:
+		return .Module
+	case .Enum:
+		return .Enum
+	case .Keyword:
+		return .Keyword
+	case .EnumMember:
+		return .EnumMember
+	case .Constant:
+		return .Constant
+	case .Struct:
+		return .Struct
+	case .Type_Function:
+		return .Function
+	case .Union:
+		return .Enum
+	case .Unresolved:
+		return .Text
+	case .Type:
+		return .Constant
+	case:
+		return .Text
+	}
+}
+
+symbol_kind_to_type :: proc(type: SymbolType) -> SymbolKind {
+	#partial switch type {
+	case .Function, .Type_Function:
+		return .Function
+	case .Constant:
+		return .Constant
+	case .Variable:
+		return .Variable
+	case .Union:
+		return .Enum
+	case .Struct:
+		return .Struct
+	case .Enum:
+		return .Enum
+	case .Keyword:
+		return .Key
+	case .Field:
+		return .Field
+	case .Unresolved:
+		return .Constant
+	case .Type:
+		return .Class
+	case:
+		return .Null
+	}
+}
+
+symbol_to_expr :: proc(symbol: Symbol, file: string, allocator := context.temp_allocator) -> ^ast.Expr {
+
+	pos := tokenizer.Pos {
+		file = file,
+	}
+
+	end := tokenizer.Pos {
+		file = file,
+	}
+
+	#partial switch v in symbol.value {
+	case SymbolDynamicArrayValue:
+		type := new_type(ast.Dynamic_Array_Type, pos, end, allocator)
+		type.elem = v.expr
+		if .Soa in symbol.flags {
+			directive := new_type(ast.Basic_Directive, pos, end, allocator)
+			directive.name = "soa"
+			type.tag = directive
+		}
+		return type
+	case SymbolFixedArrayValue:
+		type := new_type(ast.Array_Type, pos, end, allocator)
+		type.elem = v.expr
+		type.len = v.len
+		if .Soa in symbol.flags {
+			directive := new_type(ast.Basic_Directive, pos, end, allocator)
+			directive.name = "soa"
+			type.tag = directive
+		}
+		return type
+	case SymbolMapValue:
+		type := new_type(ast.Map_Type, pos, end, allocator)
+		type.key = v.key
+		type.value = v.value
+		return type
+	case SymbolBasicValue:
+		ident := new_type(ast.Ident, pos, end, allocator)
+		ident.name = v.ident.name
+		return ident
+	case SymbolSliceValue:
+		type := new_type(ast.Array_Type, pos, end, allocator)
+		type.elem = v.expr
+		if .Soa in symbol.flags {
+			directive := new_type(ast.Basic_Directive, pos, end, allocator)
+			directive.name = "soa"
+			type.tag = directive
+		}
+		return type
+	case SymbolStructValue:
+		type := new_type(ast.Struct_Type, pos, end, allocator)
+		type.fields = new_type(ast.Field_List, pos, end, allocator)
+		return type
+	case SymbolEnumValue:
+		type := new_type(ast.Enum_Type, pos, end, allocator)
+		return type
+	case SymbolUnionValue:
+		type := new_type(ast.Union_Type, pos, end, allocator)
+		return type
+	case SymbolBitSetValue:
+		type := new_type(ast.Bit_Set_Type, pos, end, allocator)
+		return type
+	case SymbolUntypedValue:
+		type := new_type(ast.Basic_Lit, pos, end, allocator)
+		type.tok = v.tok
+		return type
+	case SymbolMatrixValue:
+		type := new_type(ast.Matrix_Type, pos, end, allocator)
+		type.row_count = v.x
+		type.column_count = v.y
+		type.elem = v.expr
+		return type
+	case SymbolProcedureValue:
+		type := new_type(ast.Proc_Type, pos, end, allocator)
+		type.results = new_type(ast.Field_List, pos, end, allocator)
+		type.results.list = v.return_types
+		type.params = new_type(ast.Field_List, pos, end, allocator)
+		type.params.list = v.arg_types
+		return type
+	case SymbolBitFieldValue:
+		type := new_type(ast.Bit_Field_Type, pos, end, allocator)
+		return type
+	case SymbolMultiPointerValue:
+		type := new_type(ast.Multi_Pointer_Type, pos, end, allocator)
+		type.elem = v.expr
+		return type
+	case:
+		return nil
+	}
+
+	return nil
+}
+
+// TODO: these will need ranges of the fields as well
+construct_struct_field_symbol :: proc(symbol: ^Symbol, parent_name: string, value: SymbolStructValue, index: int) {
+	symbol.type_pkg = symbol.pkg
+	symbol.type_name = symbol.name
+	symbol.name = value.names[index]
+	symbol.type = .Field
+	symbol.parent_name = parent_name
+	symbol.doc = get_comment(value.docs[index], context.temp_allocator)
+	symbol.comment = get_comment(value.comments[index], context.temp_allocator)
+	symbol.range = value.ranges[index]
+}
+
+construct_bit_field_field_symbol :: proc(
+	symbol: ^Symbol,
+	parent_name: string,
+	value: SymbolBitFieldValue,
+	index: int,
+) {
+	symbol.name = value.names[index]
+	symbol.parent_name = parent_name
+	symbol.type = .Field
+	symbol.doc = get_comment(value.docs[index], context.temp_allocator)
+	symbol.comment = get_comment(value.comments[index], context.temp_allocator)
+	symbol.signature = get_bit_field_field_signature(value, index)
+	symbol.range = value.ranges[index]
+}
+
+construct_enum_field_symbol :: proc(symbol: ^Symbol, value: SymbolEnumValue, index: int) {
+	symbol.type = .Field
+	symbol.doc = get_comment(value.docs[index], context.temp_allocator)
+	symbol.comment = get_comment(value.comments[index], context.temp_allocator)
+	symbol.signature = get_enum_field_signature(value, index)
+	symbol.range = value.ranges[index]
+}
+
+// Adds name and type information to the symbol when it's for an identifier
+construct_ident_symbol_info :: proc(symbol: ^Symbol, ident: string, document_pkg: string) {
+	symbol.type_name = symbol.name
+	symbol.type_pkg = symbol.pkg
+	symbol.name = ident
+	if symbol.type == .Variable || symbol.type == .Constant {
+		symbol.pkg = document_pkg
+	}
+
+	// If the pkg + name is the same as the type pkg + name, we use the underlying type instead
+	// This is used for things like anonymous structs
+	if symbol.name == symbol.type_name && symbol.pkg == symbol.type_pkg {
+		symbol.type_name = ""
+		symbol.type_pkg = ""
+	}
+}
+
+symbol_has_attributes :: proc(symbol: Symbol, attrs: map[string]struct{}) -> bool {
+	if value, ok := symbol.value.(SymbolProcedureValue); ok {
+		for attr in value.attributes {
+			for elem in attr.elems {
+				if ident, _, ok := unwrap_attr_elem(elem); ok {
+					if ident.name in attrs {
+						return true
+					}
+				}
+			}
+		}
+	}
+
+	return false
+}

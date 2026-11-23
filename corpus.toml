@@ -159,3 +159,74 @@ added_by = "CorpusPopC5"
 added_on = "2026-11-23"
 reason = "editor tooling minus vendored snapshots, LGPL files and oversize bench fixture (selection slot: tooling)"
 notice_present_upstream = false
+
+[[project]]
+name = "ols"
+language = "odin"
+url = "https://github.com/DanielGavin/ols"
+rev = "459ffb7e83196d46db85beec6902c2453f277f3f"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:1ad09fad04418ebabf4ca035116d94fbd903e9f40c78b78668ee452e40db13c3"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "language server (selection slot: tooling)"
+notice_present_upstream = false
+
+[[project]]
+name = "sds"
+language = "odin"
+url = "https://github.com/jakubtomsu/sds"
+rev = "a0b0ad183e194bc4b4c433d21841ca3af334e24a"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:a82fd94abc48f8cd33987b3e65827b585a7816724b922154f5ebc3aa131c1de7"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "static data structures (selection slot: small programs)"
+notice_present_upstream = false
+
+[[project]]
+name = "jobs"
+language = "odin"
+url = "https://github.com/jakubtomsu/jobs"
+rev = "81acb14510be846cf28cd228d9c29a2b8981c886"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:72b2e25e57c5d9174cc1fd67701270f04f598fe5a6c50e261b512652bb42991b"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "job scheduler (selection slot: small programs)"
+notice_present_upstream = false
+
+[[project]]
+name = "odin-http"
+language = "odin"
+url = "https://github.com/laytan/odin-http"
+rev = "5e301bef8fbee138548661a92104cb1529eb5e39"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+exclude = ["openssl/**", "openssl/*/**", "openssl/*/*/**", "openssl/*/*/*/**", "openssl/*/*/*/*/**", "old_nbio/**", "old_nbio/*/**", "old_nbio/*/*/**", "old_nbio/*/*/*/**", "old_nbio/*/*/*/*/**", "comparisons/**", "comparisons/*/**", "comparisons/*/*/**", "comparisons/*/*/*/**", "comparisons/*/*/*/*/**"]
+tree_hash = "sha256:0677c262472b93b3ac36abf85c8389d1b198251b285ebf2466e1961c04bea21e"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "HTTP client and server minus binaries, old code and fixtures (selection slot: application)"
+notice_present_upstream = false
+
+[[project]]
+name = "odin-godot"
+language = "odin"
+url = "https://github.com/dresswithpockets/odin-godot"
+rev = "93395901a76f62a9f2adff76c2eb38a185d91513"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:6a68eb4102e61709a1b4951c18e0003fa3c312581d7ceb95ca036d6ca4a4e27c"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "Godot bindings, FFI-heavy (selection slot: bindings)"
+notice_present_upstream = false
