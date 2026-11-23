@@ -53,11 +53,11 @@ rev = "e4a5b7050f5e9e5793be3ebdeb687eac92fd9965"
 spdx = "MIT"
 storage = "copied"
 paths = ["*"]
-exclude = ["Sources/Development/configure.swift"]
-tree_hash = "sha256:2bc138e0372750d340088e90c1fd725e02601cd4d3b958ba19765f86653a9aeb"
+exclude = ["Sources/Development/configure.swift", "Tests/VaporTests/RequestTests.swift"]
+tree_hash = "sha256:6a77b5b64cac0ddef8dab23310eb67cc3a6198a75a460a292c1816ba4bb752c7"
 added_by = "CorpusPopC4"
 added_on = "2026-11-23"
-reason = "server framework, new access-level imports; excludes dev sample with PEM-shaped placeholder tripping secret gate"
+reason = "server framework, new access-level imports; excludes dev sample with PEM-shaped placeholder and RequestTests.swift whose Apache-2.0 header is outside declared MIT"
 notice_present_upstream = false
 
 [[project]]
