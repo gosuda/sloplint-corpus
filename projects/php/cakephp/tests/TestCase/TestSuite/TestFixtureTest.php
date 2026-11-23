@@ -1,0 +1,261 @@
+<?php
+declare(strict_types=1);
+
+/**
+ * CakePHP(tm) : Rapid Development Framework (https://cakephp.org)
+ * Copyright (c) Cake Software Foundation, Inc. (https://cakefoundation.org)
+ *
+ * Licensed under The MIT License
+ * For full copyright and license information, please see the LICENSE.txt
+ * Redistributions of files must retain the above copyright notice
+ *
+ * @copyright     Copyright (c) Cake Software Foundation, Inc. (https://cakefoundation.org)
+ * @link          https://cakephp.org CakePHP(tm) Project
+ * @since         1.2.0
+ * @license       https://opensource.org/licenses/mit-license.php MIT License
+ */
+namespace Cake\Test\TestCase\TestSuite;
+
+use Cake\Core\Exception\CakeException;
+use Cake\Database\Connection;
+use Cake\Database\Query\InsertQuery;
+use Cake\Database\Schema\TableSchema;
+use Cake\Database\StatementInterface;
+use Cake\Datasource\ConnectionManager;
+use Cake\Log\Log;
+use Cake\Test\Fixture\AliasedArticlesFixture;
+use Cake\Test\Fixture\ArticlesFixture;
+use Cake\Test\Fixture\EquipmentFixture;
+use Cake\Test\Fixture\PostsFixture;
+use Cake\Test\Fixture\SpecialPkFixture;
+use Cake\TestSuite\TestCase;
+use Cake\Utility\Inflector;
+use Mockery;
+use TestApp\Test\Fixture\FeaturedTagsFixture;
+use TestApp\Test\Fixture\LettersFixture;
+
+/**
+ * Test case for TestFixture
+ */
+class TestFixtureTest extends TestCase
+{
+    /**
+     * Fixtures for this test.
+     *
+     * @var array<string>
+     */
+    protected array $fixtures = ['core.Articles', 'core.Posts'];
+
+    /**
+     * Set up
+     */
+    protected function setUp(): void
+    {
+        parent::setUp();
+        Log::reset();
+    }
+
+    /**
+     * Tear down
+     */
+    protected function tearDown(): void
+    {
+        parent::tearDown();
+        Log::reset();
+        Inflector::reset();
+        ConnectionManager::get('test')->execute('DROP TABLE IF EXISTS letters');
+        ConnectionManager::get('test')->execute('DROP TABLE IF EXISTS special_pks');
+        ConnectionManager::get('test')->execute('DROP TABLE IF EXISTS equipment');
+    }
+
+    /**
+     * test initializing a static fixture
+     */
+    public function testInitStaticFixture(): void
+    {
+        $Fixture = new ArticlesFixture();
+        $this->assertSame('articles', $Fixture->table);
+
+        $Fixture = new ArticlesFixture();
+        $Fixture->table = '';
+        $Fixture->tableAlias = '';
+        $Fixture->init();
+        $this->assertSame('articles', $Fixture->table);
+
+        $schema = $Fixture->getTableSchema();
+        $this->assertInstanceOf(TableSchema::class, $schema);
+    }
+
+    public function testCustomTableAlias(): void
+    {
+        $Fixture = new AliasedArticlesFixture();
+        $this->assertSame('articles', $Fixture->table);
+        $this->assertSame('Articles', $Fixture->tableAlias);
+    }
+
+    public function testAliasPlural(): void
+    {
+        $connection = ConnectionManager::get('test');
+        $connection->execute('CREATE TABLE special_pks (id INT PRIMARY KEY, name VARCHAR(50))');
+        $Fixture = new SpecialPkFixture();
+        $this->assertSame('special_pks', $Fixture->table);
+        $this->assertSame('SpecialPks', $Fixture->tableAlias);
+    }
+
+    /**
+     * Test that uninflected rules are respected when deriving table names.
+     *
+     * "equipment" is in the default uninflected list, so EquipmentFixture
+     * should use table "equipment" (not "equipments").
+     *
+     * This ensures the fixture uses tableize() logic (underscore then pluralize)
+     * rather than pluralizing the CamelCase name directly.
+     */
+    public function testAliasRespectsUninflectedRules(): void
+    {
+        $connection = ConnectionManager::get('test');
+        $connection->execute('CREATE TABLE equipment (id INT PRIMARY KEY, name VARCHAR(50))');
+
+        $fixture = new EquipmentFixture();
+        $this->assertSame('equipment', $fixture->table);
+        $this->assertSame('Equipment', $fixture->tableAlias);
+    }
+
+    /**
+     * Tests that trying to reflect with a table that doesn't exist throws an exception.
+     */
+    public function testReflectionMissingTable(): void
+    {
+        $this->expectException(CakeException::class);
+        $this->expectExceptionMessage(
+            sprintf(
+                'Cannot describe schema for table `letters` for fixture `%s`. The table does not exist.',
+                LettersFixture::class,
+            ),
+        );
+
+        new LettersFixture();
+    }
+
+    /**
+     * Tests schema reflection.
+     */
+    public function testReflection(): void
+    {
+        $db = ConnectionManager::get('test');
+        $table = new TableSchema('letters', [
+            'id' => ['type' => 'integer'],
+            'letter' => ['type' => 'string', 'length' => 1],
+        ]);
+        $table->addConstraint('primary', ['type' => 'primary', 'columns' => ['id']]);
+        $sql = $table->createSql($db);
+
+        foreach ($sql as $stmt) {
+            $db->execute($stmt);
+        }
+
+        $fixture = new LettersFixture();
+        $this->assertSame(['id', 'letter'], $fixture->getTableSchema()->columns());
+    }
+
+    /**
+     * Tests that schema reflection picks up dynamically configured column types.
+     */
+    public function testReflectionWithDynamicTypes(): void
+    {
+        $db = ConnectionManager::get('test');
+        $table = new TableSchema('letters', [
+            'id' => ['type' => 'integer'],
+            'letter' => ['type' => 'string', 'length' => 1],
+            'complex_field' => ['type' => 'text'],
+        ]);
+        $table->addConstraint('primary', ['type' => 'primary', 'columns' => ['id']]);
+        $sql = $table->createSql($db);
+
+        foreach ($sql as $stmt) {
+            $db->execute($stmt);
+        }
+
+        $table = $this->fetchTable('Letters', ['connection' => $db]);
+        $table->getSchema()->setColumnType('complex_field', 'json');
+
+        $fixture = new LettersFixture();
+        $fixtureSchema = $fixture->getTableSchema();
+        $this->assertSame(['id', 'letter', 'complex_field'], $fixtureSchema->columns());
+        $this->assertSame('json', $fixtureSchema->getColumnType('complex_field'));
+    }
+
+    /**
+     * test init with other tables used in initialize()
+     *
+     * The FeaturedTagsTable uses PostsTable, then when PostsFixture
+     * reflects schema it should not raise an error.
+     */
+    public function testInitInitializeUsesRegistry(): void
+    {
+        $this->setAppNamespace();
+
+        $fixture = new FeaturedTagsFixture();
+        new PostsFixture();
+
+        $expected = ['tag_id', 'priority'];
+        $this->assertSame($expected, $fixture->getTableSchema()->columns());
+    }
+
+    /**
+     * test the insert method
+     */
+    public function testInsert(): void
+    {
+        $fixture = new ArticlesFixture();
+
+        $db = Mockery::mock(Connection::class);
+        $query = Mockery::mock(InsertQuery::class . '[execute,insert,into,values]', [$db]);
+
+        $db->shouldReceive('insertQuery')
+            ->andReturn($query)
+            ->once();
+
+        $query->shouldReceive('insert')
+            ->with(['author_id', 'title', 'body', 'published'], ['author_id' => 'integer', 'title' => 'string', 'body' => 'text', 'published' => 'string'])
+            ->andReturnSelf()
+            ->once();
+
+        $query->shouldReceive('into')
+            ->with('articles')
+            ->andReturnSelf()
+            ->once();
+
+        $expected = [
+            ['author_id' => 1, 'title' => 'First Article', 'body' => 'First Article Body', 'published' => 'Y'],
+            ['author_id' => 3, 'title' => 'Second Article', 'body' => 'Second Article Body', 'published' => 'Y'],
+            ['author_id' => 1, 'title' => 'Third Article', 'body' => 'Third Article Body', 'published' => 'Y'],
+        ];
+        foreach ($expected as $data) {
+            $query->shouldReceive('values')
+                ->with($data)
+                ->andReturnSelf()
+                ->once();
+        }
+
+        $statement = Mockery::mock(StatementInterface::class);
+
+        $query->shouldReceive('execute')
+            ->andReturn($statement)
+            ->once();
+
+        $this->assertSame(true, $fixture->insert($db));
+    }
+
+    /**
+     * Test the truncate method.
+     */
+    public function testTruncate(): void
+    {
+        $fixture = new ArticlesFixture();
+
+        $this->assertTrue($fixture->truncate(ConnectionManager::get('test')));
+        $rows = ConnectionManager::get('test')->selectQuery()->select('*')->from('articles')->execute();
+        $this->assertEmpty($rows->fetchAll());
+    }
+}

@@ -1,0 +1,100 @@
+<?php
+
+/*
+ * This file is part of the Symfony package.
+ *
+ * (c) Fabien Potencier <fabien@symfony.com>
+ *
+ * For the full copyright and license information, please view the LICENSE
+ * file that was distributed with this source code.
+ */
+
+namespace Symfony\Component\HttpKernel\EventListener;
+
+use Symfony\Component\EventDispatcher\EventSubscriberInterface;
+use Symfony\Component\HttpFoundation\RequestStack;
+use Symfony\Component\HttpKernel\Event\FinishRequestEvent;
+use Symfony\Component\HttpKernel\Event\RequestEvent;
+use Symfony\Component\HttpKernel\KernelEvents;
+use Symfony\Contracts\Translation\LocaleAwareInterface;
+
+/**
+ * Pass the current locale to the provided services.
+ *
+ * @author Pierre Bobiet <pierrebobiet@gmail.com>
+ */
+class LocaleAwareListener implements EventSubscriberInterface
+{
+    private array $storedLocales = [];
+    private array $initializedServices = [];
+
+    /**
+     * @param iterable<mixed, LocaleAwareInterface> $localeAwareServices
+     */
+    public function __construct(
+        private iterable $localeAwareServices,
+        private RequestStack $requestStack,
+    ) {
+    }
+
+    public function onKernelRequest(RequestEvent $event): void
+    {
+        if (!$event->isMainRequest()) {
+            $locales = [];
+
+            foreach ($this->getLocaleAwareServices() as $key => $service) {
+                // a service the listener never set can hold no locale to restore
+                if (isset($this->initializedServices[$key])) {
+                    $locales[$key] = $service->getLocale();
+                }
+            }
+
+            $this->storedLocales[spl_object_id($event->getRequest())] = $locales;
+        }
+
+        $this->setLocale($event->getRequest()->getLocale(), $event->getRequest()->getDefaultLocale());
+    }
+
+    public function onKernelFinishRequest(FinishRequestEvent $event): void
+    {
+        $storedLocales = $this->storedLocales[$id = spl_object_id($event->getRequest())] ?? [];
+        unset($this->storedLocales[$id]);
+
+        if (null === $parentRequest = $this->requestStack->getParentRequest()) {
+            foreach ($this->getLocaleAwareServices() as $service) {
+                $service->setLocale($event->getRequest()->getDefaultLocale());
+            }
+
+            return;
+        }
+
+        $this->setLocale($parentRequest->getLocale(), $parentRequest->getDefaultLocale(), $storedLocales);
+    }
+
+    public static function getSubscribedEvents(): array
+    {
+        return [
+            KernelEvents::REQUEST => ['method' => 'onKernelRequest', 'priority' => 15, 'after' => LocaleListener::class.'::onKernelRequest'],
+            KernelEvents::FINISH_REQUEST => [['onKernelFinishRequest', -15]],
+        ];
+    }
+
+    private function setLocale(string $locale, string $defaultLocale, array $storedLocales = []): void
+    {
+        foreach ($this->getLocaleAwareServices() as $key => $service) {
+            try {
+                $service->setLocale($storedLocales[$key] ?? $locale);
+            } catch (\InvalidArgumentException) {
+                $service->setLocale($defaultLocale);
+            }
+
+            $this->initializedServices[$key] = true;
+        }
+    }
+
+    private function getLocaleAwareServices(): array
+    {
+        // a tagged iterator runs its generator again on every iteration, which costs much more than iterating an array
+        return \is_array($this->localeAwareServices) ? $this->localeAwareServices : $this->localeAwareServices = iterator_to_array($this->localeAwareServices);
+    }
+}

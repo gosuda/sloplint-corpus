@@ -1,0 +1,487 @@
+<?php
+
+/*
+ * This file is part of the Symfony package.
+ *
+ * (c) Fabien Potencier <fabien@symfony.com>
+ *
+ * For the full copyright and license information, please view the LICENSE
+ * file that was distributed with this source code.
+ */
+
+namespace Symfony\Bundle\FrameworkBundle\Tests\Kernel;
+
+use PHPUnit\Framework\Attributes\BackupGlobals;
+use PHPUnit\Framework\TestCase;
+use Psr\Log\NullLogger;
+use Symfony\Bundle\FrameworkBundle\Console\Application;
+use Symfony\Bundle\FrameworkBundle\Kernel\MicroKernelTrait;
+use Symfony\Component\Asset\AssetBundle;
+use Symfony\Component\AssetMapper\AssetMapperBundle;
+use Symfony\Component\Cache\CacheBundle;
+use Symfony\Component\Console\Attribute\AsCommand;
+use Symfony\Component\Console\ConsoleBundle;
+use Symfony\Component\Console\Input\ArrayInput;
+use Symfony\Component\Console\Output\BufferedOutput;
+use Symfony\Component\DependencyInjection\ContainerBuilder;
+use Symfony\Component\DependencyInjection\Extension\ExtensionInterface;
+use Symfony\Component\DependencyInjection\Kernel\ServicesBundle;
+use Symfony\Component\DependencyInjection\Loader\ClosureLoader;
+use Symfony\Component\DependencyInjection\Loader\Configurator\ContainerConfigurator;
+use Symfony\Component\Filesystem\Filesystem;
+use Symfony\Component\HtmlSanitizer\HtmlSanitizerBundle;
+use Symfony\Component\HttpClient\HttpClientBundle;
+use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpKernel\HttpKernelInterface;
+use Symfony\Component\HttpKernel\Kernel;
+use Symfony\Component\JsonPath\JsonPathBundle;
+use Symfony\Component\JsonSchema\JsonSchemaBundle;
+use Symfony\Component\JsonStreamer\JsonStreamerBundle;
+use Symfony\Component\KeyManagement\KeyManagementBundle;
+use Symfony\Component\Lock\LockBundle;
+use Symfony\Component\Mailer\MailerBundle;
+use Symfony\Component\Messenger\MessengerBundle;
+use Symfony\Component\Mime\MimeBundle;
+use Symfony\Component\Notifier\NotifierBundle;
+use Symfony\Component\ObjectMapper\ObjectMapperBundle;
+use Symfony\Component\Process\ProcessBundle;
+use Symfony\Component\PropertyAccess\PropertyAccessBundle;
+use Symfony\Component\PropertyInfo\PropertyInfoBundle;
+use Symfony\Component\RateLimiter\RateLimiterBundle;
+use Symfony\Component\RemoteEvent\RemoteEventBundle;
+use Symfony\Component\Routing\Loader\Configurator\RoutingConfigurator;
+use Symfony\Component\Routing\RouterBundle;
+use Symfony\Component\Scheduler\SchedulerBundle;
+use Symfony\Component\Semaphore\SemaphoreBundle;
+use Symfony\Component\Serializer\SerializerBundle;
+use Symfony\Component\Translation\TranslationBundle;
+use Symfony\Component\TypeInfo\TypeInfoBundle;
+use Symfony\Component\Uid\UidBundle;
+use Symfony\Component\Validator\ValidationBundle;
+use Symfony\Component\Webhook\WebhookBundle;
+use Symfony\Component\WebLink\WebLinkBundle;
+use Symfony\Component\Workflow\WorkflowBundle;
+
+require_once __DIR__.'/default/src/DefaultKernel.php';
+require_once __DIR__.'/flex-style/src/FlexStyleMicroKernel.php';
+
+class MicroKernelTraitTest extends TestCase
+{
+    private ?Kernel $kernel = null;
+
+    protected function tearDown(): void
+    {
+        if ($this->kernel) {
+            $kernel = $this->kernel;
+            $this->kernel = null;
+            $fs = new Filesystem();
+            $fs->remove($kernel->getCacheDir());
+            $fs->remove($kernel->getProjectDir().'/config/reference.php');
+        }
+    }
+
+    #[BackupGlobals(true)]
+    public function testGetShareDirDisabledByEnv()
+    {
+        $_SERVER['APP_SHARE_DIR'] = 'false';
+
+        $kernel = $this->kernel = new ConcreteMicroKernel('test', false);
+
+        $this->assertNull($kernel->getShareDir());
+
+        $parameters = $kernel->getKernelParameters();
+        $this->assertArrayNotHasKey('kernel.share_dir', $parameters);
+    }
+
+    #[BackupGlobals(true)]
+    public function testGetShareDirCustomPathFromEnv()
+    {
+        $_SERVER['APP_SHARE_DIR'] = sys_get_temp_dir();
+
+        $kernel = $this->kernel = new ConcreteMicroKernel('test', false);
+
+        $expected = rtrim(sys_get_temp_dir(), '/').'/test';
+        $this->assertSame($expected, $kernel->getShareDir());
+
+        $parameters = $kernel->getKernelParameters();
+        $this->assertArrayHasKey('kernel.share_dir', $parameters);
+        $this->assertNotNull($parameters['kernel.share_dir']);
+        $this->assertSame(realpath($expected), realpath($parameters['kernel.share_dir']));
+    }
+
+    public function test()
+    {
+        $kernel = $this->kernel = new ConcreteMicroKernel('test', false);
+        $kernel->boot();
+
+        $request = Request::create('/');
+        $response = $kernel->handle($request);
+
+        $this->assertEquals('halloween', $response->getContent());
+        $this->assertEquals('Have a great day!', $kernel->getContainer()->getParameter('halloween'));
+        $this->assertInstanceOf(\stdClass::class, $kernel->getContainer()->get('halloween'));
+    }
+
+    public function testAsEventSubscriber()
+    {
+        $kernel = $this->kernel = new ConcreteMicroKernel('test', false);
+        $kernel->boot();
+
+        $request = Request::create('/danger');
+        $response = $kernel->handle($request);
+
+        $this->assertSame('It\'s dangerous to go alone. Take this ⚔', $response->getContent());
+    }
+
+    public function testRoutingRouteLoaderTagIsAdded()
+    {
+        $frameworkExtension = $this->createMock(ExtensionInterface::class);
+        $frameworkExtension
+            ->expects($this->atLeastOnce())
+            ->method('getAlias')
+            ->willReturn('framework');
+        $container = new ContainerBuilder();
+        $container->registerExtension($frameworkExtension);
+        $kernel = $this->kernel = new ConcreteMicroKernel('test', false);
+        $kernel->registerContainerConfiguration(new ClosureLoader($container));
+        $this->assertTrue($container->getDefinition('kernel')->hasTag('routing.route_loader'));
+    }
+
+    public function testFlexStyle()
+    {
+        $kernel = $this->kernel = new FlexStyleMicroKernel('test', false);
+        $kernel->boot();
+
+        $request = Request::create('/');
+        $response = $kernel->handle($request);
+
+        $this->assertEquals('Have a great day!', $response->getContent());
+
+        $request = Request::create('/h');
+        $response = $kernel->handle($request);
+
+        $this->assertEquals('Have a great day!', $response->getContent());
+
+        $request = Request::create('/easter');
+        $response = $kernel->handle($request);
+
+        $this->assertSame('easter', $response->getContent());
+    }
+
+    public function testSecretLoadedFromExtension()
+    {
+        $kernel = $this->kernel = new ConcreteMicroKernel('test', false);
+        $kernel->boot();
+
+        self::assertSame('$ecret', $kernel->getContainer()->getParameter('kernel.secret'));
+    }
+
+    public function testAnonymousMicroKernel()
+    {
+        $kernel = $this->kernel = new class('anonymous_kernel') extends MinimalKernel {
+            public function helloAction(): Response
+            {
+                return new Response('Hello World!');
+            }
+
+            protected function configureContainer(ContainerConfigurator $c): void
+            {
+                $c->extension('framework', []);
+                $c->services()->set('logger', NullLogger::class);
+            }
+
+            protected function configureRoutes(RoutingConfigurator $routes): void
+            {
+                $routes->add('hello', '/')->controller($this->helloAction(...));
+            }
+        };
+
+        $request = Request::create('/');
+        $response = $kernel->handle($request, HttpKernelInterface::MAIN_REQUEST, false);
+
+        $this->assertSame('Hello World!', $response->getContent());
+    }
+
+    public function testSimpleKernel()
+    {
+        $kernel = $this->kernel = new SimpleKernel('simple_kernel');
+        $kernel->boot();
+
+        $request = Request::create('/');
+        $response = $kernel->handle($request, HttpKernelInterface::MAIN_REQUEST, false);
+
+        $this->assertSame('Hello World!', $response->getContent());
+    }
+
+    public function testKernelCommand()
+    {
+        if (!property_exists(AsCommand::class, 'help')) {
+            $this->markTestSkipped('Invokable command no available.');
+        }
+
+        $kernel = $this->kernel = new KernelCommand('kernel_command');
+        $application = new Application($kernel);
+
+        $input = new ArrayInput(['command' => 'kernel:hello']);
+        $output = new BufferedOutput();
+
+        $this->assertTrue($application->has('kernel:hello'));
+        $this->assertSame(0, $application->doRun($input, $output));
+        $this->assertSame('Hello Kernel!', $output->fetch());
+    }
+
+    public function testDefaultKernel()
+    {
+        $kernel = $this->kernel = new DefaultKernel('test', false);
+        $kernel->boot();
+
+        $this->assertTrue($kernel->getContainer()->has('foo_service'));
+
+        $request = Request::create('/');
+        $response = $kernel->handle($request, HttpKernelInterface::MAIN_REQUEST, false);
+
+        $this->assertSame('OK', $response->getContent());
+    }
+
+    public function testRebootDumpsDebugContainerInWarmupDir()
+    {
+        $cacheDir = sys_get_temp_dir().'/'.uniqid('sf_debug_warmup_', true);
+        $warmupDir = $cacheDir.'_warmup';
+        $fs = new Filesystem();
+        $fs->remove([$cacheDir, $warmupDir]);
+
+        $kernel = $this->kernel = new DebugWarmupKernel($cacheDir);
+
+        try {
+            $kernel->boot();
+            $containerClass = $kernel->getContainer()->getParameter('kernel.container_class');
+
+            // Rebooting in a fresh warmup directory must recompile the container there,
+            // so that ContainerBuilderDebugDumpPass (which only runs during compile())
+            // re-dumps the debug container used by tooling (e.g. debug:container, phpstan).
+            $kernel->reboot($warmupDir);
+
+            $this->assertSame(realpath($warmupDir), realpath($kernel->getContainer()->getParameter('kernel.build_dir')));
+            $this->assertFileExists($warmupDir.'/'.$containerClass.'.xml');
+        } finally {
+            $fs->remove($warmupDir);
+        }
+    }
+
+    public function testGetKernelParameters()
+    {
+        $kernel = $this->kernel = new ConcreteMicroKernel('test', false);
+
+        $parameters = $kernel->getKernelParameters();
+
+        $this->assertSame($kernel->getConfigDir(), $parameters['.kernel.config_dir']);
+        $this->assertSame($kernel->getCharset(), $parameters['kernel.charset']);
+        $this->assertSame(['test'], $parameters['.container.known_envs']);
+        $this->assertSame(['Symfony\Bundle\FrameworkBundle\FrameworkBundle' => ['all' => true]], $parameters['.kernel.bundles_definition']);
+    }
+
+    public function testGetKernelParametersPopulatesBundleMetadataNamespace()
+    {
+        $kernel = $this->kernel = new ConcreteMicroKernel('test', false);
+
+        $reflectionInitializeBundles = new \ReflectionMethod($kernel, 'initializeBundles');
+        $reflectionInitializeBundles->invoke($kernel);
+
+        $parameters = $kernel->getKernelParameters();
+
+        $this->assertArrayHasKey('kernel.bundles_metadata', $parameters);
+        $this->assertArrayHasKey('FrameworkBundle', $parameters['kernel.bundles_metadata']);
+        $this->assertSame('Symfony\\Bundle\\FrameworkBundle', $parameters['kernel.bundles_metadata']['FrameworkBundle']['namespace']);
+        $this->assertArrayHasKey('path', $parameters['kernel.bundles_metadata']['FrameworkBundle']);
+    }
+
+    public function testGetKernelParametersWithBundlesFile()
+    {
+        $kernel = $this->kernel = new ConcreteMicroKernel('test', false);
+
+        $configDir = $kernel->getConfigDir();
+        mkdir($configDir, 0o777, true);
+
+        $bundlesContent = "<?php\nreturn [\n    'Symfony\Bundle\FrameworkBundle\FrameworkBundle' => ['all' => true],\n    'TestBundle' => ['test' => true, 'dev' => true],\n];";
+        file_put_contents($configDir.'/bundles.php', $bundlesContent);
+
+        $parameters = $kernel->getKernelParameters();
+
+        $this->assertSame(['test', 'dev'], $parameters['.container.known_envs']);
+        $expected = [
+            ServicesBundle::class => ['all' => true],
+            ConsoleBundle::class => ['all' => true],
+            RouterBundle::class => ['all' => true],
+            CacheBundle::class => ['all' => true],
+        ];
+
+        // registered with ignoreOnInvalid, so absent when the component is not installed
+        foreach ([AssetBundle::class, SerializerBundle::class, ValidationBundle::class, TranslationBundle::class, WebLinkBundle::class, LockBundle::class, MessengerBundle::class, SemaphoreBundle::class, WorkflowBundle::class, RemoteEventBundle::class, HtmlSanitizerBundle::class, TypeInfoBundle::class, PropertyAccessBundle::class, PropertyInfoBundle::class, UidBundle::class, SchedulerBundle::class, JsonStreamerBundle::class, AssetMapperBundle::class, RateLimiterBundle::class, WebhookBundle::class, HttpClientBundle::class, MailerBundle::class, NotifierBundle::class, ProcessBundle::class, JsonPathBundle::class, MimeBundle::class, ObjectMapperBundle::class, KeyManagementBundle::class, JsonSchemaBundle::class] as $class) {
+            if (class_exists($class)) {
+                $expected[$class] = ['all' => true];
+            }
+        }
+
+        $expected['Symfony\Bundle\FrameworkBundle\FrameworkBundle'] = ['all' => true];
+        $expected['TestBundle'] = ['test' => true, 'dev' => true];
+
+        $this->assertSame($expected, $parameters['.kernel.bundles_definition']);
+    }
+
+    public function testAllowedEnvsRestrictsKnownEnvs()
+    {
+        $kernel = $this->kernel = new AllowedEnvsKernel('prod', ['dev', 'test', 'prod']);
+
+        $parameters = $kernel->getKernelParameters();
+
+        $this->assertSame(['dev', 'test', 'prod'], $parameters['.container.known_envs']);
+    }
+
+    public function testAllowedEnvsThrowsWhenCurrentEnvNotAllowed()
+    {
+        $kernel = $this->kernel = new AllowedEnvsKernel('staging', ['dev', 'test', 'prod']);
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('The environment "staging" is not registered as allowed by "'.AllowedEnvsKernel::class.'::getAllowedEnvs()".');
+
+        $kernel->getKernelParameters();
+    }
+
+    #[BackupGlobals(true)]
+    public function testRelativeEnvDirsAreResolvedFromProjectDir()
+    {
+        $_SERVER['APP_CACHE_DIR'] = 'var/custom-cache';
+        $_SERVER['APP_BUILD_DIR'] = 'var/custom-build';
+        $_SERVER['APP_SHARE_DIR'] = 'var/custom-share';
+
+        $projectDir = sys_get_temp_dir().'/sf_env_dir_kernel';
+        $kernel = new EnvDirKernel($projectDir);
+
+        $this->assertSame($projectDir.'/var/custom-cache/test', $kernel->getCacheDir());
+        $this->assertSame($projectDir.'/var/custom-build/test', $kernel->getBuildDir());
+        $this->assertSame($projectDir.'/var/custom-share/test', $kernel->getShareDir());
+    }
+
+    public function testOverriddenConfigDirIsUsedToRegisterBundles()
+    {
+        $projectDir = sys_get_temp_dir().'/'.uniqid('sf_custom_config_dir_', true);
+        $configDir = $projectDir.'/config1/config';
+        $fs = new Filesystem();
+        $fs->mkdir($configDir.'/packages');
+        file_put_contents($configDir.'/bundles.php', "<?php\n\nreturn [\n    Symfony\\Bundle\\FrameworkBundle\\FrameworkBundle::class => ['all' => true],\n];\n");
+        file_put_contents($configDir.'/packages/framework.yaml', "framework:\n    secret: \$ecret\n    http_method_override: false\n    test: true\n");
+
+        $kernel = $this->kernel = new CustomConfigDirKernel($projectDir);
+
+        try {
+            $kernel->boot();
+
+            $this->assertSame('$ecret', $kernel->getContainer()->getParameter('kernel.secret'));
+        } finally {
+            $fs->remove($projectDir);
+        }
+    }
+}
+
+class DebugWarmupKernel extends Kernel
+{
+    use MicroKernelTrait;
+
+    public function __construct(private readonly string $cacheDir)
+    {
+        parent::__construct('test', true);
+    }
+
+    public function getCacheDir(): string
+    {
+        return $this->cacheDir;
+    }
+
+    public function getLogDir(): string
+    {
+        return $this->cacheDir;
+    }
+
+    protected function configureContainer(ContainerConfigurator $c): void
+    {
+        $c->extension('framework', ['http_method_override' => false, 'handle_all_throwables' => true]);
+        $c->services()->set('logger', NullLogger::class);
+    }
+
+    protected function configureRoutes(RoutingConfigurator $routes): void
+    {
+    }
+}
+
+class EnvDirKernel extends Kernel
+{
+    use MicroKernelTrait;
+
+    public function __construct(private readonly string $projectDir)
+    {
+        parent::__construct('test', false);
+    }
+
+    public function getProjectDir(): string
+    {
+        return $this->projectDir;
+    }
+}
+
+class CustomConfigDirKernel extends Kernel
+{
+    use MicroKernelTrait;
+
+    public function __construct(private readonly string $projectDir)
+    {
+        parent::__construct('test', false);
+    }
+
+    public function getProjectDir(): string
+    {
+        return $this->projectDir;
+    }
+
+    public function getCacheDir(): string
+    {
+        return $this->projectDir.'/var/cache/'.$this->environment;
+    }
+
+    public function getLogDir(): string
+    {
+        return $this->projectDir.'/var/log';
+    }
+
+    public function getConfigDir(): string
+    {
+        return $this->projectDir.'/config1/config';
+    }
+}
+
+class AllowedEnvsKernel extends Kernel
+{
+    use MicroKernelTrait {
+        getKernelParameters as public;
+    }
+
+    public function __construct(string $environment, private array $allowedEnvs)
+    {
+        parent::__construct($environment, false);
+    }
+
+    private function getAllowedEnvs(): array
+    {
+        return $this->allowedEnvs;
+    }
+
+    public function registerBundles(): iterable
+    {
+        return [];
+    }
+
+    public function getCacheDir(): string
+    {
+        return sys_get_temp_dir().'/sf_allowed_envs_kernel/'.$this->environment;
+    }
+}

@@ -1,0 +1,970 @@
+<?php
+
+/*
+ * This file is part of the Symfony package.
+ *
+ * (c) Fabien Potencier <fabien@symfony.com>
+ *
+ * For the full copyright and license information, please view the LICENSE
+ * file that was distributed with this source code.
+ */
+
+namespace Symfony\Component\Yaml\Tests\Command;
+
+use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\RequiresMethod;
+use PHPUnit\Framework\Attributes\TestWith;
+use PHPUnit\Framework\TestCase;
+use Symfony\Component\Console\Application;
+use Symfony\Component\Console\CI\GitlabCiReporter;
+use Symfony\Component\Console\Command\Command;
+use Symfony\Component\Console\Completion\CompletionInput;
+use Symfony\Component\Console\Completion\CompletionSuggestions;
+use Symfony\Component\Console\Exception\InvalidArgumentException;
+use Symfony\Component\Console\Output\OutputInterface;
+use Symfony\Component\Console\Tester\CommandCompletionTester;
+use Symfony\Component\Console\Tester\CommandTester;
+use Symfony\Component\Yaml\Command\LintCommand;
+use Symfony\Component\Yaml\Schema\SchemaResolverInterface;
+use Symfony\Component\Yaml\Schema\SchemaValidatorInterface;
+
+/**
+ * Tests the YamlLintCommand.
+ *
+ * @author Robin Chalas <robin.chalas@gmail.com>
+ */
+class LintCommandTest extends TestCase
+{
+    private array $files;
+
+    public function testLintCorrectFile()
+    {
+        $tester = $this->createCommandTester();
+        $filename = $this->createFile('foo: bar');
+
+        $ret = $tester->execute(['filename' => $filename], ['verbosity' => OutputInterface::VERBOSITY_VERBOSE, 'decorated' => false]);
+
+        $this->assertEquals(0, $ret, 'Returns 0 in case of success');
+        $this->assertMatchesRegularExpression('/^\/\/ OK in /', trim($tester->getDisplay()));
+    }
+
+    public function testLintCorrectFiles()
+    {
+        $tester = $this->createCommandTester();
+        $filename1 = $this->createFile('foo: bar');
+        $filename2 = $this->createFile('bar: baz');
+
+        $ret = $tester->execute(['filename' => [$filename1, $filename2]], ['verbosity' => OutputInterface::VERBOSITY_VERBOSE, 'decorated' => false]);
+
+        $this->assertEquals(0, $ret, 'Returns 0 in case of success');
+        $this->assertMatchesRegularExpression('/^\/\/ OK in /', trim($tester->getDisplay()));
+    }
+
+    public function testLintIncorrectFile()
+    {
+        $incorrectContent = '
+foo:
+bar';
+        $tester = $this->createCommandTester();
+        $filename = $this->createFile($incorrectContent);
+
+        $ret = $tester->execute(['filename' => $filename], ['decorated' => false]);
+
+        $this->assertEquals(1, $ret, 'Returns 1 in case of error');
+        $this->assertStringContainsString('Unable to parse at line 3 (near "bar").', trim($tester->getDisplay()));
+    }
+
+    public function testLintIncorrectFileWithMarkup()
+    {
+        $tester = $this->createCommandTester();
+        $filename = $this->createFile("foo: bar\n</info>baz");
+
+        $ret = $tester->execute(['filename' => $filename], ['decorated' => false]);
+
+        $this->assertSame(1, $ret);
+        $this->assertStringContainsString('>> Unable to parse at line 2 (near "</info>baz").', $tester->getDisplay());
+    }
+
+    public function testLintFilesWithMarkupInTheirName()
+    {
+        $cwd = getcwd();
+        chdir(sys_get_temp_dir().'/framework-yml-lint-test');
+
+        try {
+            $this->files[] = $valid = getcwd().'/a<comment>.yaml';
+            $this->files[] = $invalid = getcwd().'/b<comment>.yaml';
+
+            if (!@file_put_contents($valid, 'foo: bar') || !@file_put_contents($invalid, "foo:\nbar")) {
+                $this->markTestSkipped('The filesystem does not support "<" and ">" in file names.');
+            }
+
+            $tester = $this->createCommandTester();
+            $tester->execute(['filename' => ['a<comment>.yaml', 'b<comment>.yaml']], ['verbosity' => OutputInterface::VERBOSITY_VERBOSE, 'decorated' => false]);
+
+            $this->assertStringContainsString('// OK in a<comment>.yaml', $tester->getDisplay());
+            $this->assertStringContainsString('ERROR  in b<comment>.yaml', $tester->getDisplay());
+        } finally {
+            chdir($cwd);
+        }
+    }
+
+    public function testLintIncorrectFileWithJsonFormat()
+    {
+        $tester = $this->createCommandTester();
+        $filename = $this->createFile("foo: bar\n<comment>baz");
+
+        $ret = $tester->execute(['filename' => $filename, '--format' => 'json'], ['decorated' => true]);
+
+        $this->assertSame(1, $ret);
+        $this->assertSame([['file' => $filename, 'line' => 2, 'valid' => false, 'message' => 'Unable to parse at line 2 (near "<comment>baz").']], json_decode($tester->getDisplay(), true, 512, \JSON_THROW_ON_ERROR));
+    }
+
+    public function testLintFileWithInvalidUtf8NameWithJsonFormat()
+    {
+        $this->files[] = $filename = sys_get_temp_dir()."/framework-yml-lint-test/\xFF.yaml";
+
+        if (!@file_put_contents($filename, 'foo: bar')) {
+            $this->markTestSkipped('The filesystem does not support non-UTF-8 file names.');
+        }
+
+        $tester = $this->createCommandTester();
+        $ret = $tester->execute(['filename' => $filename, '--format' => 'json'], ['decorated' => false]);
+        $json = json_decode($tester->getDisplay(), true, 512, \JSON_THROW_ON_ERROR);
+
+        $this->assertSame(0, $ret);
+        $this->assertSame(sys_get_temp_dir()."/framework-yml-lint-test/\u{FFFD}.yaml", $json[0]['file']);
+    }
+
+    public function testLintIncorrectFileWithGithubFormat()
+    {
+        $incorrectContent = <<<YAML
+            foo:
+            bar
+            YAML;
+        $tester = $this->createCommandTester();
+        $filename = $this->createFile($incorrectContent);
+
+        $tester->execute(['filename' => $filename, '--format' => 'github'], ['decorated' => false]);
+
+        self::assertEquals(1, $tester->getStatusCode(), 'Returns 1 in case of error');
+        self::assertStringMatchesFormat('%A::error file=%s,line=2,col=0::Unable to parse at line 2 (near "bar")%A', trim($tester->getDisplay()));
+    }
+
+    public function testLintIncorrectFileWithGitlabFormat()
+    {
+        if (!class_exists(GitlabCiReporter::class)) {
+            $this->markTestSkipped('The "gitlab" format requires symfony/console 8.2 or higher.');
+        }
+
+        $incorrectContent = <<<YAML
+            foo:
+            bar
+            YAML;
+        $tester = $this->createCommandTester();
+        $filename = $this->createFile($incorrectContent);
+
+        $tester->execute(['filename' => $filename, '--format' => 'gitlab'], ['decorated' => false]);
+
+        self::assertSame(1, $tester->getStatusCode(), 'Returns 1 in case of error');
+
+        $report = json_decode(trim($tester->getDisplay()), true);
+        self::assertIsArray($report);
+        self::assertCount(1, $report);
+        self::assertSame('yaml-lint', $report[0]['check_name']);
+        self::assertSame('major', $report[0]['severity']);
+        self::assertStringContainsString('Unable to parse at line 2 (near "bar")', $report[0]['description']);
+        self::assertSame($filename, $report[0]['location']['path']);
+        self::assertSame(2, $report[0]['location']['lines']['begin']);
+        self::assertNotEmpty($report[0]['fingerprint']);
+    }
+
+    public function testLintCorrectFileWithGitlabFormat()
+    {
+        if (!class_exists(GitlabCiReporter::class)) {
+            $this->markTestSkipped('The "gitlab" format requires symfony/console 8.2 or higher.');
+        }
+
+        $tester = $this->createCommandTester();
+        $filename = $this->createFile('foo: bar');
+
+        $tester->execute(['filename' => $filename, '--format' => 'gitlab'], ['decorated' => false]);
+
+        self::assertSame(0, $tester->getStatusCode(), 'Returns 0 in case of success');
+        self::assertSame([], json_decode(trim($tester->getDisplay()), true));
+    }
+
+    public function testLintAutodetectsGithubActionEnvironment()
+    {
+        $prev = getenv('GITHUB_ACTIONS');
+        putenv('GITHUB_ACTIONS');
+
+        try {
+            putenv('GITHUB_ACTIONS=1');
+
+            $incorrectContent = <<<YAML
+                foo:
+                bar
+                YAML;
+            $tester = $this->createCommandTester();
+            $filename = $this->createFile($incorrectContent);
+
+            $tester->execute(['filename' => $filename], ['decorated' => false]);
+
+            self::assertStringMatchesFormat('%A::error file=%s,line=2,col=0::Unable to parse at line 2 (near "bar")%A', trim($tester->getDisplay()));
+        } finally {
+            putenv('GITHUB_ACTIONS'.($prev ? "=$prev" : ''));
+        }
+    }
+
+    public function testConstantAsKey()
+    {
+        $yaml = <<<YAML
+            !php/const 'Symfony\Component\Yaml\Tests\Command\Foo::TEST': bar
+            YAML;
+        $ret = $this->createCommandTester()->execute(['filename' => $this->createFile($yaml)], ['verbosity' => OutputInterface::VERBOSITY_VERBOSE, 'decorated' => false]);
+        $this->assertSame(0, $ret, 'lint:yaml exits with code 0 in case of success');
+    }
+
+    public function testCustomTags()
+    {
+        $yaml = <<<YAML
+            foo: !my_tag {foo: bar}
+            YAML;
+        $ret = $this->createCommandTester()->execute(['filename' => $this->createFile($yaml), '--parse-tags' => true], ['verbosity' => OutputInterface::VERBOSITY_VERBOSE, 'decorated' => false]);
+        $this->assertSame(0, $ret, 'lint:yaml exits with code 0 in case of success');
+    }
+
+    public function testCustomTagsError()
+    {
+        $yaml = <<<YAML
+            foo: !my_tag {foo: bar}
+            YAML;
+        $ret = $this->createCommandTester()->execute(['filename' => $this->createFile($yaml)], ['verbosity' => OutputInterface::VERBOSITY_VERBOSE, 'decorated' => false]);
+        $this->assertSame(1, $ret, 'lint:yaml exits with code 1 in case of error');
+    }
+
+    public function testLintValidatesAgainstSchemaOption()
+    {
+        $this->skipIfJsonSchemaMissing();
+
+        $schema = $this->createSchemaFile();
+        $filename = $this->createFile("name: Symfony\nversion: 8");
+
+        $tester = $this->createCommandTester();
+        $ret = $tester->execute(['filename' => $filename, '--schema' => $schema], ['decorated' => false]);
+
+        $this->assertSame(0, $ret, 'lint:yaml exits with code 0 when the content matches the schema');
+        $this->assertStringContainsString('contain valid syntax and conform to the schema', $tester->getDisplay());
+    }
+
+    public function testLintReportsSchemaViolationWithOption()
+    {
+        $this->skipIfJsonSchemaMissing();
+
+        $schema = $this->createSchemaFile();
+        $filename = $this->createFile('version: not-an-integer');
+
+        $tester = $this->createCommandTester();
+        $ret = $tester->execute(['filename' => $filename, '--schema' => $schema], ['decorated' => false]);
+
+        $this->assertSame(1, $ret, 'lint:yaml exits with code 1 when the content violates the schema');
+        $this->assertStringContainsString('ERROR', $tester->getDisplay());
+    }
+
+    public function testLintValidatesMappingsAsObjectsAndSequencesAsArrays()
+    {
+        $this->skipIfJsonSchemaMissing();
+
+        $schema = $this->createFile(json_encode([
+            'type' => 'object',
+            'properties' => [
+                'map' => ['type' => 'object'],
+                'list' => ['type' => 'array'],
+            ],
+        ]));
+
+        $tester = $this->createCommandTester();
+
+        $this->assertSame(0, $tester->execute(['filename' => $this->createFile("map: {}\nlist: []"), '--schema' => $schema], ['decorated' => false]), 'An empty mapping is an object and an empty sequence is an array');
+        $this->assertSame(0, $tester->execute(['filename' => $this->createFile("map: {0: a, 1: b}\nlist: [a, b]"), '--schema' => $schema], ['decorated' => false]), 'A mapping with integer keys is an object');
+        $this->assertSame(1, $tester->execute(['filename' => $this->createFile('list: {}'), '--schema' => $schema], ['decorated' => false]), 'An empty mapping is not an array');
+        $this->assertSame(1, $tester->execute(['filename' => $this->createFile('map: []'), '--schema' => $schema], ['decorated' => false]), 'An empty sequence is not an object');
+    }
+
+    public function testLintReportsAllSchemaViolations()
+    {
+        $this->skipIfJsonSchemaMissing();
+
+        $schema = $this->createSchemaFile();
+        $filename = $this->createFile("name: 8\nversion: not-an-integer");
+
+        $tester = $this->createCommandTester();
+        $ret = $tester->execute(['filename' => $filename, '--schema' => $schema], ['decorated' => false]);
+
+        $this->assertSame(1, $ret);
+        $display = $tester->getDisplay();
+        $this->assertStringContainsString('name:', $display);
+        $this->assertStringContainsString('version:', $display);
+    }
+
+    public function testLintReportsUnresolvableSchemaAsError()
+    {
+        $this->skipIfJsonSchemaMissing();
+
+        $filename = $this->createFile("name: Symfony\nversion: 8");
+
+        $tester = $this->createCommandTester();
+        $ret = $tester->execute(['filename' => $filename, '--schema' => '/nonexistent/schema.json'], ['decorated' => false]);
+
+        // An unresolvable schema is reported as a file error, it does not abort the command with a stack trace.
+        $this->assertSame(1, $ret, 'lint:yaml exits with code 1 when the schema cannot be loaded');
+        $this->assertStringContainsString('ERROR', $tester->getDisplay());
+    }
+
+    public function testLintValidatesAgainstSchemaHeader()
+    {
+        $this->skipIfJsonSchemaMissing();
+
+        $schema = $this->createSchemaFile();
+        $filename = $this->createFile(\sprintf("# yaml-language-server: \$schema=%s\nversion: not-an-integer", basename($schema)));
+
+        $ret = $this->createCommandTester()->execute(['filename' => $filename, '--check-schema' => null], ['decorated' => false]);
+
+        $this->assertSame(1, $ret, 'lint:yaml uses the schema declared in the file header');
+    }
+
+    public function testLintValidatesAgainstShortSchemaHeader()
+    {
+        $this->skipIfJsonSchemaMissing();
+
+        $schema = $this->createSchemaFile();
+        $filename = $this->createFile(\sprintf("# \$schema: %s\nversion: not-an-integer", basename($schema)));
+
+        $ret = $this->createCommandTester()->execute(['filename' => $filename, '--check-schema' => null], ['decorated' => false]);
+
+        $this->assertSame(1, $ret, 'lint:yaml uses the short schema header');
+    }
+
+    #[DataProvider('provideNoneSchemaHeaderOptions')]
+    public function testLintDoesNotValidateFileWithNoneSchemaHeader(array $options)
+    {
+        $this->skipIfJsonSchemaMissing();
+
+        $filename = $this->createFile("# \$schema: none\nversion: not-an-integer");
+
+        $tester = $this->createCommandTester();
+        $ret = $tester->execute(['filename' => $filename] + $options, ['verbosity' => OutputInterface::VERBOSITY_VERBOSE, 'decorated' => false]);
+
+        $this->assertSame(0, $ret);
+        $this->assertStringContainsString('(no schema)', preg_replace('~\s*\n\s*(// )?~', ' ', $tester->getDisplay()));
+    }
+
+    public static function provideNoneSchemaHeaderOptions(): iterable
+    {
+        yield 'by default' => [[]];
+        yield 'with --check-schema' => [['--check-schema' => null]];
+    }
+
+    public function testLintValidatesFileWithNoneSchemaHeaderAgainstSchemaOption()
+    {
+        $this->skipIfJsonSchemaMissing();
+
+        $filename = $this->createFile("# \$schema: none\nversion: not-an-integer");
+
+        $ret = $this->createCommandTester()->execute(['filename' => $filename, '--schema' => $this->createSchemaFile()], ['decorated' => false]);
+
+        $this->assertSame(1, $ret, 'The --schema option applies to all files, including the ones whose header says none');
+    }
+
+    public function testLintReadsNoneSchemaOptionAsAPath()
+    {
+        $this->skipIfJsonSchemaMissing();
+
+        $filename = $this->createFile('version: 8');
+
+        $tester = $this->createCommandTester();
+        $ret = $tester->execute(['filename' => $filename, '--schema' => 'none'], ['decorated' => false]);
+
+        $this->assertSame(1, $ret);
+        $this->assertStringContainsString('Unable to validate against schema "none"', $tester->getDisplay());
+    }
+
+    public function testLintDisplaysSchemaPerFileInVerboseMode()
+    {
+        $this->skipIfJsonSchemaMissing();
+
+        $schema = $this->createSchemaFile();
+        $filename = $this->createFile("name: Symfony\nversion: 8");
+
+        $tester = $this->createCommandTester();
+        $tester->execute(['filename' => $filename, '--schema' => $schema], ['verbosity' => OutputInterface::VERBOSITY_VERBOSE, 'decorated' => false]);
+
+        // The comment style wraps at 80 columns and prefixes every line with "//",
+        // so collapse line breaks and the prefix before asserting on the label.
+        $display = preg_replace('~\s*\n\s*(// )?~', ' ', $tester->getDisplay());
+        $this->assertStringContainsString('validated against', $display);
+    }
+
+    public function testLintUsesTheInjectedSchemaResolver()
+    {
+        $this->skipIfJsonSchemaMissing();
+
+        $schema = $this->createSchemaFile();
+        $filename = $this->createFile('version: not-an-integer');
+
+        $application = new Application();
+        $resolver = $this->createStub(SchemaResolverInterface::class);
+        $resolver->method('resolve')->willReturn($schema);
+
+        $application->addCommand(new LintCommand(null, null, null, $resolver));
+        $tester = new CommandTester($application->find('lint:yaml'));
+
+        $ret = $tester->execute(['filename' => $filename, '--check-schema' => null], ['decorated' => false]);
+
+        $this->assertSame(1, $ret, 'lint:yaml validates against the schema returned by the injected resolver');
+    }
+
+    public function testLintDisplaysSchemaRelativeToTheBaseDir()
+    {
+        $this->skipIfJsonSchemaMissing();
+
+        $schema = $this->createSchemaFile();
+        $filename = $this->createFile("name: Symfony\nversion: 8");
+
+        $application = new Application();
+        $application->addCommand(new LintCommand(null, null, null, null, null, \dirname($schema)));
+        $tester = new CommandTester($application->find('lint:yaml'));
+
+        $tester->execute(['filename' => $filename, '--schema' => $schema], ['verbosity' => OutputInterface::VERBOSITY_VERBOSE, 'decorated' => false]);
+
+        $display = preg_replace('~\s*\n\s*(// )?~', ' ', $tester->getDisplay());
+        $this->assertStringContainsString('validated against '.basename($schema), $display);
+    }
+
+    public function testLintDisplaysSchemaWithMarkupInItsPath()
+    {
+        $validator = $this->createStub(SchemaValidatorInterface::class);
+        $validator->method('isSupported')->willReturn(true);
+        $validator->method('validate')->willReturnCallback(static fn ($data, $schema, $content) => str_contains($content, 'invalid') ? [['message' => 'Invalid', 'line' => 1]] : []);
+
+        $valid = $this->createFile('foo: valid');
+        $invalid = $this->createFile('foo: invalid');
+        $unavailable = $this->createFile("# \$schema: sf-<info>missing.json\nfoo: bar");
+
+        $application = new Application();
+        $application->addCommand(new LintCommand(null, null, null, null, $validator, \dirname($unavailable)));
+        $tester = new CommandTester($application->find('lint:yaml'));
+
+        $tester->execute(['filename' => [$valid, $invalid], '--schema' => 'sf-<info>schema.json'], ['verbosity' => OutputInterface::VERBOSITY_VERBOSE, 'decorated' => false]);
+        $display = preg_replace('~\s*\n\s*(// )?~', ' ', $tester->getDisplay());
+
+        $this->assertSame(1, $tester->getStatusCode());
+        $this->assertSame(2, substr_count($display, '(validated against sf-<info>schema.json)'));
+        $this->assertStringContainsString('ERROR  in '.$invalid.' (validated against sf-<info>schema.json)', $display);
+
+        $tester->execute(['filename' => [$unavailable]], ['verbosity' => OutputInterface::VERBOSITY_VERBOSE, 'decorated' => false]);
+        $display = preg_replace('~\s*\n\s*(// )?~', ' ', $tester->getDisplay());
+
+        $tester->assertCommandIsSuccessful();
+        $this->assertStringContainsString('(schema sf-<info>missing.json not available)', $display);
+    }
+
+    public function testLintReportsSchemaViolationLineWithGithubFormat()
+    {
+        $this->skipIfJsonSchemaMissing();
+
+        $schema = $this->createSchemaFile();
+        $filename = $this->createFile("name: Symfony\nversion: not-an-integer");
+
+        $tester = $this->createCommandTester();
+        $tester->execute(['filename' => $filename, '--schema' => $schema, '--format' => 'github'], ['decorated' => false]);
+
+        self::assertSame(1, $tester->getStatusCode());
+        self::assertStringContainsString('line=2', $tester->getDisplay());
+    }
+
+    public function testLintValidatesAgainstSchemaHeaderByDefault()
+    {
+        $this->skipIfJsonSchemaMissing();
+
+        $schema = $this->createSchemaFile();
+        $filename = $this->createFile(\sprintf("# \$schema: %s\nversion: not-an-integer", basename($schema)));
+
+        $ret = $this->createCommandTester()->execute(['filename' => $filename], ['decorated' => false]);
+
+        $this->assertSame(1, $ret, 'lint:yaml validates against the schema of the file without --check-schema');
+    }
+
+    public function testLintReportsSchemaConformanceByDefault()
+    {
+        $this->skipIfJsonSchemaMissing();
+
+        $schema = $this->createSchemaFile();
+        $filename = $this->createFile(\sprintf("# \$schema: %s\nversion: 8", basename($schema)));
+
+        $tester = $this->createCommandTester();
+        $ret = $tester->execute(['filename' => $filename], ['decorated' => false]);
+
+        $this->assertSame(0, $ret);
+        $this->assertStringContainsString('All 1 YAML files contain valid syntax and conform to the schema.', $tester->getDisplay());
+    }
+
+    public function testLintDoesNotValidateSchemaWithNoCheckSchemaOption()
+    {
+        $this->skipIfJsonSchemaMissing();
+
+        $schema = $this->createSchemaFile();
+        $filename = $this->createFile(\sprintf("# \$schema: %s\nversion: not-an-integer", basename($schema)));
+
+        $tester = $this->createCommandTester();
+        $ret = $tester->execute(['filename' => $filename, '--no-check-schema' => true], ['decorated' => false]);
+
+        $this->assertSame(0, $ret, 'lint:yaml only checks syntax with --no-check-schema');
+        $this->assertStringContainsString('All 1 YAML files contain valid syntax.', $tester->getDisplay());
+    }
+
+    public function testLintThrowsWhenSchemaAndNoCheckSchemaAreCombined()
+    {
+        $this->skipIfJsonSchemaMissing();
+
+        $filename = $this->createFile('foo: bar');
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The "--schema" option cannot be used with "--no-check-schema".');
+
+        $this->createCommandTester()->execute(['filename' => $filename, '--schema' => $this->createSchemaFile(), '--no-check-schema' => true], ['decorated' => false]);
+    }
+
+    public function testCheckSchemaDefaultsToWhetherTheValidatorIsSupported()
+    {
+        $this->assertTrue((new LintCommand(null, null, null, null, $this->createValidator(true)))->getDefinition()->getOption('check-schema')->getDefault());
+        $this->assertFalse((new LintCommand(null, null, null, null, $this->createValidator(false)))->getDefinition()->getOption('check-schema')->getDefault());
+    }
+
+    public function testHelpDescribesTheSchemaValidationAsConfigured()
+    {
+        $help = (new LintCommand(null, null, null, null, $this->createValidator(true)))->getHelp();
+        $this->assertStringContainsString('The content of each file is also validated against its JSON Schema', $help);
+        $this->assertStringNotContainsString('opis/json-schema', $help);
+
+        $help = (new LintCommand(null, null, null, null, $this->createValidator(false)))->getHelp();
+        $this->assertStringContainsString('Install the "opis/json-schema" package to also validate the content of each', $help);
+        $this->assertStringNotContainsString('The content of each file is also validated', $help);
+    }
+
+    #[DataProvider('provideOptionsRequiringAValidator')]
+    public function testLintThrowsWhenAnOptionRequiresAValidatorThatIsNotSupported(array $options)
+    {
+        $application = new Application();
+        $application->addCommand(new LintCommand(null, null, null, null, $this->createValidator(false)));
+        $tester = new CommandTester($application->find('lint:yaml'));
+
+        $this->expectException(\LogicException::class);
+        $this->expectExceptionMessage('opis/json-schema');
+
+        $tester->execute(['filename' => $this->createFile('foo: bar')] + $options, ['decorated' => false]);
+    }
+
+    public static function provideOptionsRequiringAValidator(): iterable
+    {
+        yield '--check-schema' => [['--check-schema' => true]];
+        yield '--schema' => [['--schema' => 'schema.json']];
+    }
+
+    public function testLintResolvesRelativeSchemaHeaderAgainstTheFile()
+    {
+        $this->skipIfJsonSchemaMissing();
+
+        $this->createSchemaFile(sys_get_temp_dir().'/framework-yml-lint-test/schema.json');
+        $filename = $this->createPackageFile("# yaml-language-server: \$schema=../schema.json\nversion: not-an-integer");
+
+        $ret = $this->createCommandTester()->execute(['filename' => $filename], ['decorated' => false]);
+
+        $this->assertSame(1, $ret, 'lint:yaml resolves a relative schema against the directory of the file');
+    }
+
+    public function testLintSkipsMissingSchemaByDefault()
+    {
+        $this->skipIfJsonSchemaMissing();
+
+        $filename = $this->createPackageFile("# yaml-language-server: \$schema=../schema.json\nversion: not-an-integer");
+
+        $tester = $this->createCommandTester();
+        $ret = $tester->execute(['filename' => $filename], ['verbosity' => OutputInterface::VERBOSITY_VERBOSE, 'decorated' => false]);
+
+        $this->assertSame(0, $ret, 'lint:yaml skips a schema that does not exist when --check-schema is not used');
+        $this->assertStringContainsString('All 1 YAML files contain valid syntax.', $tester->getDisplay());
+        // Strip the wrap prefix and every whitespace so the wrapped absolute schema path stays searchable.
+        $this->assertStringContainsString('/packages/../schema.jsonnotavailable)', str_replace('\\', '/', preg_replace('/\s+/', '', preg_replace('~\n\s*// ~', '', $tester->getDisplay()))));
+    }
+
+    public function testLintReportsMissingSchemaWithOption()
+    {
+        $this->skipIfJsonSchemaMissing();
+
+        $filename = $this->createPackageFile("# yaml-language-server: \$schema=../schema.json\nversion: 8");
+
+        $tester = $this->createCommandTester();
+        $ret = $tester->execute(['filename' => $filename, '--check-schema' => null], ['decorated' => false]);
+
+        $this->assertSame(1, $ret, 'lint:yaml reports a schema that does not exist when --check-schema is used');
+        $this->assertStringContainsString('../schema.json', $tester->getDisplay());
+    }
+
+    public function testLintDoesNotValidateEmptyDocumentAgainstSchema()
+    {
+        $this->skipIfJsonSchemaMissing();
+
+        $schema = $this->createSchemaFile();
+        $filename = $this->createFile("# version: 8\n");
+
+        $ret = $this->createCommandTester()->execute(['filename' => $filename, '--schema' => $schema], ['decorated' => false]);
+
+        $this->assertSame(0, $ret, 'lint:yaml does not validate a document without content against a schema');
+    }
+
+    public function testLintSkipsRemoteSchemaByDefault()
+    {
+        $this->skipIfJsonSchemaMissing();
+
+        $filename = $this->createFile("# yaml-language-server: \$schema=https://example.com/schema.json\nversion: 8");
+
+        $ret = $this->createCommandTester()->execute(['filename' => $filename], ['decorated' => false]);
+
+        $this->assertSame(0, $ret, 'lint:yaml skips a remote schema when --check-schema is not used');
+    }
+
+    public function testLintSkipsSchemaWithAnUnknownSchemeByDefault()
+    {
+        $this->skipIfJsonSchemaMissing();
+
+        $filename = $this->createFile('version: 8');
+
+        // A location read on STDIN, or returned by another resolver, is not resolved against a directory.
+        $resolver = $this->createStub(SchemaResolverInterface::class);
+        $resolver->method('resolve')->willReturn('foo://bar.json');
+
+        $application = new Application();
+        $application->addCommand(new LintCommand(null, null, null, $resolver));
+        $tester = new CommandTester($application->find('lint:yaml'));
+
+        // A throwing error handler, like the debug one of FrameworkBundle, turns any warning into an aborted run.
+        set_error_handler(static fn (int $type, string $message) => throw new \ErrorException($message, 0, $type));
+
+        try {
+            $ret = $tester->execute(['filename' => $filename], ['verbosity' => OutputInterface::VERBOSITY_VERBOSE, 'decorated' => false]);
+        } finally {
+            restore_error_handler();
+        }
+
+        $this->assertSame(0, $ret);
+        $this->assertStringContainsString('foo://bar.jsonnotavailable)', preg_replace('/\s+/', '', preg_replace('~\n\s*// ~', '', $tester->getDisplay())));
+    }
+
+    public function testLintValidatesAgainstFileUriSchemaHeaderByDefault()
+    {
+        $this->skipIfJsonSchemaMissing();
+
+        $schema = $this->createSchemaFile();
+        $filename = $this->createFile(\sprintf("# \$schema: file:///%s\nversion: not-an-integer", ltrim(strtr($schema, '\\', '/'), '/')));
+
+        $ret = $this->createCommandTester()->execute(['filename' => $filename], ['decorated' => false]);
+
+        $this->assertSame(1, $ret);
+    }
+
+    public function testLintValidatesAgainstTheFragmentOfAFileUriSchemaHeaderByDefault()
+    {
+        $this->skipIfJsonSchemaMissing();
+
+        $schema = $this->createFile(json_encode([
+            'type' => 'string',
+            'definitions' => ['config' => ['type' => 'object', 'properties' => ['version' => ['type' => 'integer']]]],
+        ]));
+        $filename = $this->createFile(\sprintf("# \$schema: file:///%s#/definitions/config\nversion: not-an-integer", ltrim(strtr($schema, '\\', '/'), '/')));
+
+        $tester = $this->createCommandTester();
+        $ret = $tester->execute(['filename' => $filename], ['decorated' => false]);
+
+        $this->assertSame(1, $ret);
+        $this->assertStringContainsString('version: The data (string) must match the type: integer', $tester->getDisplay());
+    }
+
+    public function testLintValidatesAgainstTheFragmentOfARelativeSchemaHeaderByDefault()
+    {
+        $this->skipIfJsonSchemaMissing();
+
+        $schema = $this->createFile(json_encode([
+            'type' => 'string',
+            'definitions' => ['config' => ['type' => 'object', 'properties' => ['version' => ['type' => 'integer']]]],
+        ]));
+        $filename = $this->createFile(\sprintf("# \$schema: %s#/definitions/config\nversion: not-an-integer", basename($schema)));
+
+        $tester = $this->createCommandTester();
+        $ret = $tester->execute(['filename' => $filename], ['decorated' => false]);
+
+        $this->assertSame(1, $ret);
+        $this->assertStringContainsString('version: The data (string) must match the type: integer', $tester->getDisplay());
+    }
+
+    public function testLintDecodesFileUriSchemaHeaderByDefault()
+    {
+        $this->skipIfJsonSchemaMissing();
+
+        $dir = sys_get_temp_dir().'/framework-yml-lint-test/with space';
+        @mkdir($dir);
+        $schema = $this->createSchemaFile($dir.'/schema.json');
+        $filename = $this->createFile(\sprintf("# \$schema: file:///%s\nversion: not-an-integer", str_replace(' ', '%20', ltrim(strtr($schema, '\\', '/'), '/'))));
+
+        try {
+            $ret = $this->createCommandTester()->execute(['filename' => $filename], ['decorated' => false]);
+        } finally {
+            @unlink($schema);
+            @rmdir($dir);
+        }
+
+        $this->assertSame(1, $ret);
+    }
+
+    #[TestWith(["a\0b.json"])]
+    #[TestWith(['file:///a%00b.json'])]
+    public function testLintSkipsSchemaWithANullByteByDefault(string $schema)
+    {
+        $this->skipIfJsonSchemaMissing();
+
+        $filename = $this->createFile("# \$schema: $schema\nversion: 8");
+
+        $ret = $this->createCommandTester()->execute(['filename' => $filename], ['decorated' => false]);
+
+        $this->assertSame(0, $ret);
+    }
+
+    public function testLintSkipsFileUriSchemaOnAnotherHostByDefault()
+    {
+        $this->skipIfJsonSchemaMissing();
+
+        $schema = $this->createSchemaFile();
+        $filename = $this->createFile(\sprintf("# \$schema: file://example.com/%s\nversion: not-an-integer", ltrim(strtr($schema, '\\', '/'), '/')));
+
+        $ret = $this->createCommandTester()->execute(['filename' => $filename], ['decorated' => false]);
+
+        $this->assertSame(0, $ret);
+    }
+
+    public function testLintValidatesAgainstALocalPathWithASchemeSeparatorByDefault()
+    {
+        $this->skipIfJsonSchemaMissing();
+
+        if ('\\' === \DIRECTORY_SEPARATOR) {
+            $this->markTestSkipped('A colon is not allowed in a file name on Windows.');
+        }
+
+        $dir = sys_get_temp_dir().'/framework-yml-lint-test/foo:';
+        @mkdir($dir);
+        $schema = $this->createSchemaFile($dir.'/schema.json');
+        $filename = $this->createFile('version: not-an-integer');
+
+        // As for editors, only "file:", "http://" and "https://" locations are URLs.
+        $resolver = $this->createStub(SchemaResolverInterface::class);
+        $resolver->method('resolve')->willReturn(\dirname($dir).'/foo://schema.json');
+
+        $application = new Application();
+        $application->addCommand(new LintCommand(null, null, null, $resolver));
+
+        try {
+            $ret = (new CommandTester($application->find('lint:yaml')))->execute(['filename' => $filename], ['decorated' => false]);
+        } finally {
+            @unlink($schema);
+            @rmdir($dir);
+        }
+
+        $this->assertSame(1, $ret);
+    }
+
+    public function testLintOnlyChecksSyntaxByDefaultWhenNoValidatorIsSupported()
+    {
+        $schema = $this->createSchemaFile();
+        $filename = $this->createFile(\sprintf("# \$schema: %s\nversion: not-an-integer", basename($schema)));
+
+        $validator = $this->createMock(SchemaValidatorInterface::class);
+        $validator->method('isSupported')->willReturn(false);
+        $validator->expects($this->never())->method('validate');
+
+        $application = new Application();
+        $application->addCommand(new LintCommand(null, null, null, null, $validator));
+        $tester = new CommandTester($application->find('lint:yaml'));
+
+        $ret = $tester->execute(['filename' => $filename], ['decorated' => false]);
+
+        $this->assertSame(0, $ret);
+        $this->assertStringContainsString('All 1 YAML files contain valid syntax.', $tester->getDisplay());
+    }
+
+    public function testLintWithoutSchemaOnlyChecksSyntax()
+    {
+        $filename = $this->createFile('version: not-an-integer');
+
+        $ret = $this->createCommandTester()->execute(['filename' => $filename], ['decorated' => false]);
+
+        $this->assertSame(0, $ret, 'lint:yaml only checks syntax when no schema is resolved');
+    }
+
+    public function testLintThrowsWhenSchemaOptionUsedWithoutLibrary()
+    {
+        if (class_exists(\Opis\JsonSchema\Validator::class)) {
+            $this->markTestSkipped('The "opis/json-schema" package is installed.');
+        }
+
+        $filename = $this->createFile('foo: bar');
+
+        $this->expectException(\LogicException::class);
+        $this->expectExceptionMessage('opis/json-schema');
+
+        $this->createCommandTester()->execute(['filename' => $filename, '--schema' => 'schema.json'], ['decorated' => false]);
+    }
+
+    public function testLintWithExclude()
+    {
+        $tester = $this->createCommandTester();
+        $filename1 = $this->createFile('foo: bar');
+        $filename2 = $this->createFile('bar: baz');
+
+        $ret = $tester->execute(['filename' => [$filename1, $filename2], '--exclude' => [$filename1]], ['verbosity' => OutputInterface::VERBOSITY_VERBOSE, 'decorated' => false]);
+        $this->assertSame(0, $ret, 'lint:yaml exits with code 0 in case of success');
+        $this->assertStringContainsString('All 1 YAML files contain valid syntax.', trim($tester->getDisplay()));
+    }
+
+    public function testLintFileNotReadable()
+    {
+        $tester = $this->createCommandTester();
+        $filename = $this->createFile('');
+        unlink($filename);
+
+        $this->expectException(\RuntimeException::class);
+
+        $tester->execute(['filename' => $filename], ['decorated' => false]);
+    }
+
+    public function testComplete()
+    {
+        $tester = new CommandCompletionTester($this->createCommand());
+
+        $expectedSuggestions = ['txt', 'json', 'github'];
+        if (class_exists(GitlabCiReporter::class)) {
+            $expectedSuggestions[] = 'gitlab';
+        }
+
+        $this->assertSame($expectedSuggestions, $tester->complete(['--format', '']));
+    }
+
+    #[RequiresMethod(CompletionSuggestions::class, 'suggestPaths')]
+    #[DataProvider('providePathInputs')]
+    public function testCompletePaths(array $tokens)
+    {
+        $command = $this->createCommand();
+        $input = CompletionInput::fromTokens(['lint:yaml', ...$tokens], 1 + \count($tokens));
+        $input->bind($command->getDefinition());
+        $command->complete($input, $suggestions = new CompletionSuggestions());
+
+        $this->assertSame('paths', $suggestions->getPathSuggestion());
+    }
+
+    public static function providePathInputs(): iterable
+    {
+        yield 'filename' => [[]];
+        yield '--exclude' => [['--exclude']];
+        yield '--schema' => [['--schema']];
+    }
+
+    private function createFile($content): string
+    {
+        $filename = tempnam(sys_get_temp_dir().'/framework-yml-lint-test', 'sf-');
+        file_put_contents($filename, $content);
+
+        $this->files[] = $filename;
+
+        return $filename;
+    }
+
+    private function createPackageFile(string $content): string
+    {
+        @mkdir(sys_get_temp_dir().'/framework-yml-lint-test/packages');
+        $filename = tempnam(sys_get_temp_dir().'/framework-yml-lint-test/packages', 'sf-');
+        file_put_contents($filename, $content);
+
+        $this->files[] = $filename;
+
+        return $filename;
+    }
+
+    private function createSchemaFile(?string $filename = null): string
+    {
+        $schema = json_encode([
+            'type' => 'object',
+            'properties' => [
+                'name' => ['type' => 'string'],
+                'version' => ['type' => 'integer'],
+            ],
+        ]);
+
+        if (null === $filename) {
+            return $this->createFile($schema);
+        }
+
+        file_put_contents($filename, $schema);
+        $this->files[] = $filename;
+
+        return $filename;
+    }
+
+    private function createValidator(bool $supported): SchemaValidatorInterface
+    {
+        $validator = $this->createStub(SchemaValidatorInterface::class);
+        $validator->method('isSupported')->willReturn($supported);
+
+        return $validator;
+    }
+
+    private function skipIfJsonSchemaMissing(): void
+    {
+        if (!class_exists(\Opis\JsonSchema\Validator::class)) {
+            $this->markTestSkipped('The "opis/json-schema" package is required.');
+        }
+    }
+
+    protected function createCommand(): Command
+    {
+        $application = new Application();
+        $application->addCommand(new LintCommand());
+
+        return $application->find('lint:yaml');
+    }
+
+    protected function createCommandTester(): CommandTester
+    {
+        return new CommandTester($this->createCommand());
+    }
+
+    protected function setUp(): void
+    {
+        $this->files = [];
+        @mkdir(sys_get_temp_dir().'/framework-yml-lint-test');
+    }
+
+    protected function tearDown(): void
+    {
+        foreach ($this->files as $file) {
+            if (file_exists($file)) {
+                @unlink($file);
+            }
+        }
+
+        @rmdir(sys_get_temp_dir().'/framework-yml-lint-test/packages');
+        @rmdir(sys_get_temp_dir().'/framework-yml-lint-test');
+    }
+}
+
+class Foo
+{
+    public const TEST = 'foo';
+}

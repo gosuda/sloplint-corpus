@@ -45,3 +45,75 @@ added_by = "CorpusPopC3"
 added_on = "2026-11-23"
 reason = "Mapping and CoreData library plus logic tests; vendored BSD dir and one copyleft-worded benchmark file excluded"
 notice_present_upstream = false
+
+[[project]]
+name = "guzzle"
+language = "php"
+url = "https://github.com/guzzle/guzzle"
+rev = "ba6574fd975ab16f87dc356729a36777c03851e8"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:6c187b633fa07ffd9f4b2611dc2f8cf4070c78ba68791d89334bb47bda485ba9"
+added_by = "CorpusPopC3"
+added_on = "2026-11-23"
+reason = "Small HTTP client; promise chains and reference-heavy code"
+notice_present_upstream = false
+
+
+[[project]]
+name = "composer"
+language = "php"
+url = "https://github.com/composer/composer"
+rev = "8a53515e753d9f60f1ed338cd40e0fae9464af52"
+spdx = "MIT"
+storage = "copied"
+paths = ["src/Composer/**", "src/Composer/*/**", "src/Composer/*/*/**", "src/Composer/*/*/*/**", "src/Composer/*/*/*/*/**", "src/Composer/*/*/*/*/*/**", "src/Composer/*/*/*/*/*/*/**", "src/Composer/*/*/*/*/*/*/*/**", "src/Composer/*/*/*/*/*/*/*/*/**", "src/Composer/*/*/*/*/*/*/*/*/*/**"]
+tree_hash = "sha256:7cfcad7f23d7ce59c4d92c73421864ab9c01791785815d6a7cc9975a2814c683"
+added_by = "CorpusPopC3"
+added_on = "2026-11-23"
+reason = "Package manager core library; version-constraint parser strings; tests dropped (token fixtures, LGPL-quoting comment)"
+notice_present_upstream = false
+
+[[project]]
+name = "cakephp"
+language = "php"
+url = "https://github.com/cakephp/cakephp"
+rev = "459929001cfcca2c1035f16cf0ea61f242b50578"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+exclude = ["vendor/**", "vendor/*/**", "vendor/*/*/**", "vendor/*/*/*/**", "vendor/*/*/*/*/**", "vendor/*/*/*/*/*/**", "vendor/*/*/*/*/*/*/**", "vendor/*/*/*/*/*/*/*/**", "vendor/*/*/*/*/*/*/*/*/**", "vendor/*/*/*/*/*/*/*/*/*/**"]
+tree_hash = "sha256:e1314a643dc06aff5e369221155c297002e5d8815db2edd6da270cd93c99709a"
+added_by = "CorpusPopC3"
+added_on = "2026-11-23"
+reason = "Full-stack framework with docblock generics; test-app vendor fixtures excluded"
+notice_present_upstream = false
+
+[[project]]
+name = "laravel"
+language = "php"
+url = "https://github.com/laravel/framework"
+rev = "1caec34a347d3bdd875b18d0e279aef9b80435c2"
+spdx = "MIT"
+storage = "copied"
+paths = ["src/Illuminate/**", "src/Illuminate/*/**", "src/Illuminate/*/*/**", "src/Illuminate/*/*/*/**", "src/Illuminate/*/*/*/*/**", "src/Illuminate/*/*/*/*/*/**", "src/Illuminate/*/*/*/*/*/*/**", "src/Illuminate/*/*/*/*/*/*/*/**"]
+tree_hash = "sha256:b735c6cbd44773eb25087e4a4bcf8ea9e0c4f7cdf9c88de280ca8e5448d0f1cd"
+added_by = "CorpusPopC3"
+added_on = "2026-11-23"
+reason = "Framework core library (facades, Macroable, database); tests dropped for 15MB project cap"
+notice_present_upstream = false
+
+[[project]]
+name = "symfony"
+language = "php"
+url = "https://github.com/symfony/symfony"
+rev = "2894e4eeea9e328e5f38d5e5e52498438c9a12fc"
+spdx = "MIT"
+storage = "copied"
+paths = ["src/Symfony/Component/HttpFoundation/**", "src/Symfony/Component/HttpFoundation/*/**", "src/Symfony/Component/HttpFoundation/*/*/**", "src/Symfony/Component/HttpFoundation/*/*/*/**", "src/Symfony/Component/HttpFoundation/*/*/*/*/**", "src/Symfony/Component/HttpFoundation/*/*/*/*/*/**", "src/Symfony/Component/HttpFoundation/*/*/*/*/*/*/**", "src/Symfony/Component/HttpFoundation/*/*/*/*/*/*/*/**", "src/Symfony/Component/HttpFoundation/*/*/*/*/*/*/*/*/**", "src/Symfony/Component/Console/**", "src/Symfony/Component/Console/*/**", "src/Symfony/Component/Console/*/*/**", "src/Symfony/Component/Console/*/*/*/**", "src/Symfony/Component/Console/*/*/*/*/**", "src/Symfony/Component/Console/*/*/*/*/*/**", "src/Symfony/Component/Console/*/*/*/*/*/*/**", "src/Symfony/Component/Console/*/*/*/*/*/*/*/**", "src/Symfony/Component/Console/*/*/*/*/*/*/*/*/**", "src/Symfony/Component/Routing/**", "src/Symfony/Component/Routing/*/**", "src/Symfony/Component/Routing/*/*/**", "src/Symfony/Component/Routing/*/*/*/**", "src/Symfony/Component/Routing/*/*/*/*/**", "src/Symfony/Component/Routing/*/*/*/*/*/**", "src/Symfony/Component/Routing/*/*/*/*/*/*/**", "src/Symfony/Component/Routing/*/*/*/*/*/*/*/**", "src/Symfony/Component/Routing/*/*/*/*/*/*/*/*/**", "src/Symfony/Component/HttpKernel/**", "src/Symfony/Component/HttpKernel/*/**", "src/Symfony/Component/HttpKernel/*/*/**", "src/Symfony/Component/HttpKernel/*/*/*/**", "src/Symfony/Component/HttpKernel/*/*/*/*/**", "src/Symfony/Component/HttpKernel/*/*/*/*/*/**", "src/Symfony/Component/HttpKernel/*/*/*/*/*/*/**", "src/Symfony/Component/HttpKernel/*/*/*/*/*/*/*/**", "src/Symfony/Component/HttpKernel/*/*/*/*/*/*/*/*/**", "src/Symfony/Component/DependencyInjection/**", "src/Symfony/Component/DependencyInjection/*/**", "src/Symfony/Component/DependencyInjection/*/*/**", "src/Symfony/Component/DependencyInjection/*/*/*/**", "src/Symfony/Component/DependencyInjection/*/*/*/*/**", "src/Symfony/Component/DependencyInjection/*/*/*/*/*/**", "src/Symfony/Component/DependencyInjection/*/*/*/*/*/*/**", "src/Symfony/Component/DependencyInjection/*/*/*/*/*/*/*/**", "src/Symfony/Component/DependencyInjection/*/*/*/*/*/*/*/*/**", "src/Symfony/Component/EventDispatcher/**", "src/Symfony/Component/EventDispatcher/*/**", "src/Symfony/Component/EventDispatcher/*/*/**", "src/Symfony/Component/EventDispatcher/*/*/*/**", "src/Symfony/Component/EventDispatcher/*/*/*/*/**", "src/Symfony/Component/EventDispatcher/*/*/*/*/*/**", "src/Symfony/Component/EventDispatcher/*/*/*/*/*/*/**", "src/Symfony/Component/EventDispatcher/*/*/*/*/*/*/*/**", "src/Symfony/Component/EventDispatcher/*/*/*/*/*/*/*/*/**", "src/Symfony/Bundle/FrameworkBundle/**", "src/Symfony/Bundle/FrameworkBundle/*/**", "src/Symfony/Bundle/FrameworkBundle/*/*/**", "src/Symfony/Bundle/FrameworkBundle/*/*/*/**", "src/Symfony/Bundle/FrameworkBundle/*/*/*/*/**", "src/Symfony/Bundle/FrameworkBundle/*/*/*/*/*/**", "src/Symfony/Bundle/FrameworkBundle/*/*/*/*/*/*/**", "src/Symfony/Bundle/FrameworkBundle/*/*/*/*/*/*/*/**", "src/Symfony/Bundle/FrameworkBundle/*/*/*/*/*/*/*/*/**", "src/Symfony/Component/String/**", "src/Symfony/Component/String/*/**", "src/Symfony/Component/String/*/*/**", "src/Symfony/Component/String/*/*/*/**", "src/Symfony/Component/String/*/*/*/*/**", "src/Symfony/Component/String/*/*/*/*/*/**", "src/Symfony/Component/String/*/*/*/*/*/*/**", "src/Symfony/Component/String/*/*/*/*/*/*/*/**", "src/Symfony/Component/String/*/*/*/*/*/*/*/*/**", "src/Symfony/Component/Finder/**", "src/Symfony/Component/Finder/*/**", "src/Symfony/Component/Finder/*/*/**", "src/Symfony/Component/Finder/*/*/*/**", "src/Symfony/Component/Finder/*/*/*/*/**", "src/Symfony/Component/Finder/*/*/*/*/*/**", "src/Symfony/Component/Finder/*/*/*/*/*/*/**", "src/Symfony/Component/Finder/*/*/*/*/*/*/*/**", "src/Symfony/Component/Finder/*/*/*/*/*/*/*/*/**", "src/Symfony/Component/Yaml/**", "src/Symfony/Component/Yaml/*/**", "src/Symfony/Component/Yaml/*/*/**", "src/Symfony/Component/Yaml/*/*/*/**", "src/Symfony/Component/Yaml/*/*/*/*/**", "src/Symfony/Component/Yaml/*/*/*/*/*/**", "src/Symfony/Component/Yaml/*/*/*/*/*/*/**", "src/Symfony/Component/Yaml/*/*/*/*/*/*/*/**", "src/Symfony/Component/Yaml/*/*/*/*/*/*/*/*/**", "src/Symfony/Component/Process/**", "src/Symfony/Component/Process/*/**", "src/Symfony/Component/Process/*/*/**", "src/Symfony/Component/Process/*/*/*/**", "src/Symfony/Component/Process/*/*/*/*/**", "src/Symfony/Component/Process/*/*/*/*/*/**", "src/Symfony/Component/Process/*/*/*/*/*/*/**", "src/Symfony/Component/Process/*/*/*/*/*/*/*/**", "src/Symfony/Component/Process/*/*/*/*/*/*/*/*/**", "src/Symfony/Component/Filesystem/**", "src/Symfony/Component/Filesystem/*/**", "src/Symfony/Component/Filesystem/*/*/**", "src/Symfony/Component/Filesystem/*/*/*/**", "src/Symfony/Component/Filesystem/*/*/*/*/**", "src/Symfony/Component/Filesystem/*/*/*/*/*/**", "src/Symfony/Component/Filesystem/*/*/*/*/*/*/**", "src/Symfony/Component/Filesystem/*/*/*/*/*/*/*/**", "src/Symfony/Component/Filesystem/*/*/*/*/*/*/*/*/**"]
+tree_hash = "sha256:e6aa308308562c88ab94e5950a44359f45af47eabb7ca34d54d03ad154386887"
+added_by = "CorpusPopC3"
+added_on = "2026-11-23"
+reason = "Framework components (HTTP, console, routing, DI, events, kernel, utils); attributes and union types"
+notice_present_upstream = false

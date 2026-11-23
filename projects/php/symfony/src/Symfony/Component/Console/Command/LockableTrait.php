@@ -1,0 +1,105 @@
+<?php
+
+/*
+ * This file is part of the Symfony package.
+ *
+ * (c) Fabien Potencier <fabien@symfony.com>
+ *
+ * For the full copyright and license information, please view the LICENSE
+ * file that was distributed with this source code.
+ */
+
+namespace Symfony\Component\Console\Command;
+
+use Symfony\Component\Console\Attribute\AsCommand;
+use Symfony\Component\Console\Exception\LogicException;
+use Symfony\Component\DependencyInjection\Attribute\Target;
+use Symfony\Component\Lock\LockFactory;
+use Symfony\Component\Lock\LockInterface;
+use Symfony\Component\Lock\Store\FlockStore;
+use Symfony\Component\Lock\Store\SemaphoreStore;
+use Symfony\Contracts\Service\Attribute\Required;
+
+/**
+ * Basic lock feature for commands.
+ *
+ * @author Geoffrey Brier <geoffrey.brier@gmail.com>
+ */
+trait LockableTrait
+{
+    private ?LockInterface $lock = null;
+
+    private ?LockFactory $lockFactory = null;
+
+    /**
+     * Sets the lock factory, unless the command set one for itself already.
+     *
+     * The argument is nullable so that autowiring is a no-op for apps that
+     * declare no lock resource named "console".
+     */
+    #[Required]
+    public function setLockFactory(#[Target('console')] ?LockFactory $lockFactory = null): void
+    {
+        $this->lockFactory ??= $lockFactory;
+    }
+
+    /**
+     * Locks a command.
+     *
+     * @param string|null $name     The name of the lock, which defaults to the name of the command
+     * @param bool        $blocking Whether to wait for the lock to be released instead of returning false
+     * @param float|null  $ttl      The maximum expected duration of the command in seconds, after which the lock expires. Null uses the default TTL of the store, 300 seconds for the stores that expire locks. Stores that don't expire locks ignore the TTL
+     */
+    private function lock(?string $name = null, bool $blocking = false, ?float $ttl = 300.0): bool
+    {
+        if (!class_exists(SemaphoreStore::class)) {
+            throw new LogicException('To enable the locking feature you must install the symfony/lock component. Try running "composer require symfony/lock".');
+        }
+
+        if (null !== $this->lock) {
+            throw new LogicException('A lock is already in place.');
+        }
+
+        if (null === $this->lockFactory) {
+            if (SemaphoreStore::isSupported()) {
+                $store = new SemaphoreStore();
+            } else {
+                $store = new FlockStore();
+            }
+
+            $this->lockFactory = new LockFactory($store);
+        }
+
+        if (!$name) {
+            if ($this instanceof Command) {
+                $name = $this->getName();
+            } elseif ($command = InvokableCommand::getRunningCommand($this)) {
+                $name = $command->getName();
+            } elseif ($attribute = (new \ReflectionClass($this::class))->getAttributes(AsCommand::class)) {
+                $name = explode('|', ltrim($attribute[0]->newInstance()->name, '|'), 2)[0];
+            } else {
+                throw new LogicException(\sprintf('Lock name missing: provide it via "%s()", #[AsCommand] attribute, or by extending Command class.', __METHOD__));
+            }
+        }
+
+        $lock = $this->lockFactory->createLock($name, $ttl);
+        if (!$lock->acquire($blocking)) {
+            return false;
+        }
+
+        $this->lock = $lock;
+
+        return true;
+    }
+
+    /**
+     * Releases the command lock if there is one.
+     */
+    private function release(): void
+    {
+        if ($lock = $this->lock) {
+            $this->lock = null;
+            $lock->release();
+        }
+    }
+}

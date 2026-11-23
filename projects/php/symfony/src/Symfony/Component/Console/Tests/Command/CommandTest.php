@@ -1,0 +1,966 @@
+<?php
+
+/*
+ * This file is part of the Symfony package.
+ *
+ * (c) Fabien Potencier <fabien@symfony.com>
+ *
+ * For the full copyright and license information, please view the LICENSE
+ * file that was distributed with this source code.
+ */
+
+namespace Symfony\Component\Console\Tests\Command;
+
+use PHPUnit\Framework\Attributes\BackupGlobals;
+use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\TestWith;
+use PHPUnit\Framework\TestCase;
+use Symfony\Component\Console\Application;
+use Symfony\Component\Console\Attribute\Argument;
+use Symfony\Component\Console\Attribute\AsCommand;
+use Symfony\Component\Console\Attribute\Option;
+use Symfony\Component\Console\Command\Command;
+use Symfony\Component\Console\Exception\InvalidOptionException;
+use Symfony\Component\Console\Exception\LogicException;
+use Symfony\Component\Console\Formatter\OutputFormatter;
+use Symfony\Component\Console\Helper\FormatterHelper;
+use Symfony\Component\Console\Input\ArgvInput;
+use Symfony\Component\Console\Input\InputArgument;
+use Symfony\Component\Console\Input\InputDefinition;
+use Symfony\Component\Console\Input\InputInterface;
+use Symfony\Component\Console\Input\InputOption;
+use Symfony\Component\Console\Input\StringInput;
+use Symfony\Component\Console\Output\NullOutput;
+use Symfony\Component\Console\Output\OutputInterface;
+use Symfony\Component\Console\Tester\CommandTester;
+use Symfony\Component\Console\Tests\Fixtures\InvokableTestCommand;
+use Symfony\Component\Console\Tests\Fixtures\MethodBasedTestCommand;
+
+class CommandTest extends TestCase
+{
+    protected static string $fixturesPath;
+
+    public static function setUpBeforeClass(): void
+    {
+        self::$fixturesPath = __DIR__.'/../Fixtures/';
+        require_once self::$fixturesPath.'/TestCommand.php';
+    }
+
+    public function testConstructor()
+    {
+        $command = new Command('foo:bar');
+        $this->assertEquals('foo:bar', $command->getName(), '__construct() takes the command name as its first argument');
+    }
+
+    public function testCommandNameCannotBeEmpty()
+    {
+        $this->expectException(\LogicException::class);
+        $this->expectExceptionMessage('The command defined in "Symfony\Component\Console\Command\Command" cannot have an empty name.');
+        (new Application())->addCommand(new Command());
+    }
+
+    public function testSetApplication()
+    {
+        $application = new Application();
+        $command = new \TestCommand();
+        $command->setApplication($application);
+        $this->assertEquals($application, $command->getApplication(), '->setApplication() sets the current application');
+        $this->assertEquals($application->getHelperSet(), $command->getHelperSet());
+    }
+
+    public function testSetApplicationNull()
+    {
+        $command = new \TestCommand();
+        $command->setApplication(null);
+        $this->assertNull($command->getHelperSet());
+    }
+
+    public function testSetGetDefinition()
+    {
+        $command = new \TestCommand();
+        $ret = $command->setDefinition($definition = new InputDefinition());
+        $this->assertEquals($command, $ret, '->setDefinition() implements a fluent interface');
+        $this->assertEquals($definition, $command->getDefinition(), '->setDefinition() sets the current InputDefinition instance');
+        $command->setDefinition([new InputArgument('foo'), new InputOption('bar')]);
+        $this->assertTrue($command->getDefinition()->hasArgument('foo'), '->setDefinition() also takes an array of InputArguments and InputOptions as an argument');
+        $this->assertTrue($command->getDefinition()->hasOption('bar'), '->setDefinition() also takes an array of InputArguments and InputOptions as an argument');
+        $command->setDefinition(new InputDefinition());
+    }
+
+    public function testAddArgument()
+    {
+        $command = new \TestCommand();
+        $ret = $command->addArgument('foo');
+        $this->assertEquals($command, $ret, '->addArgument() implements a fluent interface');
+        $this->assertTrue($command->getDefinition()->hasArgument('foo'), '->addArgument() adds an argument to the command');
+    }
+
+    public function testAddArgumentFull()
+    {
+        $command = new \TestCommand();
+        $command->addArgument('foo', InputArgument::OPTIONAL, 'Description', 'default', ['a', 'b']);
+        $argument = $command->getDefinition()->getArgument('foo');
+        $this->assertSame('Description', $argument->getDescription());
+        $this->assertSame('default', $argument->getDefault());
+        $this->assertTrue($argument->hasCompletion());
+    }
+
+    public function testAddOption()
+    {
+        $command = new \TestCommand();
+        $ret = $command->addOption('foo');
+        $this->assertEquals($command, $ret, '->addOption() implements a fluent interface');
+        $this->assertTrue($command->getDefinition()->hasOption('foo'), '->addOption() adds an option to the command');
+    }
+
+    public function testAddOptionFull()
+    {
+        $command = new \TestCommand();
+        $command->addOption('foo', ['f'], InputOption::VALUE_OPTIONAL, 'Description', 'default', ['a', 'b']);
+        $option = $command->getDefinition()->getOption('foo');
+        $this->assertSame('f', $option->getShortcut());
+        $this->assertSame('Description', $option->getDescription());
+        $this->assertSame('default', $option->getDefault());
+        $this->assertTrue($option->hasCompletion());
+    }
+
+    public function testSetHidden()
+    {
+        $command = new \TestCommand();
+        $command->setHidden();
+        $this->assertTrue($command->isHidden());
+    }
+
+    public function testGetNamespaceGetNameSetName()
+    {
+        $command = new \TestCommand();
+        $this->assertEquals('namespace:name', $command->getName(), '->getName() returns the command name');
+        $command->setName('foo');
+        $this->assertEquals('foo', $command->getName(), '->setName() sets the command name');
+
+        $ret = $command->setName('foobar:bar');
+        $this->assertEquals($command, $ret, '->setName() implements a fluent interface');
+        $this->assertEquals('foobar:bar', $command->getName(), '->setName() sets the command name');
+    }
+
+    #[DataProvider('provideInvalidCommandNames')]
+    public function testInvalidCommandNames($name)
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage(\sprintf('Command name "%s" is invalid.', $name));
+
+        (new \TestCommand())->setName($name);
+    }
+
+    public static function provideInvalidCommandNames(): array
+    {
+        return [
+            [''],
+            ['foo:'],
+        ];
+    }
+
+    public function testGetSetDescription()
+    {
+        $command = new \TestCommand();
+        $this->assertEquals('description', $command->getDescription(), '->getDescription() returns the description');
+        $ret = $command->setDescription('description1');
+        $this->assertEquals($command, $ret, '->setDescription() implements a fluent interface');
+        $this->assertEquals('description1', $command->getDescription(), '->setDescription() sets the description');
+    }
+
+    public function testGetSetHelp()
+    {
+        $command = new \TestCommand();
+        $this->assertEquals('help', $command->getHelp(), '->getHelp() returns the help');
+        $ret = $command->setHelp('help1');
+        $this->assertEquals($command, $ret, '->setHelp() implements a fluent interface');
+        $this->assertEquals('help1', $command->getHelp(), '->setHelp() sets the help');
+        $command->setHelp('');
+        $this->assertEquals('', $command->getHelp(), '->getHelp() does not fall back to the description');
+    }
+
+    public function testGetProcessedHelp()
+    {
+        $command = new \TestCommand();
+        $command->setHelp('The %command.name% command does... Example: %command.full_name%.');
+        $this->assertStringContainsString('The namespace:name command does...', $command->getProcessedHelp(), '->getProcessedHelp() replaces %command.name% correctly');
+        $this->assertStringNotContainsString('%command.full_name%', $command->getProcessedHelp(), '->getProcessedHelp() replaces %command.full_name%');
+
+        $command = new \TestCommand();
+        $command->setHelp('');
+        $this->assertStringContainsString('description', $command->getProcessedHelp(), '->getProcessedHelp() falls back to the description');
+
+        $command = new \TestCommand();
+        $command->setHelp('The %command.name% command does... Example: %command.full_name%.');
+        $application = new Application();
+        $application->addCommand($command);
+        $application->setDefaultCommand('namespace:name', true);
+        $this->assertStringContainsString('The namespace:name command does...', $command->getProcessedHelp(), '->getProcessedHelp() replaces %command.name% correctly in single command applications');
+        $this->assertStringNotContainsString('%command.full_name%', $command->getProcessedHelp(), '->getProcessedHelp() replaces %command.full_name% in single command applications');
+    }
+
+    #[BackupGlobals(true)]
+    #[TestWith([false])]
+    #[TestWith([true])]
+    public function testProcessedHelpInvocation(bool $singleCommand)
+    {
+        $_SERVER['PHP_SELF'] = 'bin/console';
+        $_SERVER['SCRIPT_FILENAME'] = __FILE__;
+        $_SERVER['SYMFONY_CLI_CONSOLE_COMMAND'] = '["symfony","console"]';
+        $_SERVER['SYMFONY_CLI_CONSOLE_SCRIPT'] = __FILE__;
+
+        $command = new Command('cache:clear');
+        $command->setHelp('%command.invocation%|%command.full_name%|php %command.full_name%');
+        $application = new Application();
+        $application->addCommand($command);
+        $application->setDefaultCommand('cache:clear', $singleCommand);
+
+        $suffix = $singleCommand ? '' : ' cache:clear';
+        $this->assertSame('symfony console'.$suffix.'|bin/console'.$suffix.'|php bin/console'.$suffix, $command->getProcessedHelp());
+    }
+
+    #[BackupGlobals(true)]
+    #[DataProvider('provideInvalidInvocationMetadata')]
+    public function testProcessedHelpInvocationFallsBackToPhp(?string $launcher, ?string $script)
+    {
+        $_SERVER['PHP_SELF'] = __FILE__;
+        $_SERVER['SCRIPT_FILENAME'] = __FILE__;
+        $_SERVER['SYMFONY_CLI_CONSOLE_COMMAND'] = $launcher;
+        $_SERVER['SYMFONY_CLI_CONSOLE_SCRIPT'] = $script;
+
+        $command = new Command('cache:clear');
+        $command->setHelp('%command.invocation%');
+
+        $this->assertSame('php '.__FILE__.' cache:clear', (new OutputFormatter())->format($command->getProcessedHelp()));
+    }
+
+    public static function provideInvalidInvocationMetadata(): iterable
+    {
+        yield 'no metadata' => [null, null];
+        yield 'invalid JSON' => ['{', __FILE__];
+        yield 'JSON null' => ['null', __FILE__];
+        yield 'JSON scalar' => ['"symfony"', __FILE__];
+        yield 'JSON object' => ['{"binary":"symfony","command":"console"}', __FILE__];
+        yield 'numeric JSON object' => ['{"0":"symfony","1":"console"}', __FILE__];
+        yield 'empty array' => ['[]', __FILE__];
+        yield 'missing subcommand' => ['["symfony"]', __FILE__];
+        yield 'extra argument' => ['["symfony","console","cache:clear"]', __FILE__];
+        yield 'non-string executable' => ['[123,"console"]', __FILE__];
+        yield 'empty executable' => ['["","console"]', __FILE__];
+        yield 'non-console launcher' => ['["symfony","php"]', __FILE__];
+        yield 'NUL in executable' => ['["symfony\u0000","console"]', __FILE__];
+        yield 'different script' => ['["symfony","console"]', __DIR__.'/../Fixtures/TestCommand.php'];
+        yield 'missing script' => ['["symfony","console"]', null];
+        yield 'nonexistent script' => ['["symfony","console"]', __DIR__.'/missing-console'];
+        yield 'NUL in script' => ['["symfony","console"]', __FILE__."\0"];
+    }
+
+    #[BackupGlobals(true)]
+    public function testProcessedHelpInvocationQuotesShellArgumentsAndFormatterTags()
+    {
+        if ('\\' === \DIRECTORY_SEPARATOR) {
+            $this->markTestSkipped('The launcher contains characters that Windows paths cannot contain.');
+        }
+
+        $launcher = "/tmp/a user's <info>symfony";
+        $_SERVER['SCRIPT_FILENAME'] = __FILE__;
+        $_SERVER['SYMFONY_CLI_CONSOLE_COMMAND'] = json_encode([$launcher, 'console']);
+        $_SERVER['SYMFONY_CLI_CONSOLE_SCRIPT'] = __FILE__;
+
+        $command = new Command('cache:clear');
+        $command->setHelp('<info>%command.invocation%</info>');
+
+        $this->assertSame(escapeshellarg($launcher).' console cache:clear', (new OutputFormatter())->format($command->getProcessedHelp()));
+    }
+
+    #[BackupGlobals(true)]
+    public function testProcessedHelpInvocationPreservesNonAsciiPathsInTheCLocale()
+    {
+        if ('\\' === \DIRECTORY_SEPARATOR) {
+            $this->markTestSkipped('Unix shell quoting is only used on Unix.');
+        }
+
+        $locale = setlocale(\LC_CTYPE, 0);
+        setlocale(\LC_CTYPE, 'C');
+
+        try {
+            $_SERVER['SCRIPT_FILENAME'] = __FILE__;
+            $_SERVER['SYMFONY_CLI_CONSOLE_COMMAND'] = json_encode(['/tmp/été/symfony', 'console']);
+            $_SERVER['SYMFONY_CLI_CONSOLE_SCRIPT'] = __FILE__;
+
+            $command = new Command('cache:clear');
+            $command->setHelp('%command.invocation%');
+
+            $this->assertSame("'/tmp/été/symfony' console cache:clear", $command->getProcessedHelp());
+        } finally {
+            setlocale(\LC_CTYPE, $locale);
+        }
+    }
+
+    #[BackupGlobals(true)]
+    public function testProcessedHelpInvocationQuotesTheScriptAndCommand()
+    {
+        if ('\\' === \DIRECTORY_SEPARATOR) {
+            $this->markTestSkipped('Unix shell quoting is only used on Unix.');
+        }
+
+        $_SERVER['PHP_SELF'] = "/tmp/a user's %command.name%/console";
+        unset($_SERVER['SYMFONY_CLI_CONSOLE_COMMAND'], $_SERVER['SYMFONY_CLI_CONSOLE_SCRIPT']);
+
+        $command = new Command('cache;clear');
+        $command->setHelp('%command.invocation%');
+
+        $this->assertStringEndsWith(escapeshellarg($_SERVER['PHP_SELF'])." 'cache;clear'", $command->getProcessedHelp());
+    }
+
+    #[BackupGlobals(true)]
+    #[TestWith(['C:\\Program Files\\Symfony\\symfony.exe'])]
+    #[TestWith(['C:\\tools\\100% !wow!\\symfony.exe'])]
+    public function testProcessedHelpInvocationPreservesWindowsPaths(string $launcher)
+    {
+        if ('\\' !== \DIRECTORY_SEPARATOR) {
+            $this->markTestSkipped('Windows quoting is only used on Windows.');
+        }
+
+        $_SERVER['SCRIPT_FILENAME'] = __FILE__;
+        $_SERVER['SYMFONY_CLI_CONSOLE_COMMAND'] = json_encode([$launcher, 'console']);
+        $_SERVER['SYMFONY_CLI_CONSOLE_SCRIPT'] = __FILE__;
+
+        $command = new Command('cache:clear');
+        $command->setHelp('%command.invocation%');
+
+        $this->assertSame('"'.$launcher.'" console cache:clear', $command->getProcessedHelp());
+    }
+
+    #[BackupGlobals(true)]
+    public function testProcessedHelpInvocationMatchesSymlinkedScripts()
+    {
+        $link = tempnam(sys_get_temp_dir(), 'console-invocation-');
+        unlink($link);
+        if (!@symlink(__FILE__, $link)) {
+            $this->markTestSkipped('Creating symbolic links is not supported.');
+        }
+
+        try {
+            $_SERVER['SCRIPT_FILENAME'] = $link;
+            $_SERVER['SYMFONY_CLI_CONSOLE_COMMAND'] = '["symfony","console"]';
+            $_SERVER['SYMFONY_CLI_CONSOLE_SCRIPT'] = __FILE__;
+
+            $command = new Command('cache:clear');
+            $command->setHelp('%command.invocation%');
+
+            $this->assertSame('symfony console cache:clear', $command->getProcessedHelp());
+        } finally {
+            unlink($link);
+        }
+    }
+
+    #[BackupGlobals(true)]
+    public function testProcessedHelpInvocationInDescription()
+    {
+        $_SERVER['SCRIPT_FILENAME'] = __FILE__;
+        $_SERVER['SYMFONY_CLI_CONSOLE_COMMAND'] = '["symfony","console"]';
+        $_SERVER['SYMFONY_CLI_CONSOLE_SCRIPT'] = __FILE__;
+
+        $command = new Command('cache:clear');
+        $command->setDescription('Run %command.invocation%.');
+
+        $this->assertSame('Run symfony console cache:clear.', $command->getProcessedHelp());
+    }
+
+    public function testGetSetAliases()
+    {
+        $command = new \TestCommand();
+        $ret = $command->setAliases(['name1']);
+        $this->assertEquals($command, $ret, '->setAliases() implements a fluent interface');
+        $this->assertEquals(['name1'], $command->getAliases(), '->setAliases() sets the aliases');
+    }
+
+    public function testAliasesSetBeforeParentConstructorArePreserved()
+    {
+        $command = new class extends Command {
+            public function __construct()
+            {
+                // set aliases before calling parent constructor
+                $this->setAliases(['existingalias']);
+                parent::__construct('foo|newalias');
+            }
+        };
+
+        $this->assertSame(['existingalias', 'newalias'], $command->getAliases(), 'Aliases set before parent::__construct() must be preserved.');
+    }
+
+    #[TestWith(['name|alias1|alias2', 'name', ['alias1', 'alias2'], false])]
+    #[TestWith(['|alias1|alias2', 'alias1', ['alias2'], true])]
+    public function testSetAliasesAndHiddenViaName(string $name, string $expectedName, array $expectedAliases, bool $expectedHidden)
+    {
+        $command = new Command($name);
+
+        self::assertSame($expectedName, $command->getName());
+        self::assertSame($expectedHidden, $command->isHidden());
+        self::assertSame($expectedAliases, $command->getAliases());
+    }
+
+    public function testGetSynopsis()
+    {
+        $command = new \TestCommand();
+        $command->addOption('foo');
+        $command->addArgument('bar');
+        $command->addArgument('info');
+        $this->assertEquals('namespace:name [--foo] [--] [<bar> [<info>]]', $command->getSynopsis(), '->getSynopsis() returns the synopsis');
+    }
+
+    public function testAddGetUsages()
+    {
+        $command = new \TestCommand();
+        $command->addUsage('foo1');
+        $command->addUsage('foo2');
+        $this->assertContains('namespace:name foo1', $command->getUsages());
+        $this->assertContains('namespace:name foo2', $command->getUsages());
+    }
+
+    public function testGetHelper()
+    {
+        $application = new Application();
+        $command = new \TestCommand();
+        $command->setApplication($application);
+        $formatterHelper = new FormatterHelper();
+        $this->assertEquals($formatterHelper->getName(), $command->getHelper('formatter')->getName(), '->getHelper() returns the correct helper');
+    }
+
+    public function testGetHelperWithoutHelperSet()
+    {
+        $this->expectException(\LogicException::class);
+        $this->expectExceptionMessage('Cannot retrieve helper "formatter" because there is no HelperSet defined.');
+        (new \TestCommand())->getHelper('formatter');
+    }
+
+    public function testMergeApplicationDefinition()
+    {
+        $application1 = new Application();
+        $application1->getDefinition()->addArguments([new InputArgument('foo')]);
+        $application1->getDefinition()->addOptions([new InputOption('bar')]);
+        $command = new \TestCommand();
+        $command->setApplication($application1);
+        $command->setDefinition($definition = new InputDefinition([new InputArgument('bar'), new InputOption('foo')]));
+
+        $r = new \ReflectionObject($command);
+        $m = $r->getMethod('mergeApplicationDefinition');
+        $m->invoke($command);
+        $this->assertTrue($command->getDefinition()->hasArgument('foo'), '->mergeApplicationDefinition() merges the application arguments and the command arguments');
+        $this->assertTrue($command->getDefinition()->hasArgument('bar'), '->mergeApplicationDefinition() merges the application arguments and the command arguments');
+        $this->assertTrue($command->getDefinition()->hasOption('foo'), '->mergeApplicationDefinition() merges the application options and the command options');
+        $this->assertTrue($command->getDefinition()->hasOption('bar'), '->mergeApplicationDefinition() merges the application options and the command options');
+
+        $m->invoke($command);
+        $this->assertEquals(3, $command->getDefinition()->getArgumentCount(), '->mergeApplicationDefinition() does not try to merge twice the application arguments and options');
+    }
+
+    public function testMergeApplicationDefinitionWithoutArgsThenWithArgsAddsArgs()
+    {
+        $application1 = new Application();
+        $application1->getDefinition()->addArguments([new InputArgument('foo')]);
+        $application1->getDefinition()->addOptions([new InputOption('bar')]);
+        $command = new \TestCommand();
+        $command->setApplication($application1);
+        $command->setDefinition($definition = new InputDefinition([]));
+
+        $r = new \ReflectionObject($command);
+        $m = $r->getMethod('mergeApplicationDefinition');
+        $m->invoke($command, false);
+        $this->assertTrue($command->getDefinition()->hasOption('bar'), '->mergeApplicationDefinition(false) merges the application and the command options');
+        $this->assertFalse($command->getDefinition()->hasArgument('foo'), '->mergeApplicationDefinition(false) does not merge the application arguments');
+
+        $m->invoke($command, true);
+        $this->assertTrue($command->getDefinition()->hasArgument('foo'), '->mergeApplicationDefinition(true) merges the application arguments and the command arguments');
+
+        $m->invoke($command);
+        $this->assertEquals(2, $command->getDefinition()->getArgumentCount(), '->mergeApplicationDefinition() does not try to merge twice the application arguments');
+    }
+
+    public function testRunInteractive()
+    {
+        $tester = new CommandTester(new \TestCommand());
+
+        $tester->execute([], ['interactive' => true]);
+
+        $this->assertEquals('interact called'.\PHP_EOL.'execute called'.\PHP_EOL, $tester->getDisplay(), '->run() calls the interact() method if the input is interactive');
+    }
+
+    public function testInvokableCommand()
+    {
+        $invokable = new InvokableTestCommand();
+        $command = new Command(null, $invokable);
+        $this->assertSame('invokable:test', $command->getName());
+        $this->assertSame(['inv-test'], $command->getAliases());
+        $this->assertSame(['invokable:test usage1', 'invokable:test usage2'], $command->getUsages());
+        $this->assertSame('desc', $command->getDescription());
+        $this->assertSame('help me', $command->getHelp());
+
+        $tester = new CommandTester($invokable);
+
+        $this->assertSame(Command::SUCCESS, $tester->execute([]));
+    }
+
+    public function testRunNonInteractive()
+    {
+        $tester = new CommandTester(new \TestCommand());
+
+        $tester->execute([], ['interactive' => false]);
+
+        $this->assertEquals('execute called'.\PHP_EOL, $tester->getDisplay(), '->run() does not call the interact() method if the input is not interactive');
+    }
+
+    public function testExecuteMethodNeedsToBeOverridden()
+    {
+        $this->expectException(\LogicException::class);
+        $this->expectExceptionMessage('You must override the execute() method in the concrete command class.');
+        (new Command('foo'))->run(new StringInput(''), new NullOutput());
+    }
+
+    public function testRunWithInvalidOption()
+    {
+        $command = new \TestCommand();
+        $tester = new CommandTester($command);
+
+        $this->expectException(InvalidOptionException::class);
+        $this->expectExceptionMessage('The "--bar" option does not exist.');
+
+        $tester->execute(['--bar' => true]);
+    }
+
+    public function testIgnoreExtraArguments()
+    {
+        $unparsedTokens = null;
+        $command = new Command('docker');
+        $command->getDefinition()->setIgnoreExtraArguments();
+        $command->setCode(static function (InputInterface $input) use (&$unparsedTokens): int {
+            $unparsedTokens = $input->getUnparsedTokens();
+
+            return 0;
+        });
+
+        $application = new Application();
+        $application->setAutoExit(false);
+        $application->setCatchExceptions(false);
+        $application->addCommand($command);
+
+        $statusCode = $application->run(new ArgvInput(['cli.php', 'docker', 'compose', 'up', '--detach']), new NullOutput());
+
+        $this->assertSame(0, $statusCode);
+        $this->assertSame(['compose', 'up', '--detach'], $unparsedTokens);
+    }
+
+    public function testRunWithApplication()
+    {
+        $command = new \TestCommand();
+        $command->setApplication(new Application());
+        $exitCode = $command->run(new StringInput(''), new NullOutput());
+
+        $this->assertSame(0, $exitCode, '->run() returns an integer exit code');
+    }
+
+    public function testRunReturnsAlwaysInteger()
+    {
+        $command = new \TestCommand();
+
+        $this->assertSame(0, $command->run(new StringInput(''), new NullOutput()));
+    }
+
+    public function testRunWithProcessTitle()
+    {
+        $command = new \TestCommand();
+        $command->setApplication(new Application());
+        $command->setProcessTitle('foo');
+        $this->assertSame(0, $command->run(new StringInput(''), new NullOutput()));
+        if (\function_exists('cli_set_process_title')) {
+            if (null === @cli_get_process_title() && 'Darwin' === \PHP_OS) {
+                $this->markTestSkipped('Running "cli_get_process_title" as an unprivileged user is not supported on MacOS.');
+            }
+            $this->assertEquals('foo', cli_get_process_title());
+        }
+    }
+
+    public function testDeprecatedOptionWritesAMessageOnStdErr()
+    {
+        $tester = new CommandTester($this->createCommandWithDeprecatedOption());
+        $tester->execute(['--deprecated' => true], ['capture_stderr_separately' => true]);
+
+        $this->assertStringContainsString('The option "--deprecated|-d" is deprecated.', $tester->getErrorOutput());
+        $this->assertSame('done'.\PHP_EOL, $tester->getDisplay());
+    }
+
+    public function testDeprecatedOptionWritesAMessageWhenTheShortcutIsUsed()
+    {
+        $tester = new CommandTester($this->createCommandWithDeprecatedOption());
+        $tester->execute(['-d' => true], ['capture_stderr_separately' => true]);
+
+        $this->assertStringContainsString('The option "--deprecated|-d" is deprecated.', $tester->getErrorOutput());
+    }
+
+    #[TestWith(['--deprecated'])]
+    #[TestWith(['--no-deprecated'])]
+    #[TestWith(['-d'])]
+    #[TestWith(['-D'])]
+    public function testDeprecatedOptionWritesAMessageWhenTheNegationOrAnyShortcutIsUsed(string $name)
+    {
+        $command = new Command('foo');
+        $command->addOption('deprecated', 'd|D', InputOption::VALUE_NEGATABLE | InputOption::DEPRECATED, 'A deprecated option');
+        $command->setCode(static fn (): int => 0);
+
+        $tester = new CommandTester($command);
+        $tester->execute([$name => true], ['capture_stderr_separately' => true]);
+
+        $this->assertStringContainsString('The option "--deprecated|--no-deprecated|-d|-D" is deprecated.', $tester->getErrorOutput());
+    }
+
+    public function testDeprecatedOptionWritesNoMessageWhenNotUsed()
+    {
+        $tester = new CommandTester($this->createCommandWithDeprecatedOption());
+        $tester->execute([], ['capture_stderr_separately' => true]);
+
+        $this->assertSame('', $tester->getErrorOutput());
+    }
+
+    public function testSetCode()
+    {
+        $command = new \TestCommand();
+        $ret = $command->setCode(static function (InputInterface $input, OutputInterface $output): int {
+            $output->writeln('from the code...');
+
+            return 0;
+        });
+        $this->assertEquals($command, $ret, '->setCode() implements a fluent interface');
+        $tester = new CommandTester($command);
+        $tester->execute([]);
+        $this->assertEquals('interact called'.\PHP_EOL.'from the code...'.\PHP_EOL, $tester->getDisplay());
+    }
+
+    public static function getSetCodeBindToClosureTests()
+    {
+        return [
+            [true, 'not bound to the command'],
+            [false, 'bound to the command'],
+        ];
+    }
+
+    #[DataProvider('getSetCodeBindToClosureTests')]
+    public function testSetCodeBindToClosure($previouslyBound, $expected)
+    {
+        $code = createClosure();
+        if ($previouslyBound) {
+            $code = $code->bindTo($this);
+        }
+
+        $command = new \TestCommand();
+        $command->setCode($code);
+        $tester = new CommandTester($command);
+        $tester->execute([]);
+        $this->assertEquals('interact called'.\PHP_EOL.$expected.\PHP_EOL, $tester->getDisplay());
+    }
+
+    public function testSetCodeWithStaticClosure()
+    {
+        $command = new \TestCommand();
+        $command->setCode(self::createClosure());
+        $tester = new CommandTester($command);
+        $tester->execute([]);
+
+        $this->assertEquals('interact called'.\PHP_EOL.'bound'.\PHP_EOL, $tester->getDisplay());
+    }
+
+    private static function createClosure()
+    {
+        return function (InputInterface $input, OutputInterface $output): int {
+            $output->writeln(isset($this) ? 'bound' : 'not bound');
+
+            return 0;
+        };
+    }
+
+    public function testSetCodeWithNonClosureCallable()
+    {
+        $command = new \TestCommand();
+        $ret = $command->setCode($this->callableMethodCommand(...));
+        $this->assertEquals($command, $ret, '->setCode() implements a fluent interface');
+        $tester = new CommandTester($command);
+        $tester->execute([]);
+        $this->assertEquals('interact called'.\PHP_EOL.'from the code...'.\PHP_EOL, $tester->getDisplay());
+    }
+
+    public function callableMethodCommand(InputInterface $input, OutputInterface $output): int
+    {
+        $output->writeln('from the code...');
+
+        return 0;
+    }
+
+    public function testSetCodeWithStaticAnonymousFunction()
+    {
+        $command = new \TestCommand();
+        $command->setCode(static function (InputInterface $input, OutputInterface $output): int {
+            $output->writeln(isset($this) ? 'bound' : 'not bound');
+
+            return 0;
+        });
+        $tester = new CommandTester($command);
+        $tester->execute([]);
+
+        $this->assertEquals('interact called'.\PHP_EOL.'not bound'.\PHP_EOL, $tester->getDisplay());
+    }
+
+    public function testMethodCommandNameIsPrefixedWithTheClassLevelName()
+    {
+        $command = new Command(code: new MethodBasedTestCommand()->cmd1(...));
+        $this->assertSame('app:cmd0:cmd1', $command->getName());
+
+        $command = new Command(code: new MethodBasedTestCommand());
+        $this->assertSame('app:cmd0', $command->getName());
+    }
+
+    public function testMethodCommandsOfAHiddenClassLevelNameAreHidden()
+    {
+        $command = new Command(code: new HiddenGroupCommands()->one(...));
+        $this->assertSame('hidden-group:one', $command->getName());
+        $this->assertTrue($command->isHidden());
+    }
+
+    public function testTheAttributeCannotBeOnBothTheClassAndItsInvokeMethod()
+    {
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('The "Symfony\Component\Console\Tests\Command\AttributeOnBothCommand" class and its "__invoke()" method cannot both have the "Symfony\Component\Console\Attribute\AsCommand" attribute.');
+
+        new Command(code: new AttributeOnBothCommand());
+    }
+
+    public function testMethodCommandNameMustNotRepeatTheClassLevelName()
+    {
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('The name "group:one" of the command "Symfony\Component\Console\Tests\Command\RepeatedPrefixCommands::one()" repeats the class-level name "group": method-level names are relative to it, use "one" instead.');
+
+        new Command(code: new RepeatedPrefixCommands()->one(...));
+    }
+
+    public function testCommandAttribute()
+    {
+        $command = new Php8Command();
+
+        $this->assertSame('foo', $command->getName());
+        $this->assertSame('desc', $command->getDescription());
+        $this->assertSame('help', $command->getHelp());
+        $this->assertCount(2, $command->getUsages());
+        $this->assertStringContainsString('usage1', $command->getUsages()[0]);
+        $this->assertTrue($command->isHidden());
+        $this->assertSame(['f'], $command->getAliases());
+        // Standard commands don't have code.
+        $this->assertNull($command->getCode());
+    }
+
+    public function testCommandAttributeWithCallables()
+    {
+        $command = new Php8CommandWithCallables();
+
+        $this->assertSame('Generated description', $command->getDescription());
+        $this->assertSame('Generated help', $command->getHelp());
+    }
+
+    public function testCommandAttributeDescriptionIsNeverResolvedAsCallable()
+    {
+        // "define" is the name of a PHP function, it must still be taken as a plain description
+        $command = new #[AsCommand(name: 'foo', description: 'define', help: 'define')] class extends Command {};
+
+        $this->assertSame('define', $command->getDescription());
+        $this->assertSame('define', $command->getHelp());
+    }
+
+    public function testAttributeListedOptionsComeAfterTheParameters()
+    {
+        $invokable = new #[AsCommand(name: 'foo', options: [new InputOption('flag', 'f', InputOption::VALUE_NONE, 'Flag')])] class {
+            public function __invoke(#[Argument] string $name = '', #[Option] bool $dryRun = false): int
+            {
+                return 0;
+            }
+        };
+
+        $definition = new Command(null, $invokable)->getDefinition();
+
+        $this->assertSame(['name'], array_keys($definition->getArguments()));
+        $this->assertSame(['dry-run', 'flag'], array_keys($definition->getOptions()));
+        $this->assertSame('f', $definition->getOption('flag')->getShortcut());
+        $this->assertSame('Flag', $definition->getOption('flag')->getDescription());
+    }
+
+    public function testAttributeListedOptionsOnAMethodCommand()
+    {
+        $object = new class {
+            #[AsCommand(name: 'foo', options: [new InputOption('flag')])]
+            public function run(#[Argument] string $name = ''): int
+            {
+                return 0;
+            }
+        };
+
+        $definition = new Command(null, $object->run(...))->getDefinition();
+
+        $this->assertSame(['name'], array_keys($definition->getArguments()));
+        $this->assertSame(['flag'], array_keys($definition->getOptions()));
+    }
+
+    public function testAttributeListedOptionsOnACommandSubclass()
+    {
+        $command = new #[AsCommand(name: 'foo', options: [new InputOption('flag')])] class extends Command {
+            protected function configure(): void
+            {
+                $this->addOption('configured');
+            }
+        };
+
+        $this->assertSame(['configured', 'flag'], array_keys($command->getDefinition()->getOptions()));
+    }
+
+    public function testAttributeListedOptionsSurviveASetDefinitionCall()
+    {
+        $command = new #[AsCommand(name: 'foo', options: [new InputOption('flag')])] class extends Command {
+            protected function configure(): void
+            {
+                $this->setDefinition([new InputArgument('arg')]);
+            }
+        };
+
+        $this->assertSame(['arg'], array_keys($command->getDefinition()->getArguments()));
+        $this->assertSame(['flag'], array_keys($command->getNativeDefinition()->getOptions()));
+    }
+
+    public function testAttributeListedOptionsOnAnInvokableCommandSubclass()
+    {
+        $command = new #[AsCommand(name: 'foo', options: [new InputOption('flag')])] class extends Command {
+            public function __invoke(#[Argument] string $name = ''): int
+            {
+                return 0;
+            }
+        };
+
+        $this->assertSame(['name'], array_keys($command->getDefinition()->getArguments()));
+        $this->assertSame(['flag'], array_keys($command->getDefinition()->getOptions()));
+    }
+
+    public function testAttributeListedOptionMustNotRepeatAParameter()
+    {
+        $invokable = new #[AsCommand(name: 'foo', options: [new InputOption('flag', null, InputOption::VALUE_REQUIRED)])] class {
+            public function __invoke(#[Option] bool $flag = false): int
+            {
+                return 0;
+            }
+        };
+
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('An option named "flag" already exists.');
+
+        new Command(null, $invokable)->getDefinition();
+    }
+
+    public function testAttributeListedOptionsMustBeInputOptions()
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('The "options" of the "foo" command must be "Symfony\Component\Console\Input\InputOption" instances, "string" given.');
+
+        new AsCommand(name: 'foo', options: ['flag']);
+    }
+
+    public function testDefaultCommand()
+    {
+        $apl = new Application();
+        $apl->setDefaultCommand('foo');
+        $property = new \ReflectionProperty($apl, 'defaultCommand');
+
+        $this->assertEquals('foo', $property->getValue($apl));
+
+        $apl->setDefaultCommand('foo2');
+        $property = new \ReflectionProperty($apl, 'defaultCommand');
+
+        $this->assertEquals('foo2', $property->getValue($apl));
+    }
+
+    private function createCommandWithDeprecatedOption(): Command
+    {
+        $command = new Command('foo');
+        $command->addOption('deprecated', 'd', InputOption::DEPRECATED, 'A deprecated option');
+        $command->setCode(static function (InputInterface $input, OutputInterface $output): int {
+            $output->writeln('done');
+
+            return 0;
+        });
+
+        return $command;
+    }
+}
+
+// In order to get an unbound closure, we should create it outside a class
+// scope.
+function createClosure()
+{
+    return function (InputInterface $input, OutputInterface $output): int {
+        $output->writeln($this instanceof Command ? 'bound to the command' : 'not bound to the command');
+
+        return 0;
+    };
+}
+
+#[AsCommand(name: 'foo', description: 'desc', usages: ['usage1', 'usage2'], hidden: true, aliases: ['f'], help: 'help')]
+class Php8Command extends Command
+{
+}
+
+#[AsCommand(name: 'hidden-group', hidden: true)]
+class HiddenGroupCommands
+{
+    #[AsCommand(name: 'one')]
+    public function one(): int
+    {
+        return Command::SUCCESS;
+    }
+}
+
+#[AsCommand(name: 'both')]
+class AttributeOnBothCommand
+{
+    #[AsCommand(name: 'both-invoke')]
+    public function __invoke(): int
+    {
+        return Command::SUCCESS;
+    }
+}
+
+#[AsCommand(name: 'group')]
+class RepeatedPrefixCommands
+{
+    #[AsCommand(name: 'group:one')]
+    public function one(): int
+    {
+        return Command::SUCCESS;
+    }
+}
+
+#[AsCommand(name: 'foo2', description: 'desc2', hidden: true)]
+class Php8Command2 extends Command
+{
+}
+
+#[AsCommand(
+    name: 'foo3',
+    description: [Php8CommandWithCallables::class, 'generateDescription'],
+    help: [Php8CommandWithCallables::class, 'generateHelp'],
+)]
+class Php8CommandWithCallables extends Command
+{
+    public static function generateDescription(): string
+    {
+        return 'Generated description';
+    }
+
+    public static function generateHelp(): string
+    {
+        return 'Generated help';
+    }
+}
