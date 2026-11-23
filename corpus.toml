@@ -125,11 +125,11 @@ rev = "b377b08f95646ac450551a5b73486ab95b9b09cf"
 spdx = "MIT"
 storage = "copied"
 paths = ["**"]
-tree_hash = "sha256:d78e51e6adbf908a8ddf338800e9d75103bbea2cc7ccb20fa8353c0c644ed33e"
+exclude = ["lib/languages/js/index.js"]
+tree_hash = "sha256:c28965309d01f8e884b7540ca7a0558742a728ae41fb9f21cf6c81d24811cccd"
 added_by = "CorpusPopC1"
 added_on = "2026-11-23"
-reason = "linter, tool"
-notice_present_upstream = false
+reason = "linter, tool (excludes lib/languages/js/index.js: embeds BSD-3-Clause ESQuery text)"
 
 [[project]]
 name = "express"
