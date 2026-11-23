@@ -1,0 +1,46 @@
+package coil3.fetch
+
+import android.graphics.drawable.Drawable
+import coil3.ImageLoader
+import coil3.asImage
+import coil3.decode.DataSource
+import coil3.request.Options
+import coil3.request.bitmapConfig
+import coil3.request.maxBitmapSize
+import coil3.size.Precision
+import coil3.util.DrawableUtils
+import coil3.util.isVector
+import coil3.util.toDrawable
+
+internal class DrawableFetcher(
+    private val data: Drawable,
+    private val options: Options,
+) : Fetcher {
+
+    override suspend fun fetch(): FetchResult {
+        val isVector = data.isVector
+        return ImageFetchResult(
+            image = if (isVector) {
+                DrawableUtils.convertToBitmap(
+                    drawable = data,
+                    config = options.bitmapConfig,
+                    size = options.size,
+                    scale = options.scale,
+                    maxSize = options.maxBitmapSize,
+                    allowInexactSize = options.precision == Precision.INEXACT,
+                ).toDrawable(options.context)
+            } else {
+                data
+            }.asImage(),
+            isSampled = isVector,
+            dataSource = DataSource.MEMORY,
+        )
+    }
+
+    class Factory : Fetcher.Factory<Drawable> {
+
+        override fun create(data: Drawable, options: Options, imageLoader: ImageLoader): Fetcher {
+            return DrawableFetcher(data, options)
+        }
+    }
+}

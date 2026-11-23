@@ -1,0 +1,106 @@
+@file:Suppress("INVISIBLE_REFERENCE", "MatchingDeclarationName")
+
+package org.jetbrains.exposed.v1.json
+
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.serializer
+import org.jetbrains.exposed.v1.core.*
+import org.jetbrains.exposed.v1.core.Function
+import org.jetbrains.exposed.v1.core.vendors.currentDialect
+import kotlin.internal.LowPriorityInOverloadResolution
+
+// Function Classes
+
+/**
+ * Represents an SQL function that returns extracted data from a JSON object at the specified [path],
+ * either as a JSON representation or as a scalar value.
+ */
+class Extract<T>(
+    /** The expression from which to extract JSON subcomponents matched by [path]. */
+    val expression: Expression<*>,
+    /** Array of Strings representing JSON path/keys that match fields to be extracted. */
+    vararg val path: String,
+    /** Whether the extracted result should be a scalar or text value; if `false`, result will be a JSON object. */
+    val toScalar: Boolean,
+    /** The column type of [expression] to check, if casting to JSONB is required. */
+    val jsonType: IColumnType<*>,
+    columnType: IColumnType<T & Any>
+) : Function<T>(columnType) {
+    override fun toQueryBuilder(queryBuilder: QueryBuilder) =
+        currentDialect.functionProvider.jsonExtract(expression, path = path, toScalar, jsonType, queryBuilder)
+}
+
+// Extension Functions
+
+/**
+ * Returns the extracted data from a JSON object at the specified [path], either as a JSON representation or as a scalar value.
+ *
+ * @param path String(s) representing JSON path/keys that match fields to be extracted.
+ * If none are provided, the root context item `'$'` will be used by default.
+ * **Note:** Multiple [path] arguments are not supported by all vendors; please check the documentation.
+ * It is bound as a query parameter, except on Oracle, where it is written into the statement as a string literal with
+ * its single quotes escaped, because Oracle requires a JSON path to be a literal. Either way it is treated as data, so
+ * it must be passed as is, without being escaped on the client side.
+ * @param toScalar If `true`, the extracted result is a scalar or text value; otherwise, it is a JSON object.
+ * @sample org.jetbrains.exposed.v1.json.JsonColumnTests.testJsonExtractWithArrays
+ */
+inline fun <reified T : Any> ExpressionWithColumnType<*>.extract(
+    vararg path: String,
+    toScalar: Boolean = true
+): Extract<T> {
+    @OptIn(InternalApi::class)
+    val columnType = resolveColumnType(
+        T::class,
+        defaultType = JsonColumnType(
+            { Json.encodeToString(serializer<T>(), it) },
+            { Json.decodeFromString(serializer<T>(), it) }
+        )
+    )
+    return Extract(this, path = path, toScalar, this.columnType, columnType)
+}
+
+/**
+ * Specifies a casting of the calling expression's data type to the JSON data type. This is useful when it may be
+ * necessary to cast a JSONB column or expression to JSON, but some dialects also support casting text types as well.
+ *
+ * **Note:** Dialects that do not support a `JSON`-specific constructor will generate a `CAST .. AS json_type` clause.
+ * Some dialects, like MariaDB, do not support casting to JSON. Please check the documentation or consider using
+ * `castTo()` directly.
+ *
+ * @return An expression with a [JsonColumnType] that can handle the same data as the calling expression, but in JSON format.
+ * @see org.jetbrains.exposed.v1.core.castTo
+ */
+@JvmName("castToJsonReceiverType")
+inline fun <reified T : Any, E : T?> ExpressionWithColumnType<E>.castToJson(): CastToJson<E> {
+    @Suppress("UNCHECKED_CAST")
+    val columnType = (
+        columnType as? JsonColumnType<E>
+            ?: JsonColumnType(
+                { Json.encodeToString(serializer<T>(), it) },
+                { Json.decodeFromString(serializer<T>(), it) }
+            )
+        ) as IColumnType<E & Any>
+    return CastToJson(this, columnType)
+}
+
+/**
+ * Specifies a casting of the calling expression's data type to the JSON data type. This is useful when it may be
+ * necessary to cast a type such as text to a JSON type that can be handled by a serializable class on the client-side.
+ *
+ * **Note:** Dialects that do not support a `JSON`-specific constructor will generate a `CAST .. AS json_type` clause.
+ * Some dialects, like MariaDB, do not support casting to JSON. Please check the documentation or consider using
+ * `castTo()` directly.
+ *
+ * @return An expression with a [JsonColumnType] that can handle the type specified by parameter [T] in JSON format.
+ * @see org.jetbrains.exposed.v1.core.castTo
+ */
+@LowPriorityInOverloadResolution
+inline fun <reified T : Any> ExpressionWithColumnType<*>.castToJson(): CastToJson<T> {
+    @Suppress("UNCHECKED_CAST")
+    val columnType = columnType as? JsonColumnType<T>
+        ?: JsonColumnType(
+            { Json.encodeToString(serializer<T>(), it) },
+            { Json.decodeFromString(serializer<T>(), it) }
+        )
+    return CastToJson(this, columnType)
+}

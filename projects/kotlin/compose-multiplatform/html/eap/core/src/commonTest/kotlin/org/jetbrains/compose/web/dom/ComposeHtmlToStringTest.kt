@@ -1,0 +1,377 @@
+/*
+ * Copyright 2020-2026 JetBrains s.r.o. and respective authors and developers.
+ * Use of this source code is governed by the Apache 2.0 license that can be found in the LICENSE.txt file.
+ */
+
+package org.jetbrains.compose.web.dom
+
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshots.Snapshot
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import org.jetbrains.compose.web.composeHtmlToString
+import org.jetbrains.compose.web.css.Color
+import org.jetbrains.compose.web.css.CSSUnitValue
+import org.jetbrains.compose.web.css.DisplayStyle
+import org.jetbrains.compose.web.css.color
+import org.jetbrains.compose.web.css.display
+import org.jetbrains.compose.web.css.height
+import org.jetbrains.compose.web.css.margin
+import org.jetbrains.compose.web.css.ms
+import org.jetbrains.compose.web.css.opacity
+import org.jetbrains.compose.web.css.padding
+import org.jetbrains.compose.web.css.percent
+import org.jetbrains.compose.web.css.px
+import org.jetbrains.compose.web.css.width
+import org.jetbrains.compose.web.css.value
+import org.jetbrains.compose.web.css.variable
+import org.jetbrains.compose.web.css.keywords.auto
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertFailsWith
+
+class ComposeHtmlToStringTest {
+    @Test
+    fun keyedRendersClearAttributeValuesBetweenRequests() {
+        fun render(decorated: Boolean) = composeHtmlToString(key = "keyed-attribute-reset") {
+            Div(attrs = {
+                if (decorated) {
+                    id("first")
+                    classes("one")
+                    style { color(Color.red) }
+                    allowHydrationMismatch()
+                }
+            }) {}
+        }
+
+        assertEquals("<div id=\"first\" class=\"one\" style=\"color: red\"></div>", render(true))
+        assertEquals("<div></div>", render(false))
+        assertEquals("<div id=\"first\" class=\"one\" style=\"color: red\"></div>", render(true))
+    }
+
+    @Test
+    fun keyedRendersUpdateContentAndClearRememberedValues() {
+        var rememberedCount = 0
+        val effects = mutableListOf<String>()
+
+        fun render(value: String) = composeHtmlToString(key = "keyed-content-and-effects") {
+            val remembered = remember { ++rememberedCount }
+            DisposableEffect(Unit) {
+                effects.add("enter $value")
+                onDispose { effects.add("dispose $value") }
+            }
+            Div(attrs = { id(value) }) {
+                Text("$value:$remembered")
+            }
+        }
+
+        assertEquals("<div id=\"first\">first:1</div>", render("first"))
+        assertEquals("<div id=\"second\">second:2</div>", render("second"))
+        assertEquals(
+            listOf("enter first", "dispose first", "enter second", "dispose second"),
+            effects,
+        )
+    }
+
+    @Test
+    fun keyedRendersHandleChangingElementIdentityAndShape() {
+        fun render(tag: String, includeChild: Boolean) =
+            composeHtmlToString(key = "keyed-element-identity") {
+                TagElement(StringElementBuilder<kotlinx.browser.dom.Element>(tag), null) {
+                    if (includeChild) Span { Text("child") }
+                }
+            }
+
+        assertEquals("<div><span>child</span></div>", render("div", true))
+        assertEquals("<section></section>", render("section", false))
+        assertEquals("<div><span>child</span></div>", render("div", true))
+    }
+
+    @Test
+    fun keyedRendersRecoverAfterSerializationFailure() {
+        assertFailsWith<IllegalArgumentException> {
+            composeHtmlToString(key = "keyed-failure") {
+                Div { Text("invalid\u0000text") }
+            }
+        }
+
+        assertEquals(
+            "<div>valid text</div>",
+            composeHtmlToString(key = "keyed-failure") { Div { Text("valid text") } },
+        )
+    }
+
+    @Test
+    fun keyedRendersRetainSnapshotWritesAndHonorHydrationMode() {
+        val state = mutableStateOf("initial")
+        fun render(value: String, hydratable: Boolean) =
+            composeHtmlToString(hydratable = hydratable, key = "keyed-snapshot") {
+                state.value = value
+                Text(state.value)
+                Text("tail")
+            }
+
+        assertEquals("firsttail", render("first", hydratable = false))
+        assertEquals("first", state.value)
+        assertEquals("second<!--c-->tail", render("second", hydratable = true))
+        assertEquals("second", state.value)
+    }
+
+    @Test
+    fun rcdataEscapesTextWithoutHydrationBoundaryComments() {
+        for (tag in listOf("title", "textarea")) {
+            val html = composeHtmlToString {
+                TagElement<kotlinx.browser.dom.Element>(tag, null) {
+                    Text("A & B\r")
+                    Text("")
+                    Text("</$tag>")
+                }
+            }
+            assertEquals("<$tag>A &amp; B&#13;&lt;/$tag&gt;</$tag>", html)
+        }
+    }
+
+    @Test
+    fun doesNotStartCompositionScopedCoroutines() {
+        val launchedEffectStarted = CompletableDeferred<Unit>()
+        val scopeCoroutineStarted = CompletableDeferred<Unit>()
+        var sideEffectRan = false
+
+        val html = composeHtmlToString {
+            // Unconfined makes an incorrectly active scope execute immediately,
+            // so the regression check does not depend on thread scheduling.
+            val scope = rememberCoroutineScope { Dispatchers.Unconfined }
+            LaunchedEffect(Unit) {
+                launchedEffectStarted.complete(Unit)
+            }
+            SideEffect {
+                sideEffectRan = true
+                scope.launch { scopeCoroutineStarted.complete(Unit) }
+            }
+            Div { Text("initial content") }
+        }
+
+        assertEquals("<div>initial content</div>", html)
+        assertEquals(true, sideEffectRan)
+        assertFalse(scopeCoroutineStarted.isCompleted)
+        assertFalse(launchedEffectStarted.isCompleted)
+    }
+
+    @Test
+    fun runsAndDisposesSynchronousEffects() {
+        val effects = mutableListOf<String>()
+
+        val html = composeHtmlToString {
+            DisposableEffect(Unit) {
+                effects.add("enter")
+                onDispose { effects.add("dispose") }
+            }
+            SideEffect { effects.add("side effect") }
+            Text("content")
+        }
+
+        assertEquals("content", html)
+        assertEquals(listOf("enter", "side effect", "dispose"), effects)
+    }
+
+    @Test
+    fun retainsSnapshotStateChangesMadeWhileRenderingAndDisposing() {
+        val sharedState = mutableStateOf("initial")
+
+        val html = composeHtmlToString {
+            sharedState.value = "render"
+            Text(sharedState.value)
+            SideEffect { sharedState.value = "side effect" }
+            DisposableEffect(Unit) {
+                onDispose { sharedState.value = "dispose" }
+            }
+        }
+
+        assertEquals("render", html)
+        assertEquals("dispose", sharedState.value)
+    }
+
+    @Test
+    fun callerSnapshotControlsIsolationAndIncludesEffectCleanup() {
+        for (renderKey in listOf(null, "caller-snapshot")) {
+            val state = mutableStateOf("outside")
+            val snapshot = Snapshot.takeMutableSnapshot()
+            try {
+                snapshot.enter {
+                    state.value = "caller"
+                    assertEquals("caller", composeHtmlToString(key = renderKey) {
+                        Text(state.value)
+                        SideEffect { state.value = "side effect" }
+                        DisposableEffect(Unit) {
+                            onDispose { state.value = "dispose" }
+                        }
+                    })
+                    assertEquals("dispose", state.value)
+                }
+                assertEquals("outside", state.value)
+            } finally {
+                snapshot.dispose()
+            }
+            assertEquals("outside", state.value)
+        }
+    }
+
+    @Test
+    fun callerSnapshotIsNotDisposedWhenRenderingFails() {
+        val state = mutableStateOf("outside")
+        val snapshot = Snapshot.takeMutableSnapshot()
+        try {
+            snapshot.enter {
+                assertFailsWith<IllegalStateException> {
+                    composeHtmlToString(key = "caller-snapshot-failure") {
+                        state.value = "failed render"
+                        error("content failed")
+                    }
+                }
+                assertEquals("failed render", state.value)
+                state.value = "recovered"
+                assertEquals("recovered", composeHtmlToString(key = "caller-snapshot-failure") {
+                    Text(state.value)
+                })
+            }
+            assertEquals("outside", state.value)
+        } finally {
+            snapshot.dispose()
+        }
+    }
+
+    @Test
+    fun eventListenersAreNotSerialized() {
+        val html = composeHtmlToString {
+            Button(attrs = { onClick { } }) {
+                Text("Click")
+            }
+        }
+
+        assertEquals("<button>Click</button>", html)
+    }
+
+    /* Negative test: Tests if `allowHydrationMismatch()` does not change serialization of HTML. */
+    @Test
+    fun hydrationMismatchAllowanceIsNotSerialized() {
+        val html = composeHtmlToString {
+            Span(attrs = {
+                allowHydrationMismatch()
+                id("timestamp")
+            }) {
+                Text("12:00")
+            }
+        }
+
+        assertEquals("<span id=\"timestamp\">12:00</span>", html)
+    }
+
+    @Test
+    fun rendersNestedElementsAndRootSiblings() {
+        val html = composeHtmlToString {
+            Div {
+                Text("before")
+                Span { Text("inside") }
+            }
+            Text("after")
+        }
+
+        assertEquals(
+            "<div>before<span>inside</span></div>after",
+            html
+        )
+    }
+
+    @Test
+    fun rendersAttributesStylesAndEscapedText() {
+        val html = composeHtmlToString {
+            Div({
+                id("root")
+                classes("first", "second")
+                style {
+                    property("color", "red")
+                    property("display", "block", important = true)
+                }
+                attr("title", "Tom & \"Jerry\"")
+            }) {
+                Text("Tom & Jerry <3")
+            }
+        }
+
+        assertEquals(
+            "<div id=\"root\" title=\"Tom &amp; &quot;Jerry&quot;\" " +
+                "class=\"first second\" " +
+                "style=\"color: red; display: block !important\">" +
+                "Tom &amp; Jerry &lt;3</div>",
+            html
+        )
+    }
+
+    @Test
+    fun rendersTypedCssUnitValuesInInlineStyles() {
+        val html = composeHtmlToString {
+            Div({
+                style {
+                    property("width", 320.px)
+                    property("transition-duration", 250.ms)
+                }
+            })
+        }
+
+        assertEquals(
+            "<div style=\"width: 320px; transition-duration: 250ms\"></div>",
+            html,
+        )
+    }
+
+    @Test
+    fun rendersCommonCssPropertyHelpers() {
+        val html = composeHtmlToString {
+            Div({
+                style {
+                    display(DisplayStyle.Flex)
+                    color(Color.rebeccapurple)
+                    opacity(50.percent)
+                    width(320.px)
+                    height(auto)
+                    padding(8.px, 16.px)
+                    margin(4.px, 8.px, 12.px, 16.px)
+                }
+            })
+        }
+
+        assertEquals(
+            "<div style=\"display: flex; color: rebeccapurple; opacity: 0.5; width: 320px; height: auto; " +
+                "padding: 8px 16px; margin: 4px 8px 12px 16px\"></div>",
+            html,
+        )
+    }
+
+    @Test
+    fun rendersCssVariableAssignmentsAndReferences() {
+        val html = composeHtmlToString {
+            Div({
+                style {
+                    InlineVariables.spacing(16.px)
+                    width(InlineVariables.spacing.value(8.px))
+                }
+            })
+        }
+
+        assertEquals(
+            "<div style=\"width: var(--spacing, 8px); --spacing: 16px\"></div>",
+            html,
+        )
+    }
+
+    private object InlineVariables {
+        val spacing by variable<CSSUnitValue>()
+    }
+}

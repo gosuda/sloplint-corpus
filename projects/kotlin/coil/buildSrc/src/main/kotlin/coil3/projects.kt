@@ -1,0 +1,298 @@
+package coil3
+
+import com.android.build.api.dsl.ApplicationExtension
+import com.android.build.api.dsl.CommonExtension
+import com.android.build.api.dsl.KotlinMultiplatformAndroidLibraryTarget
+import com.android.build.api.dsl.LibraryExtension
+import com.android.build.api.dsl.TestExtension
+import com.vanniktech.maven.publish.AndroidSingleVariantLibrary
+import com.vanniktech.maven.publish.JavadocJar.Dokka
+import com.vanniktech.maven.publish.KotlinMultiplatform
+import com.vanniktech.maven.publish.MavenPublishBaseExtension
+import org.gradle.api.Project
+import org.gradle.api.tasks.testing.logging.TestExceptionFormat
+import org.gradle.kotlin.dsl.apply
+import org.gradle.kotlin.dsl.configure
+import org.gradle.kotlin.dsl.get
+import org.gradle.kotlin.dsl.withType
+import org.jetbrains.dokka.gradle.DokkaExtension
+import org.jetbrains.dokka.gradle.engine.parameters.KotlinPlatform
+import org.jetbrains.kotlin.gradle.dsl.KotlinMultiplatformExtension
+import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
+
+private val DISABLED_LINT_RULES = listOf(
+    "ComposableNaming",
+    "UnknownIssueId",
+    "UnsafeOptInUsageWarning",
+    "UnusedResources",
+    "UseSdkSuppress",
+    "VectorPath",
+    "VectorRaster",
+)
+
+private val RESOURCE_DUPLICATE_OVERRIDES = listOf(
+    "META-INF/AL2.0",
+    "META-INF/LGPL2.1",
+    "META-INF/*kotlin_module",
+)
+
+private fun Project.configureKotlinMultiplatform() {
+    plugins.withId("org.jetbrains.kotlin.multiplatform") {
+        extensions.configure<KotlinMultiplatformExtension> {
+            sourceSets.configureEach {
+                languageSettings {
+                    optIn("coil3.annotation.DelicateCoilApi")
+                    optIn("coil3.annotation.ExperimentalCoilApi")
+                    optIn("coil3.annotation.InternalCoilApi")
+                }
+            }
+            compilerOptions {
+                // https://youtrack.jetbrains.com/issue/KT-61573
+                freeCompilerArgs.add("-Xexpect-actual-classes")
+            }
+        }
+    }
+}
+
+private fun Project.configureKotlinCompile() {
+    tasks.withType<KotlinCompile>().configureEach {
+        compilerOptions {
+            allWarningsAsErrors.set(System.getenv("CI").toBoolean())
+
+            val arguments = mutableListOf(
+                // Enable Java default method generation.
+                "-jvm-default=no-compatibility",
+                // Generate smaller bytecode by not generating runtime not-null assertions.
+                "-Xno-call-assertions",
+                "-Xno-param-assertions",
+                "-Xno-receiver-assertions",
+            )
+
+            if (project.name != "benchmark") {
+                arguments += "-opt-in=coil3.annotation.DelicateCoilApi"
+                arguments += "-opt-in=coil3.annotation.ExperimentalCoilApi"
+                arguments += "-opt-in=coil3.annotation.InternalCoilApi"
+            }
+
+            freeCompilerArgs.addAll(arguments)
+        }
+    }
+}
+
+fun Project.androidLibrary(
+    name: String,
+    config: Boolean = false,
+    action: LibraryExtension.() -> Unit = {},
+) = androidBase<LibraryExtension>(name) {
+    buildFeatures.buildConfig = config
+    sourceSets["main"].resources.directories +=
+        listOf("src/commonMain/resources", "src/jvmCommonMain/resources")
+    if (project.name in publicModules) {
+        apply(plugin = "org.jetbrains.dokka")
+        apply(plugin = "com.vanniktech.maven.publish.base")
+        setupDokka()
+        setupPublishing {
+            val platform = if (project.plugins.hasPlugin("org.jetbrains.kotlin.multiplatform")) {
+                KotlinMultiplatform(Dokka("dokkaGenerate"))
+            } else {
+                AndroidSingleVariantLibrary()
+            }
+            configure(platform)
+        }
+    }
+    testOptions.unitTests.all { test ->
+        test.testLogging {
+            exceptionFormat = TestExceptionFormat.FULL
+            showExceptions = true
+            showStackTraces = true
+            showCauses = false
+        }
+    }
+    action()
+}
+
+fun Project.multiplatformAndroidLibrary(
+    name: String,
+    action: KotlinMultiplatformAndroidLibraryTarget.() -> Unit = {},
+) {
+    configureKotlinMultiplatform()
+    configureKotlinCompile()
+
+    plugins.withId("org.jetbrains.kotlin.multiplatform") {
+        extensions.configure<KotlinMultiplatformExtension> {
+            targets.withType<KotlinMultiplatformAndroidLibraryTarget>().configureEach {
+                namespace = name
+                compileSdk = project.compileSdk
+                minSdk = project.minSdk
+
+                withHostTest {
+                    isIncludeAndroidResources = true
+                }
+
+                withDeviceTest {
+                    instrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+                    configureAndroidDeviceTests(managedDevices, "AndroidDeviceTest")
+                }
+
+                lint {
+                    warningsAsErrors = true
+                    disable += DISABLED_LINT_RULES
+                }
+
+                packaging {
+                    resources.pickFirsts += RESOURCE_DUPLICATE_OVERRIDES
+                }
+
+                action()
+            }
+        }
+    }
+
+    if (project.name in publicModules) {
+        apply(plugin = "org.jetbrains.dokka")
+        apply(plugin = "com.vanniktech.maven.publish.base")
+        setupDokka()
+        setupPublishing {
+            configure(KotlinMultiplatform(Dokka("dokkaGenerate")))
+        }
+    }
+}
+
+fun Project.setupPublishing(
+    action: MavenPublishBaseExtension.() -> Unit = {},
+) {
+    extensions.configure<MavenPublishBaseExtension> {
+        pomFromGradleProperties()
+        publishToMavenCentral()
+        signAllPublications()
+        action()
+    }
+}
+
+fun Project.setupDokka(
+    action: DokkaExtension.() -> Unit = {},
+) {
+    extensions.configure<DokkaExtension> {
+        dokkaPublications.configureEach {
+            failOnWarning.set(true)
+            suppressInheritedMembers.set(true)
+        }
+        dokkaSourceSets.configureEach {
+            jdkVersion.set(8)
+            skipDeprecated.set(true)
+
+            if (name == "jvmCommonMain") {
+                analysisPlatform.set(KotlinPlatform.JVM)
+            }
+
+            // Shared JVM source sets can get KLIB metadata instead of JVM dependency JARs.
+            if (name != "jvmMain" && name != "androidMain") {
+                val jvmSourceSets = dokkaSourceSets.matching { it.name == "jvmMain" }
+                classpath.from(
+                    analysisPlatform.map { platform ->
+                        if (platform == KotlinPlatform.JVM) {
+                            jvmSourceSets.map { it.classpath }
+                        } else {
+                            emptyList()
+                        }
+                    },
+                )
+            }
+
+            // Suppress the 'main' source set for non-multiplatform Android
+            // libraries to avoid conflicting with the 'release' source set.
+            // https://github.com/Kotlin/dokka/issues/3701
+            if (name == "main" && !project.plugins.hasPlugin("org.jetbrains.kotlin.multiplatform")) {
+                suppress.set(true)
+            }
+
+            externalDocumentationLinks.register("android") {
+                url.set(uri("https://developer.android.com/reference/"))
+            }
+            externalDocumentationLinks.register("coroutines") {
+                url.set(uri("https://kotlinlang.org/api/kotlinx.coroutines/"))
+            }
+            externalDocumentationLinks.register("skiko") {
+                url.set(uri("https://jetbrains.github.io/skiko/"))
+                packageListUrl.set(uri("https://jetbrains.github.io/skiko/package-list"))
+            }
+            externalDocumentationLinks.register("ktor") {
+                url.set(uri("https://api.ktor.io/"))
+            }
+            externalDocumentationLinks.register("datetime") {
+                url.set(uri("https://kotlinlang.org/api/kotlinx-datetime/"))
+            }
+            externalDocumentationLinks.register("okio") {
+                url.set(uri("https://lysine.dev/okio/3.x/"))
+                packageListUrl.set(uri("https://lysine.dev/okio/3.x/package-list"))
+            }
+            externalDocumentationLinks.register("okhttp") {
+                url.set(uri("https://lysine.dev/okhttp/5.x/"))
+                packageListUrl.set(uri("https://lysine.dev/okhttp/5.x/package-list"))
+            }
+        }
+        action()
+    }
+}
+
+fun Project.androidApplication(
+    name: String,
+    action: ApplicationExtension.() -> Unit = {},
+) = androidBase<ApplicationExtension>(name) {
+    defaultConfig.apply {
+        applicationId = name
+        versionCode = project.versionCode
+        versionName = project.versionName
+        androidResources.localeFilters += "en"
+        vectorDrawables.useSupportLibrary = true
+    }
+    action()
+}
+
+fun Project.androidTest(
+    name: String,
+    config: Boolean = false,
+    action: TestExtension.() -> Unit = {},
+) = androidBase<TestExtension>(name) {
+    buildFeatures.buildConfig = config
+    defaultConfig.apply {
+        vectorDrawables.useSupportLibrary = true
+    }
+    action()
+}
+
+private fun <T : CommonExtension> Project.androidBase(
+    name: String,
+    action: T.() -> Unit,
+) {
+    configureKotlinMultiplatform()
+    configureKotlinCompile()
+
+    android<T> {
+        namespace = name
+        compileSdk = project.compileSdk
+        defaultConfig.apply {
+            minSdk = project.minSdk
+            testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        }
+        when (this) {
+            is ApplicationExtension -> defaultConfig.targetSdk = project.targetSdk
+            is LibraryExtension -> testOptions.targetSdk = project.targetSdk
+            is TestExtension -> defaultConfig.targetSdk = project.targetSdk
+        }
+        if (this !is TestExtension) {
+            configureAndroidDeviceTests(testOptions.managedDevices, "DebugAndroidTest")
+        }
+        packaging.resources.pickFirsts += RESOURCE_DUPLICATE_OVERRIDES
+        testOptions.unitTests.isIncludeAndroidResources = true
+        lint.apply {
+            warningsAsErrors = true
+            disable += DISABLED_LINT_RULES
+        }
+        action()
+    }
+}
+
+private fun <T : CommonExtension> Project.android(action: T.() -> Unit) {
+    extensions.configure("android", action)
+}

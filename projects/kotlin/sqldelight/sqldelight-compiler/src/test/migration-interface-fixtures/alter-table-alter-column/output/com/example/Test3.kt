@@ -1,0 +1,9 @@
+@file:Suppress("REDUNDANT_VISIBILITY_MODIFIER", "ASSIGNED_VALUE_IS_NEVER_READ")
+
+package com.example
+
+import kotlin.String
+
+public data class Test3(
+  public val alpha: String,
+)

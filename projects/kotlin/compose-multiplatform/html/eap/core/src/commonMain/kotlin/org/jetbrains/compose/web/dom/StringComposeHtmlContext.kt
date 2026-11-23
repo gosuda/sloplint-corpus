@@ -1,0 +1,225 @@
+/*
+ * Copyright 2020-2026 JetBrains s.r.o. and respective authors and developers.
+ * Use of this source code is governed by the Apache 2.0 license that can be found in the LICENSE.txt file.
+ */
+
+// Access shared serialization helpers without exposing them as public API.
+@file:Suppress("INVISIBLE_MEMBER", "INVISIBLE_REFERENCE")
+
+package org.jetbrains.compose.web.dom
+
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffectScope
+import androidx.compose.runtime.ExplicitGroupsComposable
+import androidx.compose.runtime.SkippableUpdater
+import androidx.compose.runtime.currentComposer
+import androidx.compose.runtime.key
+import androidx.compose.runtime.remember
+import kotlinx.browser.dom.Element
+import kotlinx.browser.dom.HTMLStyleElement
+import org.jetbrains.compose.web.attributes.AttrsScope
+import org.jetbrains.compose.web.attributes.AttrsScopeBuilder
+import org.jetbrains.compose.web.attributes.toClassAttributeValue
+import org.jetbrains.compose.web.HtmlValidationMode
+import org.jetbrains.compose.web.LocalHtmlValidationMode
+import org.jetbrains.compose.web.css.CSSRuleDeclarationList
+import org.jetbrains.compose.web.css.toStyleAttributeValue
+import org.jetbrains.compose.web.internal.runtime.ComposeWebInternalApi
+
+internal object StringComposeHtmlContext : ComposeHtmlContext {
+    override val supportsDomElementAccess: Boolean = false
+
+    override fun <TElement : Element> elementBuilder(tagName: String): ElementBuilder<TElement> =
+        StringElementBuilder(tagName)
+
+    override fun <TElement : Element> elementBuilderNS(
+        tagName: String,
+        namespace: String,
+    ): ElementBuilder<TElement> = StringElementBuilder(tagName, namespace)
+
+    @Composable
+    override fun <TElement : Element> TagElement(
+        elementBuilder: ElementBuilder<TElement>,
+        applyAttrs: (AttrsScope<TElement>.() -> Unit)?,
+        rawTextContent: RawTextContent?,
+        content: (@Composable ElementScope<TElement>.() -> Unit)?,
+    ) = StringTagElement(
+        elementBuilder = elementBuilder,
+        applyAttrs = applyAttrs,
+        content = content,
+        rawText = rawTextContent,
+    )
+
+    @Composable
+    private fun <TElement : Element> StringTagElement(
+        elementBuilder: ElementBuilder<TElement>,
+        applyAttrs: (AttrsScope<TElement>.() -> Unit)?,
+        content: (@Composable ElementScope<TElement>.() -> Unit)?,
+        rawText: RawTextContent? = null,
+    ) {
+        val namespace = (elementBuilder as? StringElementBuilder<*>)?.namespace ?: HtmlNamespace
+        val validate = LocalHtmlValidationMode.current == HtmlValidationMode.Strict
+        val elementScope = remember { StringElementScope<TElement>() }
+
+        // Tag and namespace cannot be changed. Key both so Compose creates a new node when either one changed.
+        key(elementBuilder.tagName, namespace) {
+            ComposeStringNode(
+                factory = {
+                    StringHtmlNodeWrapper(
+                        StringHtmlElementNode(
+                            tagName = elementBuilder.tagName,
+                            namespace = namespace,
+                        )
+                    )
+                },
+                update = {
+                    val attrsScope = AttrsScopeBuilder<TElement>()
+                    applyAttrs?.invoke(attrsScope)
+                    val formState =
+                        attrsScope.propertyUpdatesOrEmpty.formControlState(elementBuilder.tagName, namespace)
+                    val attributes = attrsScope.stringAttributes(namespace, validate, formState)
+                    rawText?.validateAttributes(attributes.byName)
+
+                    update {
+                        set(attributes, StringHtmlNodeWrapper::updateAttributes)
+                        set(formState?.textContent, StringHtmlNodeWrapper::updateTextContent)
+                    }
+                },
+                scope = elementScope,
+                content = {
+                    content?.invoke(this)
+                },
+            )
+        }
+    }
+
+    @Composable
+    override fun <TElement : Element> RawTextElement(
+        tagName: String,
+        applyAttrs: (AttrsScope<TElement>.() -> Unit)?,
+        content: RawTextContent,
+    ) {
+        StringTagElement(
+            elementBuilder = elementBuilder(tagName),
+            applyAttrs = applyAttrs,
+            content = {
+                StringRawText(content)
+            },
+            rawText = content,
+        )
+    }
+
+    @Composable
+    override fun TextElement(value: String) {
+        ComposeStringNode(
+            factory = {
+                StringHtmlNodeWrapper(StringHtmlTextNode(value))
+            },
+            update = {
+                update {
+                    set(value, StringHtmlNodeWrapper::updateText)
+                }
+            },
+            scope = Unit,
+            content = {},
+        )
+    }
+
+    @Composable
+    override fun StyleElement(
+        applyAttrs: (AttrsScope<HTMLStyleElement>.() -> Unit)?,
+        cssRules: CSSRuleDeclarationList,
+    ) {
+        val content = remember(cssRules, cssRules.size) {
+            prepareStyleRawTextContent(cssRules)
+        }
+        RawTextElement<HTMLStyleElement>(
+            tagName = "style",
+            applyAttrs = applyAttrs,
+            content = content,
+        )
+    }
+}
+
+@Composable
+private fun StringRawText(content: RawTextContent) {
+    ComposeStringNode(
+        factory = {
+            StringHtmlNodeWrapper(StringHtmlRawTextNode(content))
+        },
+        update = {
+            update {
+                set(content, StringHtmlNodeWrapper::updateRawText)
+            }
+        },
+        scope = Unit,
+        content = {},
+    )
+}
+
+internal class StringElementScope<TElement : Element> : ElementScopeBase<TElement>() {
+    override val element: TElement
+        get() = unavailableDomElement()
+
+    override val DisposableEffectScope.scopeElement: TElement
+        get() = unavailableDomElement()
+}
+
+private fun unavailableDomElement(): Nothing =
+    throw UnsupportedOperationException(
+        "DOM element references are not available during string rendering"
+    )
+
+/*
+   Only reads: ordinary HTML attributes, classes, styleScope.properties, styleScope.variables
+   Event listeners are intentionally ignored because they are client-side behavior, not string HTML behaviour.
+   Known form-control property setters override the serialized attributes and textarea text.
+   DOM refs and arbitrary property callbacks are not executed.
+
+   ```kotlin
+   Div({
+    println("This does execute")
+    onClick { println("This does not execute during rendering") }
+   })
+   ```
+ */
+@OptIn(ComposeWebInternalApi::class)
+internal fun <TElement : Element> AttrsScopeBuilder<TElement>.stringAttributes(
+    namespace: String,
+    validate: Boolean,
+    formState: FormControlState? = null,
+): StringHtmlAttributes {
+    val classAttributeValue = classes.toClassAttributeValue(validate)
+    val existingStyleScope = styleScopeOrNull
+    return StringHtmlAttributes.from(
+        attributes = collect().withFormState(formState),
+        namespace = namespace,
+        validate = validate,
+        hydrationProtocolAttributes = hydrationProtocolAttributes,
+        classAttributeValue = classAttributeValue,
+        styleAttributeValue = existingStyleScope?.let { scope -> scope::toStyleAttributeValue },
+    )
+}
+
+@Composable
+@ExplicitGroupsComposable
+private inline fun <TScope> ComposeStringNode(
+    crossinline factory: () -> StringHtmlNodeWrapper,
+    update: @Composable SkippableUpdater<StringHtmlNodeWrapper>.() -> Unit,
+    scope: TScope,
+    content: @Composable TScope.() -> Unit,
+) {
+    currentComposer.startReusableNode()
+    if (currentComposer.inserting) {
+        currentComposer.createNode { factory() }
+    } else {
+        currentComposer.useNode()
+    }
+
+    update(SkippableUpdater(currentComposer))
+
+    currentComposer.startReplaceableGroup(0x387e8a1c)
+    content(scope)
+    currentComposer.endReplaceableGroup()
+    currentComposer.endNode()
+}
