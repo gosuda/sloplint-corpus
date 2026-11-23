@@ -2,3 +2,46 @@ schema_version = 1
 
 [corpus]
 mode = "public"
+
+[[project]]
+name = "afnetworking"
+language = "objc"
+url = "https://github.com/AFNetworking/AFNetworking"
+rev = "d9f589cc2c1fe9d55eb5eea00558010afea7a41e"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:485a5c56e1f03948b5edac845793090dd5d1791f0fa6791915702ccfebd61433"
+added_by = "CorpusPopC3"
+added_on = "2026-11-23"
+reason = "ObjC golden-age HTTP library; preprocessor and NS_DESIGNATED_INITIALIZER macro stress"
+notice_present_upstream = false
+
+[[project]]
+name = "sdwebimage"
+language = "objc"
+url = "https://github.com/SDWebImage/SDWebImage"
+rev = "c3ad5e1a9bf55c9b76d4c362430b5fcded96c502"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:1bd9ddf4e7528050479868bba201cb69dee9cccb3817947fb66457cdf476260b"
+added_by = "CorpusPopC3"
+added_on = "2026-11-23"
+reason = "Maintained image library; generics nullability annotations, demo app layout"
+notice_present_upstream = false
+
+[[project]]
+name = "restkit"
+language = "objc"
+url = "https://github.com/RestKit/RestKit"
+rev = "d902e6a6fc3d765939c739c21ee5b6b3f25f2470"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+exclude = ["Code/CocoaLumberjack/**", "Code/CocoaLumberjack/*/**", "Code/CocoaLumberjack/*/*/**", "Code/Testing/RKBenchmark.m"]
+tree_hash = "sha256:04d8a1862ddb2d1aeaceb0ab5e0e1a66ce4bf271a479584d30cf691c5e1def91"
+added_by = "CorpusPopC3"
+added_on = "2026-11-23"
+reason = "Mapping and CoreData library plus logic tests; vendored BSD dir and one copyleft-worded benchmark file excluded"
+notice_present_upstream = false
