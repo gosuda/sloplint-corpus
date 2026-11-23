@@ -99,10 +99,11 @@ rev = "1caec34a347d3bdd875b18d0e279aef9b80435c2"
 spdx = "MIT"
 storage = "copied"
 paths = ["src/Illuminate/**", "src/Illuminate/*/**", "src/Illuminate/*/*/**", "src/Illuminate/*/*/*/**", "src/Illuminate/*/*/*/*/**", "src/Illuminate/*/*/*/*/*/**", "src/Illuminate/*/*/*/*/*/*/**", "src/Illuminate/*/*/*/*/*/*/*/**"]
-tree_hash = "sha256:b735c6cbd44773eb25087e4a4bcf8ea9e0c4f7cdf9c88de280ca8e5448d0f1cd"
+exclude = ["src/Illuminate/Translation/MessageSelector.php"]
+tree_hash = "sha256:00440d63ff1445abc80597fcde01953c2c9db8fef353d8517e40d5a44fcf6f86"
 added_by = "CorpusPopC3"
 added_on = "2026-11-23"
-reason = "Framework core library (facades, Macroable, database); tests dropped for 15MB project cap"
+reason = "Framework core library (facades, Macroable, database); tests dropped for 15MB project cap; MessageSelector.php excluded (quotes BSD license text)"
 notice_present_upstream = false
 
 [[project]]
