@@ -393,8 +393,8 @@ def verify_project(root, project, mode, errors):
     rev = project.get("rev", "")
     spdx = project.get("spdx", "")
     storage = project.get("storage", "")
-    if not isinstance(url, str) or not url.startswith("https://"):
-        errors.append("%s: url must start with https://" % tag)
+    if not isinstance(url, str) or not (url.startswith("https://") or url.startswith("file://")):
+        errors.append("%s: url must start with https:// or file://" % tag)
     if not isinstance(rev, str) or not REV_RE.match(rev):
         errors.append("%s: rev must be a 40-hex commit, never a branch or tag" % tag)
     if not isinstance(spdx, str) or not spdx_ids(spdx):
@@ -531,14 +531,19 @@ def cmd_add(args):
     if not NAME_RE.match(args.name):
         fail("bad name; use [a-z0-9-]")
         return 1
-    if args.language not in EXTENSIONS:
-        fail("unknown language %s" % args.language)
+    if args.lang not in EXTENSIONS:
+        fail("unknown language %s" % args.lang)
         return 1
     if not REV_RE.match(args.rev):
         fail("rev must be a 40-hex commit, never a branch or tag")
         return 1
-    if not args.url.startswith("https://"):
-        fail("url must start with https://")
+    url = args.url
+    if url.startswith("https://") or url.startswith("file://"):
+        pass
+    elif os.path.isdir(url):
+        url = "file://" + os.path.abspath(url)
+    else:
+        fail("url must start with https:// or file://, or be a local directory")
         return 1
     if mode == "private" and public_spdx_ok(args.spdx):
         fail("spdx %s is public-allowlisted; it belongs in the public repo" % args.spdx)
@@ -550,7 +555,7 @@ def cmd_add(args):
     if os.path.exists(cache):
         shutil.rmtree(cache)
     os.makedirs(os.path.dirname(cache), exist_ok=True)
-    proc = subprocess.run(["git", "clone", "--quiet", args.url, cache],
+    proc = subprocess.run(["git", "clone", "--quiet", url, cache],
                           capture_output=True, text=True, timeout=600)
     if proc.returncode != 0:
         fail("git clone failed: %s" % (proc.stderr.strip().splitlines() or ["unknown"])[0])
@@ -577,10 +582,10 @@ def cmd_add(args):
         shutil.rmtree(cache, ignore_errors=True)
         fail("path subset selected no files")
         return 1
-    projdir = os.path.join(root, "projects", args.language, args.name)
+    projdir = os.path.join(root, "projects", args.lang, args.name)
     if os.path.exists(projdir):
         shutil.rmtree(cache, ignore_errors=True)
-        fail("projects/%s/%s already exists" % (args.language, args.name))
+        fail("projects/%s/%s already exists" % (args.lang, args.name))
         return 1
     os.makedirs(projdir)
     for rel, full in selected:
@@ -591,7 +596,7 @@ def cmd_add(args):
             continue
         if base == ".gitmodules" or rel.endswith("/.gitmodules"):
             continue
-        if not extension_ok(args.language, rel):
+        if not extension_ok(args.lang, rel):
             continue
         dest = os.path.join(projdir, rel)
         os.makedirs(os.path.dirname(dest), exist_ok=True)
@@ -621,7 +626,7 @@ def cmd_add(args):
     stamp = time.strftime("%Y-%m-%d")
     with open(os.path.join(projdir, "UPSTREAM.md"), "w", encoding="utf-8") as fh:
         fh.write("# Upstream provenance\n\n")
-        fh.write("url: %s\n" % args.url)
+        fh.write("url: %s\n" % url)
         fh.write("rev: %s\n" % args.rev)
         fh.write("retrieved: %s\n" % stamp)
         fh.write("spdx: %s\n" % args.spdx)
@@ -639,7 +644,7 @@ def cmd_add(args):
              "spdx = \"%s\"\n"
              "storage = \"%s\"\n"
              "paths = [%s]\n" % (
-                 args.name, args.language, args.url, args.rev, args.spdx, storage,
+                 args.name, args.lang, url, args.rev, args.spdx, storage,
                  ", ".join('"%s"' % p for p in patterns)))
     if excludes:
         entry += "exclude = [%s]\n" % ", ".join('"%s"' % p for p in excludes)
@@ -657,7 +662,7 @@ def cmd_add(args):
     if cmd_verify(verify_args) != 0:
         fail("added tree does not pass verify; entry kept for inspection")
         return 1
-    sys.stdout.write("PASS add: projects/%s/%s\n" % (args.language, args.name))
+    sys.stdout.write("PASS add: projects/%s/%s\n" % (args.lang, args.name))
     return 0
 
 

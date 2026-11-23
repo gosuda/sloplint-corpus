@@ -16,6 +16,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TOOL = os.path.join(REPO, "tools", "corpus", "corpus")
 ASKALONO = "/dev/shm/CorpusTooling/tools/bin/askalono"
 HAS_ASKALONO = os.path.isfile(ASKALONO) and os.access(ASKALONO, os.X_OK)
+HAS_GIT = shutil.which("git") is not None
 
 MIT_TEXT = """MIT License
 
@@ -272,6 +273,60 @@ class TestVerify(unittest.TestCase):
         proc = run_tool(root, "verify", "--offline")
         self.assertEqual(proc.returncode, 0, proc.stdout)
         self.assertIn("PASS verify: 2 project(s)", proc.stdout)
+
+
+def make_local_git_repo(license_text):
+    upstream = tempfile.mkdtemp(prefix="corpus-upstream-")
+    subprocess.run(["git", "init", "-q", upstream], check=True, timeout=60)
+    write(os.path.join(upstream, "src", "lib.rs"),
+          "pub fn add(left: u64, right: u64) -> u64 {\n    left + right\n}\n")
+    write(os.path.join(upstream, "src", "util.rs"),
+          "pub fn double(value: u64) -> u64 {\n    value * 2\n}\n")
+    write(os.path.join(upstream, "LICENSE"), license_text)
+    subprocess.run(["git", "-C", upstream, "add", "-A"], check=True, timeout=60)
+    subprocess.run(["git", "-C", upstream, "-c", "user.name=t", "-c", "user.email=t@t",
+                    "commit", "-qm", "fixture"], check=True, timeout=60)
+    rev = subprocess.run(["git", "-C", upstream, "rev-parse", "HEAD"],
+                         capture_output=True, text=True, check=True,
+                         timeout=60).stdout.strip()
+    return upstream, rev
+
+
+class TestAddLocal(unittest.TestCase):
+    @unittest.skipUnless(HAS_GIT and HAS_ASKALONO, "needs git and askalono")
+    def test_add_local_repo_green(self):
+        upstream, rev = make_local_git_repo(MIT_TEXT)
+        self.addCleanup(shutil.rmtree, upstream, True)
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        proc = run_tool(root, "add", "--url", upstream, "--rev", rev,
+                        "--lang", "rust", "--spdx", "MIT", "--name", "local-demo",
+                        "--paths", "src/**", "--reason", "local fixture")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("PASS add: projects/rust/local-demo", proc.stdout)
+        projdir = os.path.join(root, "projects", "rust", "local-demo")
+        self.assertTrue(os.path.isfile(os.path.join(projdir, "src", "lib.rs")))
+        self.assertTrue(os.path.isfile(os.path.join(projdir, "src", "util.rs")))
+        self.assertTrue(os.path.isfile(os.path.join(projdir, "LICENSE")))
+        self.assertTrue(os.path.isfile(os.path.join(projdir, "UPSTREAM.md")))
+        manifest = open(os.path.join(root, "corpus.toml")).read()
+        self.assertIn('url = "file://%s"' % upstream, manifest)
+        self.assertEqual(run_tool(root, "verify", "--offline").returncode, 0)
+
+    @unittest.skipUnless(HAS_GIT, "needs git")
+    def test_add_gpl_refused_public(self):
+        upstream = tempfile.mkdtemp(prefix="corpus-upstream-")
+        self.addCleanup(shutil.rmtree, upstream, True)
+        write(os.path.join(upstream, "LICENSE"),
+              "GNU GENERAL PUBLIC LICENSE, version 3 (stub for refusal test)\n")
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        proc = run_tool(root, "add", "--url", upstream,
+                        "--rev", "b" * 40, "--lang", "rust",
+                        "--spdx", "GPL-3.0-only", "--name", "gpl-demo",
+                        "--paths", "src/**", "--reason", "copyleft fixture")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("not on the public allowlist", proc.stdout)
 
 
 FAKE_SLOPLINT = """#!/bin/sh
