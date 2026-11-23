@@ -96,11 +96,11 @@ rev = "632df4153c21bf0513f5735967fb1220185ab78a"
 spdx = "Apache-2.0"
 storage = "copied"
 paths = ["src/**", "src/*/**", "src/*/*/**", "src/*/*/*/**", "src/*/*/*/*/**", "src/*/*/*/*/*/**", "src/*/*/*/*/*/*/**", "src/*/*/*/*/*/*/*/**", "src/*/*/*/*/*/*/*/*/**", "src/*/*/*/*/*/*/*/*/*/**"]
-exclude = ["test/**", "test/*/**", "test/*/*/**", "test/*/*/*/**", "test/*/*/*/*/**", "test/*/*/*/*/*/**", "test/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/*/**", "project/**", "project/*/**", "project/*/*/**", "project/*/*/*/**", "project/*/*/*/*/**"]
-tree_hash = "sha256:af9020c611a58661b3892d5b7e041aaf12a6602e6dc9093541a47804d8062f0f"
+exclude = ["test/**", "test/*/**", "test/*/*/**", "test/*/*/*/**", "test/*/*/*/*/**", "test/*/*/*/*/*/**", "test/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/*/**", "project/**", "project/*/**", "project/*/*/**", "project/*/*/*/**", "project/*/*/*/*/**", "src/scalap/scala/tools/scalap/scalax/rules/Memoisable.scala", "src/scalap/scala/tools/scalap/scalax/rules/Result.scala", "src/scalap/scala/tools/scalap/scalax/rules/Rule.scala", "src/scalap/scala/tools/scalap/scalax/rules/Rules.scala", "src/scalap/scala/tools/scalap/scalax/rules/SeqRule.scala"]
+tree_hash = "sha256:72b370f3379d4dc85308e00d7f3cacd4cf9308697d97c4f0b64babf042002683"
 added_by = "CorpusPopC4"
 added_on = "2026-11-23"
-reason = "Scala 2 compiler and standard library, implicits and macros; src/ subset, test and project trees excluded (suffix-glob contamination)"
+reason = "Scala 2 compiler and standard library, implicits and macros; src/ subset minus test/project trees and five BSD-licensed scalax rules files outside the public allowlist"
 notice_present_upstream = true
 
 [[project]]
