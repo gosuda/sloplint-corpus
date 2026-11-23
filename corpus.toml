@@ -234,3 +234,46 @@ added_by = "CorpusPopC3"
 added_on = "2026-11-23"
 reason = "Prompt framework; two git-derived GPL files excluded"
 notice_present_upstream = false
+[[project]]
+name = "powershell"
+language = "powershell"
+url = "https://github.com/PowerShell/PowerShell"
+rev = "ba2221aed027041b6620c5fe1c0675567f14452a"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:4b5fdbcd49d49678d62f5f37260e898a9daa6dea25c07407541af56846907984"
+added_by = "CorpusPopC3"
+added_on = "2026-11-23"
+reason = "Language-forming product scripts and Pester tests; .psd1 manifests outside adapter"
+notice_present_upstream = false
+
+
+[[project]]
+name = "psscriptanalyzer"
+language = "powershell"
+url = "https://github.com/PowerShell/PSScriptAnalyzer"
+rev = "0151b9dafd1a7ba4279e0deeb03f04661223e629"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+exclude = ["Tests/Rules/TestFiles/BOMAbsent_UTF16EncodedScript.ps1", "Tests/Rules/TestFiles/BOMAbsent_UnknownEncodedScript.ps1", "Tests/Rules/TestFiles/BOMPresent_UTF16EncodedScript.ps1"]
+tree_hash = "sha256:93887a0dd38d63d5c7daa83ca96c18a0813e3fd3ed3b8b182f9afd5fe3614290"
+added_by = "CorpusPopC3"
+added_on = "2026-11-23"
+reason = "Analyzer rule-violation fixtures; UTF-16 encoding fixtures excluded (binary gate)"
+notice_present_upstream = false
+
+[[project]]
+name = "posh-git"
+language = "powershell"
+url = "https://github.com/dahlbyk/posh-git"
+rev = "bbc5ac380018239e0ac70411a59f4e367ca87f2d"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:e193066434d82c42ed98078b2e10bfe1a7f56fc0ba1038d4f7ece6d6ce43b3f9"
+added_by = "CorpusPopC3"
+added_on = "2026-11-23"
+reason = "Git prompt module with global state; small class"
+notice_present_upstream = false
