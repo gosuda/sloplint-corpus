@@ -146,6 +146,31 @@ class TestSpdx(unittest.TestCase):
                              "project demo")
         self.assertTrue(any("outside the public allowlist" in e for e in errors), errors)
 
+    def test_grouped_or_header_passes_public(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        headers = ("// SPDX-License-Identifier: (MIT OR Apache-2.0)\n",
+                   "// SPDX-License-Identifier: ( MIT OR Apache-2.0 )\n",
+                   "/* SPDX-License-Identifier: MIT OR Apache-2.0 */\n")
+        for index, header in enumerate(headers):
+            projdir = add_synthetic_project(root, name="demo%d" % index, files={
+                "src/lib.rs": header + "pub fn f() {}\n"})
+            errors = []
+            corpus.check_headers(projdir, "rust", {"MIT", "Apache-2.0"}, True, errors,
+                                 "project demo")
+            self.assertEqual(errors, [], header)
+
+    def test_grouped_and_header_fails_public(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        projdir = add_synthetic_project(root, files={
+            "src/lib.rs": "// SPDX-License-Identifier: ( MIT AND Apache-2.0 )\n"
+                          "pub fn f() {}\n"})
+        errors = []
+        corpus.check_headers(projdir, "rust", {"MIT", "Apache-2.0"}, True, errors,
+                             "project demo")
+        self.assertTrue(any("outside the public allowlist" in e for e in errors), errors)
+
     def test_noassertion_ids(self):
         self.assertEqual(corpus.spdx_ids("NOASSERTION"), {"NOASSERTION"})
 
@@ -503,6 +528,29 @@ class TestAddLocal(unittest.TestCase):
                         "--lang", "rust", "--spdx", "NOASSERTION",
                         "--name", "demo", "--storage", "pinned",
                         "--paths", "src/**", "--reason", "scratch victim")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertTrue(os.path.isdir(os.path.join(upstream, ".git")))
+
+    @unittest.skipUnless(HAS_GIT, "needs git")
+    def test_add_preserves_upstream_at_old_stage_path(self):
+        root = make_repo(mode="private")
+        self.addCleanup(shutil.rmtree, root, True)
+        upstream = os.path.join(root, ".cache", "tmp", "stage-demo")
+        os.makedirs(upstream)
+        write(os.path.join(upstream, "src", "lib.rs"), "pub fn f() {}\n")
+        write(os.path.join(upstream, "LICENSE"), MIT_TEXT)
+        subprocess.run(["git", "init", "-q", upstream], check=True, timeout=60)
+        subprocess.run(["git", "-C", upstream, "add", "-A"], check=True, timeout=60)
+        subprocess.run(["git", "-C", upstream, "-c", "user.name=t",
+                        "-c", "user.email=t@t", "commit", "-qm", "fixture"],
+                       check=True, timeout=60)
+        rev = subprocess.run(["git", "-C", upstream, "rev-parse", "HEAD"],
+                             capture_output=True, text=True, check=True,
+                             timeout=60).stdout.strip()
+        proc = run_tool(root, "add", "--url", upstream, "--rev", rev,
+                        "--lang", "rust", "--spdx", "NOASSERTION",
+                        "--name", "demo", "--storage", "pinned",
+                        "--paths", "src/**", "--reason", "stage victim")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertTrue(os.path.isdir(os.path.join(upstream, ".git")))
 
