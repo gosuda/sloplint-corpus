@@ -84,11 +84,11 @@ rev = "459929001cfcca2c1035f16cf0ea61f242b50578"
 spdx = "MIT"
 storage = "copied"
 paths = ["**"]
-exclude = ["vendor/**", "vendor/*/**", "vendor/*/*/**", "vendor/*/*/*/**", "vendor/*/*/*/*/**", "vendor/*/*/*/*/*/**", "vendor/*/*/*/*/*/*/**", "vendor/*/*/*/*/*/*/*/**", "vendor/*/*/*/*/*/*/*/*/**", "vendor/*/*/*/*/*/*/*/*/*/**"]
-tree_hash = "sha256:e1314a643dc06aff5e369221155c297002e5d8815db2edd6da270cd93c99709a"
+exclude = ["vendor/**", "vendor/*/**", "vendor/*/*/**", "vendor/*/*/*/**", "vendor/*/*/*/*/**", "vendor/*/*/*/*/*/**", "vendor/*/*/*/*/*/*/**", "vendor/*/*/*/*/*/*/*/**", "vendor/*/*/*/*/*/*/*/*/**", "vendor/*/*/*/*/*/*/*/*/*/**", "src/Http/ResponseEmitter.php"]
+tree_hash = "sha256:97e8263db70162f48f610b7d71cc4423df659e60679b4c60ec19f0fce4945af4"
 added_by = "CorpusPopC3"
 added_on = "2026-11-23"
-reason = "Full-stack framework with docblock generics; test-app vendor fixtures excluded"
+reason = "Full-stack framework with docblock generics; test-app vendor fixtures excluded; ResponseEmitter.php excluded (quotes BSD license text)"
 notice_present_upstream = false
 
 [[project]]
