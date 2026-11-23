@@ -119,7 +119,7 @@ class TestSpdx(unittest.TestCase):
         self.assertEqual(corpus.spdx_ids("MIT OR Apache-2.0"), {"MIT", "Apache-2.0"})
 
     def test_with_exception(self):
-        hits = corpus.scan_secrets(b"key = \"AKIAIOSFODNN7EXAMPLE\"\n")
+        self.assertEqual(corpus.spdx_ids("Apache-2.0 WITH LLVM-exception"), {"Apache-2.0"})
 
     def test_public_allowlist(self):
         self.assertTrue(corpus.public_spdx_ok("MIT"))
