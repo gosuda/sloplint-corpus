@@ -1139,6 +1139,15 @@ def cmd_measure(args):
     return 0
 
 
+def seed_name(pname, rel):
+    pathhash = hashlib.sha256(("%s/%s" % (pname, rel)).encode(
+        "utf-8", "surrogateescape")).hexdigest()[:16]
+    stem = "%s__%s" % (pname, os.path.basename(rel))
+    if len((stem + "__" + pathhash).encode("utf-8", "surrogateescape")) > 200:
+        stem = stem[:160]
+    return "%s__%s" % (stem, pathhash)
+
+
 def cmd_seeds(args):
     root = os.path.abspath(args.root)
     data, problems = load_manifest(root, args.manifest)
@@ -1192,15 +1201,22 @@ def cmd_seeds(args):
     os.makedirs(out, exist_ok=True)
     used = 0
     written = 0
+    planned = {}
     for rel, full, pname, size, digest in unique:
         if used + size > args.max_bytes:
             continue
-        flat = "%s__%s__%s" % (pname, rel.replace("/", "__"), digest[:12])
+        planned[seed_name(pname, rel)] = (full, size)
+        used += size
+    for stale in sorted(os.listdir(out)):
+        if stale not in planned and os.path.isfile(os.path.join(out, stale)):
+            if re.fullmatch(r".*__[0-9a-f]{12,16}", stale):
+                os.remove(os.path.join(out, stale))
+    for flat in sorted(planned):
+        full, size = planned[flat]
         with open(full, "rb") as src:
             content = src.read()
         with open(os.path.join(out, flat), "wb") as dst:
             dst.write(content)
-        used += size
         written += 1
     sys.stdout.write("PASS seeds %s: %d files, %d bytes -> %s\n" % (language, written, used, out))
     return 0

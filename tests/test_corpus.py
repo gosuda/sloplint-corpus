@@ -791,6 +791,49 @@ class TestMeasureSeeds(unittest.TestCase):
         contents = sorted(open(os.path.join(out, n), "rb").read() for n in names)
         self.assertEqual(contents, [b"x = 1\n", b"y = 22\n"])
 
+    def test_seeds_reexport_replaces_same_source(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        projdir = add_synthetic_project(root, lang="python", name="demo", files={
+            "src/a.py": "x = 1\n"})
+        out = os.path.join(root, "seeds")
+        self.assertEqual(run_tool(root, "seeds", "python", "--out", out).returncode, 0)
+        before = sorted(os.listdir(out))
+        self.assertEqual(len(before), 1, before)
+        write(os.path.join(projdir, "src", "a.py"), "y = 22\n")
+        self.assertEqual(run_tool(root, "seeds", "python", "--out", out).returncode, 0)
+        after = sorted(os.listdir(out))
+        self.assertEqual(after, before)
+        self.assertEqual(open(os.path.join(out, after[0]), "rb").read(), b"y = 22\n")
+
+    def test_seeds_bound_deep_names(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        deep = "/".join(["d%02d" % i for i in range(15)])
+        add_synthetic_project(root, lang="python", name="demo", files={
+            deep + "/mod.py": "x = 1\n"})
+        out = os.path.join(root, "seeds")
+        self.assertEqual(run_tool(root, "seeds", "python", "--out", out).returncode, 0)
+        names = os.listdir(out)
+        self.assertEqual(len(names), 1, names)
+        self.assertLessEqual(len(names[0].encode("utf-8")), 200)
+
+    def test_seeds_rerun_matches_report(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        add_synthetic_project(root, lang="python", name="demo", files={
+            "src/a.py": "0123456789"})
+        out = os.path.join(root, "seeds")
+        full = run_tool(root, "seeds", "python", "--out", out, "--max-bytes", "10")
+        self.assertEqual(full.returncode, 0, full.stdout)
+        self.assertIn("1 files", full.stdout)
+        slim = run_tool(root, "seeds", "python", "--out", out, "--max-bytes", "4")
+        self.assertEqual(slim.returncode, 0, slim.stdout)
+        self.assertIn("0 files", slim.stdout)
+        leftovers = [n for n in os.listdir(out)
+                     if os.path.isfile(os.path.join(out, n))]
+        self.assertEqual(leftovers, [])
+
 
 class TestStats(unittest.TestCase):
     def test_stats_counts_copied_files(self):
