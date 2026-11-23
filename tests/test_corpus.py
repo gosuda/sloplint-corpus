@@ -534,6 +534,21 @@ class TestVerify(unittest.TestCase):
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("not owned by a copied manifest entry", proc.stdout)
 
+    def test_fetch_rejects_non_list_paths(self):
+        root = make_repo(mode="private")
+        self.addCleanup(shutil.rmtree, root, True)
+        with open(os.path.join(root, "corpus.toml"), "a") as fh:
+            fh.write('\n[[project]]\nname = "badpaths"\nlanguage = "python"\n'
+                     'url = "https://example.com/x"\nrev = "%s"\n'
+                     'spdx = "NOASSERTION"\nstorage = "pinned"\n'
+                     'paths = "src/**"\n'
+                     'tree_hash = "sha256:%s"\nadded_by = "t"\n'
+                     'added_on = "2026-11-23"\nreason = "x"\n'
+                     'notice_present_upstream = false\n' % ("a" * 40, "0" * 64))
+        proc = run_tool(root, "fetch", "--allow-unlicensed")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("needs a non-empty paths subset", proc.stdout)
+
     def test_removed_entry_leaves_unowned_dir(self):
         root = make_repo()
         self.addCleanup(shutil.rmtree, root, True)

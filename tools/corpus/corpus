@@ -1071,12 +1071,21 @@ def cmd_fetch(args):
                 continue
             stored = project.get("paths", [])
             stored_excludes = project.get("exclude", [])
-            if isinstance(stored, list) and isinstance(stored_excludes, list):
-                problem = check_subset(stored + stored_excludes)
-                if problem is not None:
-                    fail("%s: %s" % (tag, problem))
-                    failures += 1
-                    continue
+            if (not isinstance(stored, list) or not stored
+                    or not all(isinstance(item, str) for item in stored)):
+                fail("%s: pinned entry needs a non-empty paths subset" % tag)
+                failures += 1
+                continue
+            if (not isinstance(stored_excludes, list)
+                    or not all(isinstance(item, str) for item in stored_excludes)):
+                fail("%s: pinned entry needs exclude as a list of strings" % tag)
+                failures += 1
+                continue
+            problem = check_subset(stored + stored_excludes)
+            if problem is not None:
+                fail("%s: %s" % (tag, problem))
+                failures += 1
+                continue
             scratch_parent = os.path.join(root, ".cache", "tmp")
             os.makedirs(scratch_parent, exist_ok=True)
             tmp = tempfile.mkdtemp(prefix="fetch-" + name + "-", dir=scratch_parent)
