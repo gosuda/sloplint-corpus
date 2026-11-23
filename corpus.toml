@@ -231,11 +231,11 @@ rev = "94c2977eda06f230aafa9628fcd869123f01896b"
 spdx = "MIT"
 storage = "copied"
 paths = ["**"]
-exclude = ["tools/git-completion.bash", "tools/git-prompt.sh"]
-tree_hash = "sha256:5550e9d134cc108b1306db907faf79185362e487b3f8dd8a04fe8d76f51c7f76"
+exclude = ["tools/git-completion.bash", "tools/git-prompt.sh", "completions/defaults.completion.sh", "plugins/bashmarks/bashmarks.plugin.sh"]
+tree_hash = "sha256:bf84649cc25b56b5cdd092f426899b99b394561f4f3a709c232c42aba6389526"
 added_by = "CorpusPopC3"
 added_on = "2026-11-23"
-reason = "Prompt framework; two git-derived GPL files excluded"
+reason = "Prompt framework; two git-derived GPL files excluded; two BSD-licensed files excluded (defaults completion, bashmarks plugin)"
 notice_present_upstream = false
 [[project]]
 name = "powershell"
