@@ -1,0 +1,372 @@
+/*
+ * Copyright (C) from 2022 The Play Framework Contributors <https://github.com/playframework>, 2011-2021 Lightbend Inc. <https://www.lightbend.com>
+ */
+
+package sbt
+
+import java.util.function.Supplier
+import java.util.Map as JMap
+
+import scala.collection.JavaConverters.*
+import scala.sys.process.*
+
+import sbt.*
+import sbt.internal.ConsoleChannel
+import sbt.internal.Continuous
+import sbt.internal.ContinuousCommands
+import sbt.nio.Keys.watchOnTermination
+import sbt.nio.Watch as NioWatch
+import sbt.util.LoggerContext
+import sbt.Keys.*
+import sbt.LoggerCompat.*
+
+import com.typesafe.sbt.packager.universal.UniversalPlugin.autoImport.*
+import com.typesafe.sbt.packager.Keys.executableScriptName
+import com.typesafe.sbt.web.SbtWeb.autoImport.*
+import play.runsupport.classloader.AssetsClassLoader
+import play.runsupport.CompileResult
+import play.runsupport.DevServer
+import play.runsupport.DevServerRunner
+import play.runsupport.DevServerSettings
+import play.runsupport.GeneratedSourceMapping
+import play.sbt.run.PlayReload
+import play.sbt.Colors
+import play.sbt.PlayConsoleInteractionMode
+import play.sbt.PlayImport.*
+import play.sbt.PlayImport.PlayKeys.*
+import play.sbt.PlayInteractionMode
+import play.sbt.PlayInternalKeys.*
+import play.sbt.PlayNonBlockingInteractionMode
+import play.sbt.PlayRunHook
+import play.sbt.PluginCompat
+import play.sbt.PluginCompat.*
+import play.sbt.StaticPlayNonBlockingInteractionMode
+import play.twirl.compiler.MaybeGeneratedSource
+import play.twirl.sbt.SbtTwirl
+import xsbti.FileConverter
+
+/**
+ * Provides mechanisms for running a Play application in sbt
+ */
+object PlayRun {
+  val playWatchSettings: Seq[Def.Setting[?]] = Def.settings(
+    Compile / run / watchOnTermination := {
+      val project  = thisProjectRef.value
+      val previous = (Compile / run / watchOnTermination).?.value.getOrElse(NioWatch.defaultCommandOnTermination)
+      (action, command, count, state) =>
+        try previous(action, command, count, state)
+        finally PlayContinuousRun.stop(project, channelName(state))
+    }
+  )
+
+  private def channelName(state: State): String =
+    state.source.map(_.channelName).getOrElse(ConsoleChannel.defaultName)
+
+  private def isCompileRun(key: ScopedKey[?]): Boolean =
+    key.key == Keys.run.key && key.scope.config.toOption.exists(_.name == Compile.name)
+
+  private def isWatching(state: State, channel: String): Boolean =
+    StandardMain.exchange
+      .channelForName(channel)
+      .exists(channel => ContinuousCommands.isInWatch(state, channel))
+
+  private def waitForCancel(interaction: PlayInteractionMode, terminal: Option[Terminal]): Unit =
+    (interaction, terminal) match {
+      case (PlayConsoleInteractionMode, Some(term)) => PlayConsoleInteractionMode.waitForCancel(term)
+      case _                                        => interaction.waitForCancel()
+    }
+
+  private class ContinuousInteractionMode(project: ProjectRef, state: State, log: Logger) extends PlayInteractionMode {
+    override def waitForCancel(): Unit           = ()
+    override def doWithoutEcho(f: => Unit): Unit = f
+    def start(devServer: => DevServer): Boolean  = {
+      val watch = state.get(Continuous.DynamicInputs).getOrElse {
+        sys.error("Continuous run has no watch input registry.")
+      }
+      PlayContinuousRun.start(
+        project,
+        channelName(state),
+        watch,
+        owner => isWatching(state, owner),
+        message => log.warn(message)
+      )(
+        devServer
+      )
+    }
+    def compile(): Unit = PlayContinuousRun.compile(project, channelName(state))
+  }
+
+  class TwirlSourceMapping extends GeneratedSourceMapping {
+    def getOriginalLine(generatedSource: File, line: Integer): Integer = {
+      MaybeGeneratedSource.unapply(generatedSource).map(_.mapLine(line): java.lang.Integer).orNull
+    }
+  }
+
+  val twirlSourceHandler = new TwirlSourceMapping()
+
+  val generatedSourceHandlers = SbtTwirl.defaultFormats.map { case (k, _) => s"scala.$k" -> twirlSourceHandler }
+
+  val playDefaultRunTask = {
+    playRunTask(playRunHooks, playDependencyClasspath, playReloaderClasspath, playAssetsClassLoader).map(_ => ())
+  }
+
+  private val playDefaultRunTaskNonBlocking =
+    playRunTask(
+      playRunHooks,
+      playDependencyClasspath,
+      playReloaderClasspath,
+      playAssetsClassLoader,
+      Some(StaticPlayNonBlockingInteractionMode)
+    )
+
+  val playDefaultBgRunTask =
+    playBgRunTask()
+
+  def playRunTask(
+      runHooks: TaskKey[Seq[PlayRunHook]],
+      dependencyClasspath: TaskKey[Classpath],
+      reloaderClasspath: TaskKey[Classpath],
+      assetsClassLoader: TaskKey[ClassLoader => ClassLoader],
+      interactionMode: Option[PlayInteractionMode] = None
+  ): Def.Initialize[InputTask[(PlayInteractionMode, Boolean)]] = Def.inputTask {
+    implicit val fc: FileConverter = fileConverter.value
+    val args                       = Def.spaceDelimited().parsed
+
+    val state       = Keys.state.value
+    val project     = thisProjectRef.value
+    val runKey      = resolvedScoped.value
+    val scope       = runKey.scope
+    val log         = streams.value.log
+    val term        = terminal.value
+    val watching    = isWatching(state, channelName(state))
+    val interaction = interactionMode.getOrElse {
+      // Play installs its watch termination hook only for Compile / run (playWatchSettings). Other keys built with
+      // playRunTask keep the blocking behaviour, so that their server still stops when the user presses Enter.
+      if (watching && isCompileRun(runKey)) new ContinuousInteractionMode(project, state, log)
+      else {
+        PlayContinuousRun.beforeRun(
+          project,
+          channelName(state),
+          if (watching) state.get(Continuous.DynamicInputs) else None,
+          owner => isWatching(state, owner),
+          message => log.warn(message)
+        )
+        playInteractionMode.value
+      }
+    }
+
+    val reloadCompile: Supplier[CompileResult] = () => {
+      // This code and the below Project.runTask(...) run outside of a user-called sbt command/task.
+      // It gets called much later, by code, not by user, when a request comes in which causes Play to re-compile.
+      // Since sbt 1.8.0 a LoggerContext closes after command/task that was run by a user is finished.
+      // Therefore we need to wrap this code with a new, open LoggerContext.
+      // See https://github.com/playframework/playframework/issues/11527
+      var loggerContext: LoggerContext = null
+      try {
+        val newState = interaction match {
+          case _: PlayNonBlockingInteractionMode | _: ContinuousInteractionMode =>
+            loggerContext = createLoggerContext(state)
+            state.put(Keys.loggerContext, loggerContext)
+          case _ => state
+        }
+        val reloadState = newState.put(playProjectWithDisabledAssetExports, thisProjectRef.value)
+        // During continuous execution, this state carries sbt's runtime input registry.
+        // Nested compilation tasks register inputs, including dynamically selected projects.
+        PlayReload.compile(
+          () => PluginCompat.runTask(scope / playReload, reloadState).map(_._2).get,
+          () =>
+            PluginCompat
+              .runTask(scope / reloaderClasspath, reloadState.put(WebKeys.disableExportedProducts, true))
+              .map(_._2)
+              .get,
+          () => PluginCompat.runTask(scope / streamsManager, reloadState).map(_._2).get.toEither.toOption,
+          reloadState,
+          scope
+        )
+      } finally {
+        interaction match {
+          case _: PlayNonBlockingInteractionMode | _: ContinuousInteractionMode => loggerContext.close()
+          case _                                                                => // no-op
+        }
+      }
+
+    }
+
+    lazy val devModeServer = DevServerRunner.startDevMode(
+      runHooks.value.asJava,
+      (Runtime / javaOptions).value.asJava,
+      playCommonClassloader.value,
+      getFiles(dependencyClasspath.value).asJava,
+      reloadCompile,
+      cls => assetsClassLoader.value.apply(cls),
+      null,
+      // avoid monitoring same folder twice or folders that don't exist
+      playMonitoredFiles.value.distinct.filter(_.exists()).asJava,
+      fileWatchService.value,
+      generatedSourceHandlers.asJava,
+      playDefaultPort.value,
+      playDefaultAddress.value,
+      baseDirectory.value,
+      devSettings.value.toMap.asJava,
+      args.asJava,
+      (Compile / run / mainClass).value.get,
+      PlayRun
+    )
+
+    val serverDidStart = interaction match {
+      case continuous: ContinuousInteractionMode =>
+        val started = continuous.start(devModeServer)
+        continuous.compile()
+        started
+      case nonBlocking: PlayNonBlockingInteractionMode => nonBlocking.start(devModeServer)
+      case _                                           =>
+        devModeServer
+
+        println()
+        println(Colors.green("(Server started, use Enter to stop and go back to the console...)"))
+        println()
+
+        try {
+          // run mode
+          waitForCancel(interaction, Some(term))
+        } finally {
+          devModeServer.close()
+          println()
+        }
+        true
+    }
+    (interaction, serverDidStart)
+  }
+
+  def playBgRunTask(): Def.Initialize[InputTask[JobHandle]] = Def.inputTask {
+    bgJobService.value.runInBackground(resolvedScoped.value, state.value) { (logger, workingDir) =>
+      playDefaultRunTaskNonBlocking.evaluated match {
+        case (mode: PlayNonBlockingInteractionMode, serverDidStart) =>
+          if (serverDidStart) {
+            try {
+              Thread.sleep(Long.MaxValue) // Sleep "forever" ;), gets interrupted by "bgStop <id>"
+            } catch {
+              case _: InterruptedException => mode.stop() // shutdown dev server
+            }
+          }
+      }
+    }
+  }
+
+  val playPrefixAndAssetsSetting = {
+    playPrefixAndAssets := uncached { assetsPrefix.value -> (Assets / WebKeys.public).value }
+  }
+
+  val playAllAssetsSetting = playAllAssets := uncached { Seq(playPrefixAndAssets.value) }
+
+  val playAssetsClassLoaderSetting = {
+    playAssetsClassLoader := uncached {
+      val assets =
+        playAllAssets.value.map(asset => JMap.entry(asset._1, asset._2))
+      parent => new AssetsClassLoader(parent, assets.asJava)
+    }
+  }
+
+  val playRunProdCommand = Command.args("runProd", "<port>")(testProd)
+
+  val playTestProdCommand = Command.args("testProd", "<port>") { (state: State, args: Seq[String]) =>
+    state.log.warn("The testProd command is deprecated, and will be removed in a future version of Play.")
+    state.log.warn("To test your application using production mode, run 'runProd' instead.")
+    testProd(state, args)
+  }
+
+  val playStartCommand = Command.args("start", "<port>") { (state: State, args: Seq[String]) =>
+    state.log.warn("The start command is deprecated, and will be removed in a future version of Play.")
+    state.log.warn(
+      "To run Play in production mode, run 'stage' instead, and then execute the generated start script in target/universal/stage/bin."
+    )
+    state.log.warn("To test your application using production mode, run 'runProd' instead.")
+
+    testProd(state, args)
+  }
+
+  private def testProd(state: State, args: Seq[String]): State = {
+    val extracted = Project.extract(state)
+
+    val interaction = extracted.get(playInteractionMode)
+    val noExitSbt   = args.contains("--no-exit-sbt")
+    val filtered    = args.filterNot(Set("--no-exit-sbt"))
+    val devSettings = Map.empty[String, String] // there are no dev settings in a prod website
+
+    // Parse HTTP port argument
+    val serverSettings = DevServerSettings.parse(
+      Seq.empty.asJava,
+      filtered.asJava,
+      devSettings.asJava,
+      extracted.get(playDefaultPort),
+      extracted.get(playDefaultAddress)
+    )
+
+    require(serverSettings.isAnyPortDefined, "You have to specify https.port when http.port is disabled")
+
+    def fail(state: State) = {
+      println()
+      println("Cannot start with errors.")
+      println()
+      state.fail
+    }
+
+    PluginCompat.runTask(stage, state) match {
+      case None                             => fail(state)
+      case Some((state, Inc(_)))            => fail(state)
+      case Some((state, Value(stagingDir))) =>
+        val stagingBin = {
+          val path  = (stagingDir / "bin" / extracted.get(executableScriptName)).getAbsolutePath
+          val isWin = System.getProperty("os.name").toLowerCase(java.util.Locale.ENGLISH).contains("win")
+          if (isWin) s"$path.bat" else path
+        }
+        val javaOpts = PluginCompat.runTask(Production / javaOptions, state).get._2.toEither.getOrElse(Nil)
+
+        // Note that I'm unable to pass system properties along with properties... if I do then I receive:
+        //  java.nio.charset.IllegalCharsetNameException: "UTF-8"
+        // Things are working without passing system properties, and I'm unsure that they need to be passed explicitly.
+        // If def main(args: Array[String]) { problem occurs in this area then at least we know what to look at.
+        val args = Seq(stagingBin) ++
+          serverSettings.getArgsProperties.asScala.map { e => s"-D${e._1}=${e._2}" } ++
+          javaOpts ++
+          Seq(s"-Dhttp.port=${serverSettings.getHttpPortOrDisabled}")
+
+        new Thread {
+          override def run(): Unit = {
+            val exitCode = args.!
+            if (!noExitSbt) System.exit(exitCode)
+          }
+        }.start()
+
+        val msg =
+          """|
+             |(Starting server. Type Ctrl+D to exit logs, the server will remain in background)
+             | """.stripMargin
+        println(Colors.green(msg))
+
+        waitForCancel(interaction, PluginCompat.runTask(terminal, state).flatMap(_._2.toEither.toOption))
+        println()
+
+        if (noExitSbt) state
+        else state.exit(ok = true)
+    }
+  }
+
+  val playStopProdCommand = Command.args("stopProd", "<args>") { (state, args) =>
+    stop(state)
+    if (args.contains("--no-exit-sbt")) state else state.copy(remainingCommands = Nil)
+  }
+
+  def stop(state: State): Unit = {
+    val pidFile = Project
+      .extract(state)
+      .get(Universal / com.typesafe.sbt.packager.universal.UniversalPlugin.autoImport.stagingDirectory) / "RUNNING_PID"
+    if (pidFile.exists) {
+      val pid = IO.read(pidFile)
+      s"kill -15 $pid".!
+      // PID file will be deleted by a shutdown hook attached on start in ProdServerStart.scala
+      println(s"Stopped application with process ID $pid")
+    } else println(s"No PID file found at $pidFile. Are you sure the app is running?")
+    println()
+  }
+}

@@ -1,0 +1,375 @@
+/*
+ * Copyright (C) from 2022 The Play Framework Contributors <https://github.com/playframework>, 2011-2021 Lightbend Inc. <https://www.lightbend.com>
+ */
+
+package play.api.test
+
+import scala.concurrent.ExecutionContext.Implicits.global
+import scala.concurrent.Future
+import scala.language.reflectiveCalls
+
+import com.google.common.net.InetAddresses
+import org.apache.pekko.actor.ActorSystem
+import org.apache.pekko.stream.scaladsl.Source
+import org.apache.pekko.stream.Materializer
+import org.apache.pekko.util.ByteString
+import org.specs2.mutable._
+import play.api.libs.json.Json
+import play.api.mvc._
+import play.api.mvc.request.NodePort
+import play.api.mvc.request.PeerEndpoint
+import play.api.mvc.request.RemoteInfo
+import play.api.mvc.request.RemoteNode
+import play.api.mvc.request.RequestAuthority
+import play.api.mvc.request.Scheme
+import play.api.mvc.request.TransportConnection
+import play.api.mvc.request.TransportTls
+import play.api.mvc.Results._
+import play.api.test.Helpers._
+import play.twirl.api.Content
+
+class HelpersSpec extends Specification {
+
+  sequential // needed because we read/write sys.props in differents tests below
+
+  val ctrl = new HelpersTest
+  class HelpersTest extends BaseControllerHelpers {
+    protected override val controllerComponents: ControllerComponents = stubControllerComponents()
+    lazy val Action: ActionBuilder[Request, AnyContent]               = ActionBuilder.ignoringBody
+    def abcAction: EssentialAction                                    = Action {
+      Ok("abc").as("text/plain")
+    }
+    def jsonAction: EssentialAction = Action {
+      Ok("""{"content": "abc"}""").as("application/json")
+    }
+    def parseJsonAction: EssentialAction = Action(parse.json) { request =>
+      Ok((request.body \ "content").as[String])
+    }
+  }
+
+  "call" should {
+    "execute an action with parse.ignore body parser without a Materializer" in {
+      val result = call(ctrl.abcAction, FakeRequest())
+      status(result) must_== OK
+      contentAsString(result) must_== "abc"
+    }
+
+    "execute an action with parse.json body parser without a Materializer" in {
+      val request = FakeRequest(POST, "/").withJsonBody(Json.obj("content" -> "abc"))
+      val result  = call(ctrl.parseJsonAction, request)
+
+      status(result) must_== OK
+      contentAsString(result) must_== "abc"
+    }
+  }
+
+  "inMemoryDatabase" should {
+    "change database with a name argument" in {
+      val inMemoryDatabaseConfiguration = inMemoryDatabase("test")
+      inMemoryDatabaseConfiguration.get("db.test.driver") must beSome("org.h2.Driver")
+      inMemoryDatabaseConfiguration.get("db.test.url") must beSome[String].which { url =>
+        url.startsWith("jdbc:h2:mem:play-test-")
+      }
+    }
+
+    "add options" in {
+      val inMemoryDatabaseConfiguration =
+        inMemoryDatabase("test", Map("MODE" -> "PostgreSQL", "DB_CLOSE_DELAY" -> "-1"))
+      inMemoryDatabaseConfiguration.get("db.test.driver") must beSome("org.h2.Driver")
+      inMemoryDatabaseConfiguration.get("db.test.url") must beSome[String].which { url =>
+        """^jdbc:h2:mem:play-test([0-9-]+);MODE=PostgreSQL;DB_CLOSE_DELAY=-1$""".r.findFirstIn(url).isDefined
+      }
+    }
+  }
+
+  "status" should {
+    "extract the status from Accumulator[ByteString, Result] as Int" in {
+      implicit val system: ActorSystem = ActorSystem()
+      try {
+        implicit val mat: Materializer = Materializer.matFromSystem
+        status(ctrl.abcAction.apply(FakeRequest())) must_== 200
+      } finally {
+        system.terminate()
+      }
+    }
+  }
+
+  "contentAsString" should {
+    "extract the content from Result as String" in {
+      contentAsString(Future.successful(Ok("abc"))) must_== "abc"
+    }
+
+    "extract the content from Content as String" in {
+      val content = new Content {
+        val body: String        = "abc"
+        val contentType: String = "text/plain"
+      }
+      contentAsString(content) must_== "abc"
+    }
+
+    "extract the content from Accumulator[ByteString, Result] as String" in {
+      implicit val system: ActorSystem = ActorSystem()
+      try {
+        implicit val mat: Materializer = Materializer.matFromSystem
+        contentAsString(ctrl.abcAction.apply(FakeRequest())) must_== "abc"
+      } finally {
+        system.terminate()
+      }
+    }
+  }
+
+  "contentAsBytes" should {
+    "extract the content from Result as Bytes" in {
+      contentAsBytes(Future.successful(Ok("abc"))) must_== ByteString(97, 98, 99)
+    }
+
+    "extract the content from chunked Result as Bytes" in {
+      implicit val system: ActorSystem = ActorSystem()
+      try {
+        implicit val mat: Materializer = Materializer.matFromSystem
+        contentAsBytes(Future.successful(Ok.chunked(Source(List("a", "b", "c"))))) must_== ByteString(97, 98, 99)
+      } finally {
+        system.terminate()
+      }
+    }
+
+    "extract the content from Content as Bytes" in {
+      val content = new Content {
+        val body: String        = "abc"
+        val contentType: String = "text/plain"
+      }
+      contentAsBytes(content) must_== Array(97, 98, 99)
+    }
+  }
+
+  "contentAsJson" should {
+    "extract the content from Result as Json" in {
+      val jsonResult = Ok("""{"play":["java","scala"]}""").as("application/json")
+      (contentAsJson(Future.successful(jsonResult)) \ "play").as[List[String]] must_== List("java", "scala")
+    }
+
+    "extract the content from Content as Json" in {
+      val jsonContent = new Content {
+        val body: String        = """{"play":["java","scala"]}"""
+        val contentType: String = "application/json"
+      }
+      (contentAsJson(jsonContent) \ "play").as[List[String]] must_== List("java", "scala")
+    }
+
+    "extract the content from Accumulator[ByteString, Result] as Json" in {
+      implicit val system: ActorSystem = ActorSystem()
+      try {
+        implicit val mat: Materializer = Materializer.matFromSystem
+        (contentAsJson(ctrl.jsonAction.apply(FakeRequest())) \ "content").as[String] must_== "abc"
+      } finally {
+        system.terminate()
+      }
+    }
+  }
+
+  "cookies" should {
+    val cookieA1 = Cookie(name = "a", value = "a1")
+    val cookieA2 = Cookie(name = "a", value = "a2")
+    val cookieB  = Cookie(name = "b", value = "b")
+
+    val cookiesForResult: Seq[Cookie] = Seq(cookieA1, cookieA2, cookieB)
+    val result: Future[Result]        = Future.successful(NoContent.withCookies(cookiesForResult*))
+    val ckies: Cookies                = cookies(result)
+
+    "extract cookies from Result" in {
+      var i: Int = 0
+      ckies.foreach { cookie =>
+        cookie must_== cookiesForResult(i)
+        i += 1
+      }
+
+      // Ensure that all cookies are preserved when iterated over.
+      ckies.size must_== cookiesForResult.size
+      ckies.toSeq must_== cookiesForResult
+    }
+
+    "extract cookies from a Result and return the last value for duplicate names when using `get`" in {
+      ckies.get("a") must beSome(cookieA1)
+      ckies.get("b") must beSome(cookieB)
+
+      // Ensure that this behavior is the same like Cookies created via play.api.mvc.Cookies.apply.
+      Cookies(cookiesForResult).get("a") must beSome(cookieA1)
+    }
+  }
+
+  "redirectLocation" should {
+    "extract location for 308 Permanent Redirect" in {
+      redirectLocation(Future.successful(PermanentRedirect("/test"))) must beSome("/test")
+    }
+  }
+
+  def restoringSysProp[T](propName: String)(block: => T): T = {
+    val original = sys.props.get(propName)
+    try {
+      block
+    } finally {
+      original match {
+        case None      => sys.props -= propName
+        case Some(old) => sys.props += ((propName, old))
+      }
+    }
+  }
+
+  "testServerAddress" should {
+
+    "set to 0.0.0.0 by default" in {
+      val addr = restoringSysProp("testserver.address") {
+        sys.props -= "testserver.address"
+        Helpers.testServerAddress
+      }
+      addr mustEqual "0.0.0.0"
+    }
+
+    "be configurable with sys props" in {
+      val addr = restoringSysProp("testserver.address") {
+        sys.props += (("testserver.address", "1.2.3.4"))
+        Helpers.testServerAddress
+      }
+      addr mustEqual "1.2.3.4"
+    }
+  }
+
+  "Fakes" in {
+    "FakeRequest" should {
+      "parse query strings" in {
+        val request = FakeRequest("GET", "/uri?q1=1&q2=2", FakeHeaders(), AnyContentAsEmpty)
+        request.queryString.get("q1") must beSome(contain[String]("1"))
+        request.queryString.get("q2") must beSome(contain[String]("2"))
+      }
+
+      "return an empty map when there is no query string parameters" in {
+        val request = FakeRequest("GET", "/uri", FakeHeaders(), AnyContentAsEmpty)
+        request.queryString must beEmpty
+      }
+
+      "set and clear the selected remote port" in {
+        val request = FakeRequest().withRemotePort(Some(12345))
+
+        request.remote.port must beSome(12345)
+
+        val cleared = request.withRemotePort(None)
+        cleared.remote.port must beNone
+      }
+
+      "model transport, selected remote, and scheme independently" in {
+        val transport = TransportConnection(
+          PeerEndpoint(InetAddresses.forString("192.0.2.10"), Some(53124)),
+          Some(TransportTls(Seq.empty))
+        )
+        val remote = RemoteInfo(
+          RemoteNode.Obfuscated("_anonymous", Some(NodePort.Obfuscated("_source"))),
+          Some(RemoteNode.Obfuscated("_edge", None))
+        )
+        val scheme = Scheme.parseOrThrow("web+demo")
+
+        val request = FakeRequest(
+          "GET",
+          "/uri",
+          FakeHeaders(),
+          AnyContentAsEmpty,
+          transport = transport,
+          remote = remote,
+          scheme = scheme
+        )
+
+        request.transport mustEqual transport
+        request.remote mustEqual remote
+        request.scheme mustEqual scheme
+      }
+
+      "preserve the positional request-metadata parameter order" in {
+        val transport = TransportConnection(
+          PeerEndpoint(InetAddresses.forString("192.0.2.10"), Some(53124)),
+          None
+        )
+        val remote = RemoteInfo.fromPeer(PeerEndpoint(InetAddresses.forString("198.51.100.20"), Some(443)))
+        val scheme = Scheme.Https
+
+        val request = FakeRequest("GET", "/uri", FakeHeaders(), AnyContentAsEmpty, transport, remote, scheme)
+
+        request.transport mustEqual transport
+        request.remote mustEqual remote
+        request.scheme mustEqual scheme
+      }
+
+      "synchronize Host header helpers with the effective authority" in {
+        val fromHeaders = FakeRequest().withHeaders(Headers("host" -> "EXAMPLE.com:00080", "X-Test" -> "one"))
+
+        fromHeaders.authority must beSome(RequestAuthority.parseOrThrow("example.com:80"))
+        fromHeaders.host mustEqual "example.com:80"
+        fromHeaders.headers.getAll("Host") must contain(exactly("example.com:80"))
+        fromHeaders.headers.get("X-Test") must beSome("one")
+
+        val fromPairs = fromHeaders.withHeaders("HOST" -> "[2001:0DB8::1]:00443")
+        fromPairs.authority must beSome(RequestAuthority.parseOrThrow("[2001:db8::1]:443"))
+        fromPairs.host mustEqual "[2001:db8::1]:443"
+        fromPairs.headers.getAll("Host") must contain(exactly("[2001:db8::1]:443"))
+
+        val withoutHost = fromPairs.withHeaders(Headers("X-Test" -> "two"))
+        withoutHost.authority mustEqual fromPairs.authority
+        withoutHost.headers.getAll("Host") must contain(exactly("[2001:db8::1]:443"))
+
+        val typed = withoutHost.withAuthority(Some(RequestAuthority.parseOrThrow("TYPED.example:00444")))
+        typed.host mustEqual "typed.example:444"
+        typed.headers.getAll("Host") must contain(exactly("typed.example:444"))
+      }
+
+      "reject duplicate and invalid Host values in header helpers" in {
+        FakeRequest().withHeaders(Headers("Host" -> "one.example", "host" -> "two.example")) must
+          throwA[IllegalArgumentException]
+        FakeRequest().withHeaders("Host" -> "one.example", "HOST" -> "two.example") must
+          throwA[IllegalArgumentException]
+        FakeRequest().withHeaders(Headers("Host" -> "[invalid")) must throwA[IllegalArgumentException]
+        FakeRequest().withHeaders("host" -> "[invalid") must throwA[IllegalArgumentException]
+      }
+
+      "successfully execute a POST request with an empty body" in {
+        val request         = FakeRequest(POST, "/uri").withHeaders("<myheader>" -> "headervalue")
+        val fakeApplication = Helpers.baseApplicationBuilder.build()
+        val result          = Helpers.route(fakeApplication, request)
+
+        result.get.map(result => result.header.status mustEqual 404)
+      }
+
+      "successfully execute a GET request in an Application" in {
+        val request         = FakeRequest(GET, "/abc")
+        val fakeApplication = Helpers.baseApplicationBuilder
+          .routes {
+            case (GET, "/abc") => ctrl.abcAction
+          }
+          .build()
+        val Some(result) = Helpers.route(fakeApplication, request)
+
+        Helpers.status(result) mustEqual OK
+      }
+
+      "successfully execute a GET request in a Router" in {
+        val request = FakeRequest(GET, "/abc")
+        val router  = {
+          import play.api.routing.Router
+          import play.api.routing.sird._
+          Router.from {
+            case GET(p"/abc") => ctrl.abcAction
+          }
+        }
+
+        val Some(result) = {
+          implicit val system = ActorSystem()
+          try {
+            Helpers.route(router, request)
+          } finally {
+            system.terminate()
+          }
+        }
+
+        Helpers.status(result) mustEqual OK
+      }
+    }
+  }
+
+}

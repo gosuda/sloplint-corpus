@@ -1,0 +1,609 @@
+/*
+ * Copyright (C) from 2022 The Play Framework Contributors <https://github.com/playframework>, 2011-2021 Lightbend Inc. <https://www.lightbend.com>
+ */
+
+import java.net.URI
+import java.net.URLClassLoader
+
+import sbt._
+import sbt.internal.inc.AnalyzingCompiler
+import sbt.internal.inc.CompileOutput
+import sbt.internal.inc.LoggedReporter
+import sbt.internal.inc.PlainVirtualFile
+import sbt.internal.BuildStructure
+import sbt.io.Path._
+import sbt.Keys._
+
+import org.webjars.WebJarExtractor
+import xsbti.compile._
+import Playdoc.autoImport.playdocPackage
+
+object Docs {
+  val Webjars = config("webjars").hide
+
+  val apiDocsInclude        = settingKey[Boolean]("Whether this sub project should be included in the API docs")
+  val apiDocsIncludeManaged =
+    settingKey[Boolean]("Whether managed sources from this project should be included in the API docs")
+  @transient
+  val apiDocsScalaSources = taskKey[Seq[File]]("All the scala sources for all projects")
+  @transient
+  val apiDocsScalaTastyFiles = taskKey[Seq[File]]("All the Scala TASTy files for all projects")
+  @transient
+  val apiDocsJavaSources = taskKey[Seq[File]]("All the Java sources for all projects")
+  @transient
+  val apiDocsClasspath = taskKey[Seq[File]]("The classpath for API docs generation")
+  @transient
+  val apiDocs = taskKey[File]("Generate the API docs")
+  @transient
+  val checkApiDocsPackageTree =
+    taskKey[Unit]("Check the generated API docs top-level package directory tree")
+  @transient
+  val extractWebjars = taskKey[File]("Extract webjar contents")
+  @transient
+  val allConfs = taskKey[Seq[(String, File)]]("Gather all configuration files")
+
+  lazy val settings = Seq(
+    apiDocsInclude        := false,
+    apiDocsIncludeManaged := false,
+    apiDocsScalaSources   := Def.taskDyn {
+      val pr = thisProjectRef.value
+      val bs = buildStructure.value
+      Def.task(allSources(Compile, ".scala", pr, bs).value)
+    }.value,
+    apiDocsScalaTastyFiles := Def.taskDyn {
+      val pr = thisProjectRef.value
+      val bs = buildStructure.value
+      Def.task(allScalaTastyFiles(pr, bs).value)
+    }.value,
+    apiDocsClasspath := Def.taskDyn {
+      val pr = thisProjectRef.value
+      val bs = buildStructure.value
+      Def.task(allClasspaths(pr, bs, fileConverter.value).value)
+    }.value,
+    apiDocsJavaSources := Def.taskDyn {
+      val pr = thisProjectRef.value
+      val bs = buildStructure.value
+      Def.task(allSources(Compile, ".java", pr, bs).value)
+    }.value,
+    (Global / allConfs) := Def.taskDyn {
+      val pr = thisProjectRef.value
+      val bs = buildStructure.value
+      Def.task(allConfsTask(pr, bs).value)
+    }.value,
+    apiDocs                 := apiDocsTask.value,
+    checkApiDocsPackageTree := checkApiDocsPackageTreeTask.value,
+    ivyConfigurations += Webjars,
+    extractWebjars := extractWebjarContents.value,
+    (Compile / packageBin / mappings) ++= {
+      val apiBase   = apiDocs.value
+      val webjars   = extractWebjars.value
+      val converter = fileConverter.value
+      // Include documentation and API docs in main binary JAR
+      val docBase     = baseDirectory.value / "../../documentation"
+      val raw         = (docBase \ "manual" ** "*") +++ (docBase \ "style" ** "*")
+      val filtered    = raw.filter(_.getName != ".DS_Store")
+      val docMappings = filtered.get().pair(rebase(docBase, "play/docs/content/"))
+
+      val apiDocMappings = (apiBase ** "*").get().pair(rebase(apiBase, "play/docs/content/api"))
+
+      // The play version is added so that resource paths are versioned
+      val webjarMappings = webjars.allPaths.pair(rebase(webjars, "play/docs/content/webjars/" + version.value))
+
+      // Gather all the conf files into the project
+      val referenceConfMappings = allConfs.value.map {
+        case (projectName, conf) => conf -> s"play/docs/content/confs/$projectName/${conf.getName}"
+      }
+
+      (docMappings ++ apiDocMappings ++ webjarMappings ++ referenceConfMappings).map {
+        case (file, path) => converter.toVirtualFile(file.toPath) -> path
+      }
+    }
+  )
+
+  def playdocSettings: Seq[Setting[?]] = Def.settings(
+    Playdoc.projectSettings,
+    ivyConfigurations += Webjars,
+    extractWebjars := extractWebjarContents.value,
+    libraryDependencies ++= Dependencies.playdocWebjarDependencies,
+    (playdocPackage / mappings) := {
+      val base        = (ThisBuild / baseDirectory).value
+      val converter   = fileConverter.value
+      val docBase     = base / "documentation"
+      val raw         = (docBase / "manual").allPaths +++ (docBase / "style").allPaths
+      val filtered    = raw.filter(_.getName != ".DS_Store")
+      val docMappings = filtered.get().pair(relativeTo(docBase))
+
+      // The play version is added so that resource paths are versioned
+      val webjars        = extractWebjars.value
+      val playVersion    = version.value
+      val webjarMappings = webjars.allPaths.pair(rebase(webjars, "webjars/" + playVersion))
+
+      // Gather all the conf files into the project
+      val referenceConfs = allConfs.value.map {
+        case (projectName, conf) => conf -> s"confs/$projectName/${conf.getName}"
+      }
+
+      (docMappings ++ webjarMappings ++ referenceConfs).map {
+        case (file, path) => converter.toVirtualFile(file.toPath) -> path
+      }
+    }
+  )
+
+  // This is a specialized task that does not replace "sbt doc" but packages all the doc at once.
+  def apiDocsTask = Def.taskDyn {
+    val apiDocsDir = Docs.apiDocsDir.value
+    if ((packageDoc / publishArtifact).value) {
+      genApiScaladocs.value
+      genApiJavadocs.value
+    }
+    fixJavadocLinks(apiDocsDir)
+    Def.task(apiDocsDir)
+  }
+
+  val apiDocsDir = Def.setting(crossTarget.value / "apidocs")
+
+  // Returns the first generated directory level under java/ and scala/ API docs.
+  // This is used by the check task to catch accidental publication of internal or third-party packages.
+  private def apiDocsTopLevelPackageTree(base: File): Seq[String] = {
+    val scalaDocAssetDirectories = Set("fonts", "hljs", "images", "lib", "scripts", "styles", "webfonts")
+
+    def children(dir: File): Seq[String] =
+      IO.listFiles(dir).iterator.filter(_.isDirectory).map(_.getName).toSeq.sorted
+
+    children(base / "java").map(name => s"java/$name") ++
+      children(base / "scala").filterNot(scalaDocAssetDirectories).map(name => s"scala/$name")
+  }
+
+  // Verifies the generated API docs only expose the intended top-level package roots.
+  // This protects against regressions where javadoc/scaladoc starts documenting internal or dependency packages again.
+  def checkApiDocsPackageTreeTask = Def.task {
+    val apiDocsDir = apiDocs.value
+    val log        = streams.value.log
+
+    val actual                = apiDocsTopLevelPackageTree(apiDocsDir)
+    val expectedScalaPackages = AllowedTopLevelApiPackages.map(packageName => s"scala/$packageName").sorted
+    val expected              = Seq(
+      "java/legal",
+      "java/play",
+      "java/resources",
+      "java/script-dir"
+    ) ++ expectedScalaPackages
+
+    if (actual != expected) {
+      sys.error(
+        "Generated API docs top-level package tree differs from the expected tree." +
+          System.lineSeparator() +
+          "Expected:" +
+          System.lineSeparator() +
+          expected.mkString(System.lineSeparator()) +
+          System.lineSeparator() +
+          "Actual:" +
+          System.lineSeparator() +
+          actual.mkString(System.lineSeparator())
+      )
+    } else {
+      log.info("Generated API docs top-level package tree matches the expected tree")
+    }
+  }
+
+  private val InternalApiPathSegment        = "/internal/"
+  private val AllowedTopLevelApiPackages    = Seq("controllers", "play", "views")
+  private val ExcludedTopLevelScalaPackages = Seq("org", "models")
+
+  private def isNotInternalApiSource(source: File): Boolean = {
+    val path = source.getPath.replace(java.io.File.separatorChar, '/')
+
+    !path.contains(InternalApiPathSegment)
+  }
+
+  // Keeps javadoc input limited to Play's public Java package roots.
+  // Javadoc's -exclude option is not enough for this build because sources are passed explicitly.
+  private def isPublicJavaApiSource(source: File): Boolean = {
+    val path = source.getPath.replace(java.io.File.separatorChar, '/')
+
+    isNotInternalApiSource(source) &&
+    AllowedTopLevelApiPackages.exists(packageName => path.contains(s"/src/main/java/$packageName/"))
+  }
+
+  // Keeps Scala 3 Scaladoc input limited to public Play TASTy files.
+  // Scala 3 docs are generated from TASTy, so filtering has to happen on compiled relative paths.
+  private def isPublicScala3TastyFile(classpathDirectory: File, tastyFile: File): Boolean = {
+    val path = classpathDirectory.toPath.relativize(tastyFile.toPath).toString.replace(java.io.File.separatorChar, '/')
+
+    !path.contains(InternalApiPathSegment) &&
+    !ExcludedTopLevelScalaPackages.exists(packageName => path.startsWith(s"$packageName/"))
+  }
+
+  // Builds Scala 3 source-link options for actual Play source roots.
+  // This avoids invalid links for generated Twirl sources or dependency/library sources.
+  private def scala3SourceLinkMappings(scalaSources: Seq[File], rootDirectory: File, commitish: String): Seq[String] = {
+    val rootPath = rootDirectory.toPath
+
+    scalaSources
+      .filter(isNotInternalApiSource)
+      .flatMap { source =>
+        val path = source.getPath.replace(java.io.File.separatorChar, '/')
+
+        Seq("/src/main/scala/", "/src/main/scala-3/").collectFirst {
+          case marker if path.contains(marker) =>
+            new File(path.substring(0, path.indexOf(marker) + marker.length - 1))
+        }
+      }
+      .distinct
+      .map { sourceRoot =>
+        val relativePath = rootPath.relativize(sourceRoot.toPath).toString.replace(java.io.File.separatorChar, '/')
+        s"-source-links:$relativePath=https://github.com/playframework/playframework/tree/${commitish}/$relativePath€{FILE_PATH_EXT}"
+      }
+  }
+
+  // Converts sbt apiMappings into Scala 3 Scaladoc external mapping options.
+  // Scala 3 needs explicit mapping format tags, unlike the Scala 2 -doc-external-doc option.
+  private def scala3ExternalMappings(mappings: Map[File, URI]): Seq[String] = {
+    // Scala 3 external mappings expect the API base URL, not the index.html page used by sbt apiMappings.
+    def apiBase(url: URI): String =
+      url.toString.stripSuffix("index.html")
+
+    mappings.toSeq.sortBy { case (jar, _) => jar.getAbsolutePath }.map {
+      case (jar, url) =>
+        val name = jar.getName
+
+        val (format, apiUrl) =
+          if (name.startsWith("scala-library-") || name.startsWith("scala3-library_3-")) {
+            "scaladoc3" -> "https://www.scala-lang.org/api/3.x/"
+          } else if (url.toString.startsWith("https://pekko.apache.org/api/pekko/")) {
+            "scaladoc3" -> apiBase(url)
+          } else {
+            "javadoc" -> apiBase(url)
+          }
+
+        val jarPattern = name.stripSuffix(".jar").replace(".", "\\.")
+        s"-external-mappings:.*$jarPattern.*::$format::$apiUrl"
+    }
+  }
+
+  def genApiScaladocs = Def.uncachedTask {
+    val version = Keys.version.value
+
+    val commitish = if (version.endsWith("-SNAPSHOT")) BuildSettings.snapshotBranch else version
+    val converter = fileConverter.value
+    val mappings  = apiMappings.value.map {
+      case (file, uri) =>
+        converter.toPath(file).toFile -> uri
+    }
+    val rootDirectory = (ThisBuild / baseDirectory).value
+    val scalaSources  = apiDocsScalaSources.value
+    val tastyFiles    = apiDocsScalaTastyFiles.value
+
+    val options =
+      if (scalaBinaryVersion.value == "2.13") {
+        // Note, this is used by the doc-source-url feature to determine the relative path of a given source file.
+        // If it's not a prefix of a the absolute path of the source file, the absolute path of that file will be put
+        // into the FILE_SOURCE variable below, which is definitely not what we want.
+        // Hence it needs to be the base directory for the build, not the base directory for the play-docs project.
+        Seq(
+          "-sourcepath",
+          rootDirectory.getAbsolutePath,
+          "-doc-source-url",
+          s"https://github.com/playframework/playframework/tree/${commitish}€{FILE_PATH}.scala",
+        ) ++ Opts.doc.externalAPI(mappings) ++ Seq(
+          "-skip-packages",
+          ExcludedTopLevelScalaPackages.mkString(":"),
+          "-Xsource:3",
+        )
+      } else {
+        Seq(
+          s"-sourceroot:${rootDirectory.getAbsolutePath}"
+        ) ++ scala3ExternalMappings(mappings) ++ scala3SourceLinkMappings(
+          scalaSources,
+          rootDirectory,
+          commitish
+        )
+      }
+
+    val scalac = (Compile / doc / compilers).value.scalac().asInstanceOf[AnalyzingCompiler]
+
+    val classpath = apiDocsClasspath.value.toList
+    val sources   =
+      if (scalaBinaryVersion.value == "3") tastyFiles
+      else scalaSources.filter(isNotInternalApiSource)
+    val outputDir = apiDocsDir.value / "scala"
+    val log       = streams.value.log
+
+    if (sources.isEmpty) {
+      sys.error(s"No Scala API documentation inputs were found for Scala ${scalaVersion.value}")
+    }
+
+    IO.delete(outputDir)
+    IO.createDirectory(outputDir)
+    scalac.doc(
+      sources.map(_.toPath).map(new PlainVirtualFile(_)),
+      classpath.map(_.toPath).map(new PlainVirtualFile(_)),
+      converter,
+      outputDir.toPath,
+      options,
+      10,
+      log,
+    )
+    if (scalaBinaryVersion.value == "2.13") {
+      cleanUpInvalidScala2SourceLinks(outputDir)
+    } else {
+      fixScala3Specs2Links(outputDir)
+    }
+  }
+
+  def genApiJavadocs = Def.uncachedTask {
+    val label = s"Play ${version.value}"
+
+    val options = List(
+      "-windowtitle",
+      label,
+      // Adding a user agent when we run `javadoc` was necessary to create link docs
+      // with Akka (at least, maybe play too) because doc.akka.io is served by Cloudflare
+      // which blocks requests without a User-Agent header.
+      // Not sure we need that for Pekko however.
+      "-J-Dhttp.agent=Play-Unidoc-Javadoc",
+      "-link",
+      "https://docs.oracle.com/en/java/javase/17/docs/api/",
+      "-link",
+      "https://pekko.apache.org/japi/pekko/2.0/",
+      "-link",
+      "https://pekko.apache.org/japi/pekko-http/2.0/",
+      "-notimestamp",
+      "-Xmaxwarns",
+      "99999",
+      "-source",
+      "17"
+    )
+
+    val javaTools = compilers.value.javaTools
+
+    val sources   = apiDocsJavaSources.value.toList.filter(isPublicJavaApiSource)
+    val classpath = apiDocsClasspath.value.toList
+    val outputDir = apiDocsDir.value / "java"
+    val log       = streams.value.log
+    val reporter  = new LoggedReporter(10, log)
+    val converter = fileConverter.value
+
+    if (sources.nonEmpty) {
+      IO.delete(outputDir)
+      IO.createDirectory(outputDir)
+      javaTools.javadoc.run(
+        sources.map(file => converter.toVirtualFile(file.toPath)).toArray,
+        (Seq("-classpath", classpath.mkString(java.io.File.pathSeparator)) ++ options).toArray,
+        CompileOutput(outputDir.toPath),
+        IncToolOptionsUtil.defaultIncToolOptions(),
+        reporter,
+        log,
+      )
+    }
+  }
+
+  def fixJavadocLinks(apiTarget: File) = {
+    val externalJavadocLinks = {
+      // Known Java libraries in non-standard locations...
+      // All the external Javadoc URLs that must be fixed.
+      val nonStandardJavadocLinks = Set(javaApiUrl, jakartaInjectUrl, ehCacheUrl, guiceUrl)
+
+      import Dependencies._
+      val standardJavadocModuleIDs = Set(playJson) ++ slf4j
+
+      nonStandardJavadocLinks ++ standardJavadocModuleIDs.map(moduleIDToJavadoc)
+    }
+
+    import scala.util.matching.Regex
+    import scala.util.matching.Regex.Match
+
+    def javadocLinkRegex(javadocURL: String): Regex = ("""\"(\Q""" + javadocURL + """\E)#([^"]*)\"""").r
+
+    def hasJavadocLink(f: File): Boolean =
+      externalJavadocLinks.exists { (javadocURL: String) =>
+        javadocLinkRegex(javadocURL).findFirstIn(IO.read(f)).nonEmpty
+      }
+
+    val fixJavaLinks: Match => String = m => m.group(1) + "?" + m.group(2).replace(".", "/") + ".html"
+
+    // Maps to Javadoc references in Scaladoc, and fixes the link so that it uses query parameters in
+    // Javadoc style to link directly to the referenced class.
+    // https://stackoverflow.com/questions/16934488/how-to-link-classes-from-jdk-into-scaladoc-generated-doc/
+    (apiTarget ** "*.html").get().filter(hasJavadocLink).foreach { f =>
+      val newContent: String = externalJavadocLinks.foldLeft(IO.read(f)) {
+        case (oldContent: String, javadocURL: String) =>
+          javadocLinkRegex(javadocURL).replaceAllIn(oldContent, fixJavaLinks)
+      }
+      IO.write(f, newContent)
+    }
+  }
+
+  // Removes Scala 2 Scaladoc source links to generated target files, such as Twirl output
+  // and managed sources. Those files do not exist in the GitHub repository. Scala 3
+  // Scaladoc does not emit source links for those generated files, so it does not need
+  // this cleanup.
+  private def cleanUpInvalidScala2SourceLinks(apiTarget: File): Unit = {
+    val generatedSourceLinkRegex =
+      """<dt>Source</dt><dd><a href="https://github\.com/playframework/playframework/tree/[^"]+/(?:[^"]*/)?target/[^"]+" target="_blank">[^<]+</a></dd>""".r
+
+    (apiTarget ** "*.html").get().foreach { f =>
+      val content    = IO.read(f)
+      val newContent = generatedSourceLinkRegex.replaceAllIn(content, "")
+      if (newContent != content) {
+        IO.write(f, newContent)
+      }
+    }
+  }
+
+  // Scala 3 Scaladoc emits local relative links for Specs2 members inherited by PlaySpecification,
+  // even though the org.specs2 package is intentionally excluded from Play API docs. Rewrite links
+  // that have exact pages in Specs2's published API docs and disable the generated links that do not.
+  private def fixScala3Specs2Links(apiTarget: File): Unit = {
+    val specs2Version = Dependencies.specs2Version
+
+    val unpublishedSpecs2LinkPrefixes = Seq(
+      "org/specs2/matcher/EitherBeHaveMatchers$",
+      "org/specs2/matcher/ExceptionBaseMatchers$",
+      "org/specs2/matcher/ExceptionBeHaveMatchers$",
+      "org/specs2/matcher/MapBeHaveMatchers$",
+      "org/specs2/matcher/NumericBeHaveMatchers$",
+      "org/specs2/matcher/OptionBeHaveMatchers$",
+      "org/specs2/matcher/StringBaseMatchers$",
+      "org/specs2/matcher/StringBeHaveMatchers$",
+      "org/specs2/matcher/TraversableBeHaveMatchers$",
+      "org/specs2/matcher/TryBeHaveMatchers$",
+      "org/specs2/specification/dsl/SpecStructureDsl1$",
+      "org/specs2/specification/dsl/SpecStructureDslLowImplicits$",
+      "org/specs2/specification/dsl/mutable/ExampleDsl0$",
+      "org/specs2/specification/dsl/mutable/ExampleDsl1$"
+    )
+
+    def moduleFor(path: String): Option[String] =
+      if (unpublishedSpecs2LinkPrefixes.exists(path.startsWith)) {
+        None
+      } else if (path.startsWith("org/specs2/control/")) {
+        Some("specs2-common_3")
+      } else if (path.startsWith("org/specs2/execute/ResultLogicalCombinators$")) {
+        Some("specs2-common_3")
+      } else if (path.startsWith("org/specs2/execute/")) {
+        Some("specs2-core_3")
+      } else if (path.startsWith("org/specs2/specification/")) {
+        Some("specs2-core_3")
+      } else if (path.startsWith("org/specs2/matcher/")) {
+        Some("specs2-matcher_3")
+      } else {
+        None
+      }
+
+    val specs2LinkRegex = """href="(?:\.\./)+(?=org/specs2/)(org/specs2/[^"]+)"""".r
+
+    (apiTarget ** "*.html").get().foreach { f =>
+      val content    = IO.read(f)
+      val newContent = specs2LinkRegex.replaceAllIn(
+        content,
+        m => {
+          val path = m.group(1)
+          moduleFor(path) match {
+            case Some(module) =>
+              val replacement =
+                s"""href="https://javadoc.io/doc/org.specs2/$module/$specs2Version/$path""""
+              scala.util.matching.Regex.quoteReplacement(replacement)
+            case None =>
+              """data-unresolved-link="""""
+          }
+        }
+      )
+      if (newContent != content) {
+        IO.write(f, newContent)
+      }
+    }
+  }
+
+  // Converts an artifact into a Javadoc URL.
+  def artifactToJavadoc(organization: String, name: String, apiVersion: String, jarBaseFile: String): String = {
+    raw"""https://javadoc.io/doc/$organization/$name/$apiVersion/index.html"""
+  }
+
+  // Converts an sbt module into a Javadoc URL.
+  def moduleIDToJavadoc(id: ModuleID): String = {
+    artifactToJavadoc(id.organization, id.name, id.revision, s"${id.name}-${id.revision}")
+  }
+
+  val javaApiUrl       = "https://docs.oracle.com/en/java/javase/17/docs/api/index.html"
+  val jakartaInjectUrl = "https://jakarta.ee/specifications/dependency-injection/2.0/apidocs/index.html"
+  // ehcache has 2.6.11 as version, but latest is only 2.6.9 on the site!
+  val ehCacheUrl = raw"https://www.ehcache.org/apidocs/2.6.9/index.html"
+  // nonstandard guice location
+  val guiceUrl = raw"https://google.github.io/guice/api-docs/${Dependencies.guiceVersion}/javadoc/index.html"
+
+  def allConfsTask(projectRef: ProjectRef, structure: BuildStructure): Task[Seq[(String, File)]] = {
+    val projects                = allApiProjects(projectRef.build, structure)
+    val unmanagedResourcesTasks = projects.map { ref =>
+      def taskFromProject[T](task: TaskKey[T]) = (ref / Compile / task).get(structure.data)
+
+      val projectId = (ref / moduleName).get(structure.data)
+
+      val confs = (ref / Compile / unmanagedResources)
+        .get(structure.data)
+        .map(_.map { resources =>
+          (for {
+            conf <- resources.filter(resource =>
+              resource.name == "reference.conf" || resource.name.endsWith(".xml") || resource.name
+                .endsWith(".default")
+            )
+            id <- projectId.toSeq
+          } yield id -> conf).distinct
+        })
+
+      // Join them
+      val tasks = confs.toSeq
+      tasks.join.map(_.flatten)
+    }
+    unmanagedResourcesTasks.join.map(_.flatten)
+  }
+
+  def allSources(
+      conf: Configuration,
+      extension: String,
+      projectRef: ProjectRef,
+      structure: BuildStructure
+  ): Task[Seq[File]] = {
+    val projects    = allApiProjects(projectRef.build, structure)
+    val sourceTasks = projects.map { ref =>
+      def taskFromProject[T](task: TaskKey[T]) = (ref / conf / task).get(structure.data)
+
+      // Get all the Scala sources (not the Java ones)
+      val filteredSources = taskFromProject(sources).map(_.map(_.filter(_.name.endsWith(extension))))
+
+      // Join them
+      val tasks = filteredSources.toSeq
+      tasks.join.map(_.flatten)
+    }
+    sourceTasks.join.map(_.flatten)
+  }
+
+  /**
+   * Get all projects in the given build that have `apiDocsInclude` set to `true`.
+   * Recursively searches aggregated projects starting from the root project.
+   */
+  def allApiProjects(build: URI, structure: BuildStructure): Seq[ProjectRef] = {
+    def aggregated(projectRef: ProjectRef): Seq[ProjectRef] = {
+      val project   = Project.getProject(projectRef, structure)
+      val childRefs = project.toSeq.flatMap(_.aggregate)
+      childRefs.flatMap { childRef =>
+        val includeApiDocs = (childRef / apiDocsInclude).get(structure.data).getOrElse(false)
+        if (includeApiDocs) childRef +: aggregated(childRef) else aggregated(childRef)
+      }
+    }
+    val rootProjectId  = structure.rootProject(build)
+    val rootProjectRef = ProjectRef(build, rootProjectId)
+    aggregated(rootProjectRef)
+  }
+
+  def allClasspaths(projectRef: ProjectRef, structure: BuildStructure, converter: FileConverter): Task[Seq[File]] = {
+    val projects = allApiProjects(projectRef.build, structure)
+    // Full classpath is necessary to ensure that scaladoc and javadoc can see the compiled classes of the other language.
+    val tasks = projects.flatMap { p => (p / Compile / fullClasspath).get(structure.data) }
+    tasks.join.map(_.flatten.map(entry => converter.toPath(entry.data).toFile).distinct)
+  }
+
+  def allScalaTastyFiles(projectRef: ProjectRef, structure: BuildStructure): Task[Seq[File]] = {
+    val projects = allApiProjects(projectRef.build, structure)
+    val tasks    = projects.flatMap { p =>
+      for {
+        classDirectory <- (p / Compile / Keys.classDirectory).get(structure.data)
+        tastyFilesTask <- (p / Compile / Keys.tastyFiles).get(structure.data)
+      } yield tastyFilesTask.map(_.filter(isPublicScala3TastyFile(classDirectory, _)))
+    }
+    tasks.join.map(_.flatten.distinct)
+  }
+
+  // Note: webjars are extracted without versions
+  def extractWebjarContents: Def.Initialize[Task[File]] = Def.task {
+    val report    = update.value
+    val targetDir = target.value
+
+    val webjars     = report.matching(configurationFilter(name = Webjars.name))
+    val webjarsDir  = targetDir / "webjars"
+    val classLoader = new URLClassLoader(Path.toURLs(webjars), null)
+    val extractor   = new WebJarExtractor(classLoader)
+    extractor.extractAllWebJarsTo(webjarsDir)
+    webjarsDir
+  }
+}

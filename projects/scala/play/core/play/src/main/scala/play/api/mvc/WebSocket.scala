@@ -1,0 +1,422 @@
+/*
+ * Copyright (C) from 2022 The Play Framework Contributors <https://github.com/playframework>, 2011-2021 Lightbend Inc. <https://www.lightbend.com>
+ */
+
+package play.api.mvc
+
+import scala.concurrent.Future
+import scala.util.control.NonFatal
+
+import org.apache.pekko.actor.ActorRef
+import org.apache.pekko.actor.Props
+import org.apache.pekko.stream.scaladsl.Flow
+import org.apache.pekko.util.ByteString
+import play.api.http.websocket._
+import play.api.http.HeaderNames
+import play.api.libs.json._
+import play.api.libs.streams.PekkoStreams
+import play.core.Execution.Implicits.trampoline
+
+/**
+ * A WebSocket handler.
+ */
+trait WebSocket extends Handler {
+
+  /**
+   * Execute the WebSocket.
+   *
+   * The return value is either a result to reject the WebSocket with (or otherwise respond in a different way), or
+   * a flow to handle the WebSocket messages.
+   */
+  def apply(request: RequestHeader): Future[Either[Result, Flow[Message, Message, ?]]]
+
+  /**
+   * Execute the WebSocket, including WebSocket handshake metadata.
+   *
+   * The return value is either a result to reject the WebSocket with (or otherwise respond in a different way), or
+   * an accepted WebSocket containing a flow to handle the WebSocket messages and optional handshake metadata.
+   */
+  def applyWithOptions(request: RequestHeader): Future[Either[Result, WebSocket.Accepted[Message, Message]]] = {
+    apply(request).map(_.map(flow => WebSocket.Accepted(flow, WebSocket.firstRequestedSubprotocol(request))))
+  }
+}
+
+/**
+ * Helper utilities to generate WebSocket results.
+ */
+object WebSocket {
+  private val SubprotocolHeader                                    = "Sec-WebSocket-Protocol"
+  private val defaultShouldCompress: CompressionContext => Boolean = _.isAboveCompressionThreshold
+
+  private def requestedSubprotocols(request: RequestHeader): Seq[String] = {
+    request.headers
+      .getAll(SubprotocolHeader)
+      .flatMap(_.split(",").iterator.map(_.trim).filter(_.nonEmpty))
+  }
+
+  private def closeOnException(flow: Flow[Message, Message, ?]): Flow[Message, Message, ?] = {
+    flow.recover { case WebSocketCloseException(close) => close }
+  }
+
+  private val ReservedHandshakeResponseHeaders = Set(
+    "connection",
+    "content-length",
+    "transfer-encoding",
+    "upgrade"
+  )
+
+  private[play] def firstRequestedSubprotocol(request: RequestHeader): Option[String] = {
+    requestedSubprotocols(request).headOption
+  }
+
+  // Validate in Play so invalid application selections fail consistently across server backends.
+  private[play] def validateSubprotocol(request: RequestHeader, selectedSubprotocol: Option[String]): Unit = {
+    selectedSubprotocol.foreach { selected =>
+      val requested = requestedSubprotocols(request)
+      if (!requested.contains(selected)) {
+        throw new IllegalArgumentException(
+          s"The application selected WebSocket subprotocol '$selected', but the client offered [${requested.mkString(", ")}]"
+        )
+      }
+    }
+  }
+
+  private[play] def allowedHandshakeResponseHeaders(headers: Headers): Seq[(String, String)] = {
+    headers.headers.filterNot {
+      case (name, _) =>
+        val lowerName = name.toLowerCase(java.util.Locale.ROOT)
+        ReservedHandshakeResponseHeaders(lowerName) || lowerName.startsWith("sec-websocket-")
+    }
+  }
+
+  def apply(f: RequestHeader => Future[Either[Result, Flow[Message, Message, ?]]]): WebSocket = {
+    (request: RequestHeader) => f(request)
+  }
+
+  /**
+   * Information about an outbound WebSocket message for which Play is deciding whether to use compression.
+   *
+   * @param messageValue the final Play WebSocket message after applying the configured message flow transformer
+   * @param payloadLength the uncompressed payload length in bytes, after UTF-8 encoding for text messages
+   * @param isAboveCompressionThreshold whether the payload length is greater than the configured compression threshold
+   * @since 3.1.0
+   */
+  final class CompressionContext private[play] (
+      messageValue: => Message,
+      val payloadLength: Long,
+      val isAboveCompressionThreshold: Boolean
+  ) {
+    lazy val message: Message = messageValue
+  }
+
+  /**
+   * An accepted WebSocket, including the flow that handles WebSocket messages and optional handshake metadata.
+   *
+   * @param flow the flow that handles WebSocket messages
+   * @param subprotocol the WebSocket subprotocol selected by the application, if any; this must be one of the
+   *                    subprotocols offered by the client, otherwise Play passes the application error to the configured
+   *                    [[play.api.http.HttpErrorHandler]], which returns an HTTP 500 response by default
+   * @param compressionEnabled whether this accepted WebSocket may negotiate compression when compression is enabled in
+   *                           the server configuration; setting this to `true` does not enable compression globally
+   * @param shouldCompress selects which outbound text and binary messages to compress after compression is negotiated;
+   *                       the default follows the configured compression threshold; this function must not block and
+   *                       an exception from it fails the WebSocket stream
+   * @param headers additional HTTP headers to send with the WebSocket upgrade response
+   * @param newCookies additional cookies to send with the WebSocket upgrade response
+   * @param newSession a session to send with the WebSocket upgrade response
+   */
+  case class Accepted[In, Out](
+      flow: Flow[In, Out, ?],
+      subprotocol: Option[String] = None,
+      compressionEnabled: Boolean = true,
+      shouldCompress: CompressionContext => Boolean = defaultShouldCompress,
+      headers: Headers = Headers(),
+      newCookies: Seq[Cookie] = Seq.empty,
+      newSession: Option[Session] = None
+  ) {
+
+    /**
+     * Adds or replaces headers in this WebSocket upgrade response.
+     *
+     * Connection and framing headers, and all `Sec-WebSocket-*` headers, are controlled by Play and will not be sent.
+     */
+    def withHeaders(headers: (String, String)*): Accepted[In, Out] = {
+      copy(headers = headers.foldLeft(this.headers) { case (current, header) => current.replace(header) })
+    }
+
+    /**
+     * Discards a header from this WebSocket upgrade response.
+     */
+    def discardingHeader(name: String): Accepted[In, Out] = {
+      copy(headers = headers.remove(name))
+    }
+
+    /**
+     * Adds cookies to this WebSocket upgrade response. If the response already contains cookies then cookies with the
+     * same name in the new list will override existing ones.
+     */
+    def withCookies(cookies: Cookie*): Accepted[In, Out] = {
+      val filteredCookies = newCookies.filter(cookie => !cookies.exists(_.name == cookie.name))
+      if (cookies.isEmpty) this else copy(newCookies = filteredCookies ++ cookies)
+    }
+
+    /**
+     * Discards cookies along this WebSocket upgrade response.
+     */
+    def discardingCookies(cookies: DiscardingCookie*): Accepted[In, Out] = {
+      withCookies(cookies.map(_.toCookie)*)
+    }
+
+    /**
+     * Sets a new session for this WebSocket upgrade response, discarding the existing session.
+     */
+    def withSession(session: Session): Accepted[In, Out] = copy(newSession = Some(session))
+
+    /**
+     * Sets a new session for this WebSocket upgrade response, discarding the existing session.
+     */
+    def withSession(session: (String, String)*): Accepted[In, Out] = withSession(Session(session.toMap))
+
+    /**
+     * Discards the existing session for this WebSocket upgrade response.
+     */
+    def withNewSession: Accepted[In, Out] = withSession(Session())
+
+    /**
+     * @param request Current request
+     * @return The session carried by this WebSocket upgrade response. Reads the request's session if this response does
+     *         not modify the session.
+     */
+    def session(implicit request: RequestHeader): Session = newSession.getOrElse(request.session)
+
+    /**
+     * Adds values to this WebSocket upgrade response's session.
+     */
+    def addingToSession(values: (String, String)*)(implicit request: RequestHeader): Accepted[In, Out] =
+      withSession(new Session(session.data ++ values.toMap))
+
+    /**
+     * Removes values from this WebSocket upgrade response's session.
+     */
+    def removingFromSession(keys: String*)(implicit request: RequestHeader): Accepted[In, Out] =
+      withSession(new Session(session.data -- keys))
+
+    private[play] def bakeCookies(
+        cookieHeaderEncoding: CookieHeaderEncoding = new DefaultCookieHeaderEncoding(),
+        sessionBaker: CookieBaker[Session] = new DefaultSessionCookieBaker()
+    ): Accepted[In, Out] = {
+      val allCookies = {
+        val setCookieCookies = headers
+          .getAll(HeaderNames.SET_COOKIE)
+          .flatMap(cookieHeaderEncoding.decodeSetCookieHeader)
+        val session = newSession.map { data =>
+          if (data.isEmpty) sessionBaker.discard.toCookie else sessionBaker.encodeAsCookie(data)
+        }
+        setCookieCookies ++ session ++ newCookies
+      }
+
+      if (allCookies.isEmpty) {
+        this
+      } else {
+        copy(headers =
+          headers.replace(HeaderNames.SET_COOKIE -> cookieHeaderEncoding.encodeSetCookieHeader(allCookies))
+        )
+      }
+    }
+  }
+
+  /**
+   * Transforms WebSocket message flows into message flows of another type.
+   *
+   * The transformation may be more than just converting from one message to another, it may also produce messages, such
+   * as close messages with an appropriate error code if the message can't be consumed.
+   */
+  trait MessageFlowTransformer[+In, -Out] { self =>
+
+    /**
+     * Transform the flow of In/Out messages into a flow of WebSocket messages.
+     */
+    def transform(flow: Flow[In, Out, ?]): Flow[Message, Message, ?]
+
+    /**
+     * Contramap the out type of this transformer.
+     */
+    def contramap[NewOut](f: NewOut => Out): MessageFlowTransformer[In, NewOut] = { (flow: Flow[In, NewOut, ?]) =>
+      self.transform(
+        flow.map(f)
+      )
+    }
+
+    /**
+     * Map the in type of this transformer.
+     */
+    def map[NewIn](f: In => NewIn): MessageFlowTransformer[NewIn, Out] = { (flow: Flow[NewIn, Out, ?]) =>
+      self.transform(
+        Flow[In].map(f).via(flow)
+      )
+    }
+
+    /**
+     * Map the in type and contramap the out type of this transformer.
+     */
+    def map[NewIn, NewOut](f: In => NewIn, g: NewOut => Out): MessageFlowTransformer[NewIn, NewOut] = {
+      (flow: Flow[NewIn, NewOut, ?]) =>
+        {
+          self.transform(
+            Flow[In].map(f).via(flow).map(g)
+          )
+        }
+    }
+  }
+
+  object MessageFlowTransformer {
+    implicit val identityMessageFlowTransformer: MessageFlowTransformer[Message, Message] = {
+      (flow: Flow[Message, Message, ?]) => flow
+    }
+
+    /**
+     * Converts text messages to/from Strings.
+     */
+    implicit val stringMessageFlowTransformer: MessageFlowTransformer[String, String] = {
+      (flow: Flow[String, String, ?]) =>
+        {
+          PekkoStreams.bypassWith[Message, String, Message](Flow[Message].collect {
+            case TextMessage(text) => Left(text)
+            case BinaryMessage(_)  =>
+              Right(CloseMessage(Some(CloseCodes.Unacceptable), "This WebSocket only supports text frames"))
+          })(flow.map(TextMessage.apply))
+        }
+    }
+
+    /**
+     * Converts binary messages to/from ByteStrings.
+     */
+    implicit val byteStringMessageFlowTransformer: MessageFlowTransformer[ByteString, ByteString] = {
+      (flow: Flow[ByteString, ByteString, ?]) =>
+        {
+          PekkoStreams.bypassWith[Message, ByteString, Message](Flow[Message].collect {
+            case BinaryMessage(data) => Left(data)
+            case TextMessage(_)      =>
+              Right(CloseMessage(Some(CloseCodes.Unacceptable), "This WebSocket only supports binary frames"))
+          })(flow.map(BinaryMessage.apply))
+        }
+    }
+
+    /**
+     * Converts binary messages to/from byte arrays.
+     */
+    implicit val byteArrayMessageFlowTransformer: MessageFlowTransformer[Array[Byte], Array[Byte]] = {
+      byteStringMessageFlowTransformer.map(_.toArray, ByteString.apply)
+    }
+
+    /**
+     * Converts messages to/from JsValue
+     */
+    implicit val jsonMessageFlowTransformer: MessageFlowTransformer[JsValue, JsValue] = {
+      def closeOnException[T](block: => T) =
+        try {
+          Left(block)
+        } catch {
+          case NonFatal(e) => Right(CloseMessage(Some(CloseCodes.Unacceptable), "Unable to parse json message"))
+        }
+
+      (flow: Flow[JsValue, JsValue, ?]) => {
+        PekkoStreams.bypassWith[Message, JsValue, Message](Flow[Message].collect {
+          case BinaryMessage(data) => closeOnException(Json.parse(data.asInputStream))
+          case TextMessage(text)   => closeOnException(Json.parse(text))
+        })(flow.map { json => TextMessage(Json.stringify(json)) })
+      }
+    }
+
+    /**
+     * Converts messages to/from a JSON high level object.
+     *
+     * If the input messages fail to be parsed, the WebSocket will be closed with an 1003 close code and the parse error
+     * serialised to JSON.
+     */
+    def jsonMessageFlowTransformer[In: Reads, Out: Writes]: MessageFlowTransformer[In, Out] = {
+      (flow: Flow[In, Out, ?]) =>
+        {
+          def closeOnParseOrValidationError(block: => JsValue): Either[In, Message] =
+            try {
+              val json = block
+              Json
+                .fromJson[In](json)
+                .fold(
+                  errors => Right(CloseMessage(Some(CloseCodes.Unacceptable), Json.stringify(JsError.toJson(errors)))),
+                  in => Left(in)
+                )
+            } catch {
+              case NonFatal(_) => Right(CloseMessage(Some(CloseCodes.Unacceptable), "Unable to parse json message"))
+            }
+
+          PekkoStreams.bypassWith[Message, In, Message](Flow[Message].collect {
+            case BinaryMessage(data) => closeOnParseOrValidationError(Json.parse(data.asInputStream))
+            case TextMessage(text)   => closeOnParseOrValidationError(Json.parse(text))
+          })(flow.map(out => TextMessage(Json.stringify(Json.toJson(out)))))
+        }
+    }
+  }
+
+  /**
+   * Accepts a WebSocket using the given flow.
+   */
+  def accept[In, Out](
+      f: RequestHeader => Flow[In, Out, ?]
+  )(implicit transformer: MessageFlowTransformer[In, Out]): WebSocket = {
+    acceptOrResult(f.andThen(flow => Future.successful(Right(flow))))
+  }
+
+  /**
+   * Accepts a WebSocket using the given flow and handshake metadata.
+   */
+  def acceptWithOptions[In, Out](
+      f: RequestHeader => Accepted[In, Out]
+  )(implicit transformer: MessageFlowTransformer[In, Out]): WebSocket = {
+    acceptOrResultWithOptions(f.andThen(accepted => Future.successful(Right(accepted))))
+  }
+
+  /**
+   * Creates an action that will either accept the websocket, using the given flow to handle the in and out stream, or
+   * return a result to reject the Websocket.
+   */
+  def acceptOrResult[In, Out](
+      f: RequestHeader => Future[Either[Result, Flow[In, Out, ?]]]
+  )(implicit transformer: MessageFlowTransformer[In, Out]): WebSocket = {
+    WebSocket { request => f(request).map(_.map(flow => closeOnException(transformer.transform(flow)))) }
+  }
+
+  /**
+   * Creates an action that will either accept the websocket, using the given flow and handshake metadata, or return a
+   * result to reject the Websocket.
+   */
+  def acceptOrResultWithOptions[In, Out](
+      f: RequestHeader => Future[Either[Result, Accepted[In, Out]]]
+  )(implicit transformer: MessageFlowTransformer[In, Out]): WebSocket = {
+    new WebSocket {
+      override def apply(request: RequestHeader): Future[Either[Result, Flow[Message, Message, ?]]] = {
+        applyWithOptions(request).map(_.map(_.flow))
+      }
+
+      override def applyWithOptions(request: RequestHeader): Future[Either[Result, Accepted[Message, Message]]] = {
+        f(request).map(_.map { accepted =>
+          Accepted(
+            closeOnException(transformer.transform(accepted.flow)),
+            accepted.subprotocol,
+            accepted.compressionEnabled,
+            accepted.shouldCompress,
+            accepted.headers,
+            accepted.newCookies,
+            accepted.newSession
+          )
+        })
+      }
+    }
+  }
+
+  /**
+   * A function that, given an actor to send upstream messages to, returns actor props to create an actor to handle
+   * the WebSocket
+   */
+  type HandlerProps = ActorRef => Props
+}
