@@ -912,6 +912,14 @@ def cmd_add(args):
         shutil.rmtree(cache, ignore_errors=True)
         fail("rev %s not found upstream" % args.rev)
         return 1
+    if storage == "copied":
+        for base in LICENSE_NAMES + NOTICE_NAMES:
+            candidate = os.path.join(cache, base)
+            if os.path.islink(candidate):
+                shutil.rmtree(cache, ignore_errors=True)
+                fail("upstream %s is a symlink; refusing to copy linked license text"
+                     % base)
+                return 1
     selected = []
     for dirpath, dirnames, filenames in os.walk(cache):
         if ".git" in dirnames:
