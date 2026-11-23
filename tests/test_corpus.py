@@ -15,7 +15,8 @@ import unittest
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TOOL = os.path.join(REPO, "tools", "corpus", "corpus")
 ASKALONO = "/dev/shm/CorpusTooling/tools/bin/askalono"
-HAS_ASKALONO = os.path.isfile(ASKALONO) and os.access(ASKALONO, os.X_OK)
+HAS_ASKALONO = ((os.path.isfile(ASKALONO) and os.access(ASKALONO, os.X_OK))
+                or shutil.which("askalono") is not None)
 HAS_GIT = shutil.which("git") is not None
 
 MIT_TEXT = """MIT License
