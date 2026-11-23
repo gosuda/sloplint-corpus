@@ -193,6 +193,14 @@ class TestSpdx(unittest.TestCase):
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("not a well-formed expression", proc.stdout)
 
+    def test_document_ref_is_one_operand(self):
+        expr = "DocumentRef-upstream:LicenseRef-Custom"
+        self.assertEqual(corpus.spdx_ids(expr), {expr})
+        self.assertTrue(corpus._spdx_wellformed(expr), expr)
+        self.assertFalse(corpus.public_spdx_ok(expr), expr)
+        self.assertTrue(corpus._spdx_wellformed(
+            "(%s OR MIT)" % expr), expr)
+
 
 class TestGlobs(unittest.TestCase):
     def test_double_star_spans_directories(self):
@@ -751,6 +759,21 @@ class TestAddLocal(unittest.TestCase):
         self.assertEqual(fetch.returncode, 0, fetch.stdout + fetch.stderr)
         check = run_tool(root, "fetch", "--check", "--allow-unlicensed")
         self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
+
+    @unittest.skipUnless(HAS_GIT, "needs git")
+    def test_add_pinned_document_ref_spdx(self):
+        upstream, rev = make_local_git_repo(MIT_TEXT)
+        self.addCleanup(shutil.rmtree, upstream, True)
+        root = make_repo(mode="private")
+        self.addCleanup(shutil.rmtree, root, True)
+        proc = run_tool(root, "add", "--url", upstream, "--rev", rev,
+                        "--lang", "rust",
+                        "--spdx", "DocumentRef-upstream:LicenseRef-Custom",
+                        "--name", "docref-demo", "--storage", "pinned",
+                        "--paths", "src/**", "--reason", "external doc fixture")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("PASS add: pinned docref-demo", proc.stdout)
+        self.assertEqual(run_tool(root, "verify", "--offline").returncode, 0)
 
     @unittest.skipUnless(HAS_GIT, "needs git")
     def test_add_duplicate_name_rejected_before_clone(self):
