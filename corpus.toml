@@ -853,11 +853,11 @@ rev = "10b31ba2a8252cf340bc154c9e05224802a84691"
 spdx = "MIT"
 storage = "copied"
 paths = ["**"]
-exclude = ["licenses/**", "licenses/*/**", "licenses/*/*/**", "licenses/*/*/*/**", "licenses/*/*/*/*/**", "licenses/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**"]
-tree_hash = "sha256:3506896b0ccf9c63c5913fa7f44098b034515f0d292348313e3131f002f507cf"
+exclude = ["licenses/**", "licenses/*/**", "licenses/*/*/**", "licenses/*/*/*/**", "licenses/*/*/*/*/**", "licenses/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "mockito-core/src/main/java/org/mockito/internal/util/concurrent/**"]
+tree_hash = "sha256:8da5690a93f89c982d1500dce68e546b459932c5ab6a2cae4e50283f68affced"
 added_by = "CorpusPopC2"
 added_on = "2026-11-23"
-reason = "medium testing (proxies plus subclass mocking), mature"
+reason = "medium testing (proxies plus subclass mocking), mature; excludes internal/util/concurrent, a subtree under its own Apache-2.0 LICENSE inside the MIT project"
 notice_present_upstream = false
 
 
