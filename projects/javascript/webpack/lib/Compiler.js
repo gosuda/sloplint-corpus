@@ -1,0 +1,2034 @@
+/*
+	MIT License https://www.opensource.org/licenses/mit-license.php
+	Author Tobias Koppers @sokra
+*/
+
+"use strict";
+
+const {
+	AsyncParallelHook,
+	AsyncSeriesHook,
+	SyncBailHook,
+	SyncHook
+} = require("tapable");
+const { SizeOnlySource } = require("webpack-sources");
+const Compilation = require("./Compilation");
+const Cache = require("./cache/Cache");
+const CacheFacade = require("./cache/CacheFacade");
+const ContextModuleFactory = require("./context/ContextModuleFactory");
+const WebpackError = require("./errors/WebpackError");
+const {
+	PERMISSIONS_MASK,
+	dirname,
+	join,
+	mkdirp,
+	relative
+} = require("./fs/fs");
+const ChunkGraph = require("./graph/ChunkGraph");
+const ModuleGraph = require("./graph/ModuleGraph");
+const { Logger } = require("./logging/Logger");
+const NormalModuleFactory = require("./module/NormalModuleFactory");
+const ResolverFactory = require("./resolve/ResolverFactory");
+const Stats = require("./stats/Stats");
+const RequestShortener = require("./util/RequestShortener");
+const asyncLib = require("./util/async");
+const {
+	PATH_SEPARATOR_REGEXP,
+	QUERY_OR_FRAGMENT_DELIMITER_REGEXP,
+	WINDOWS_ABS_PATH_REGEXP,
+	isOutsideDirectory,
+	makePathsRelative
+} = require("./util/identifier");
+const memoize = require("./util/memoize");
+const parseJson = require("./util/parseJson");
+const { isSourceEqual } = require("./util/source");
+const webpack = require(".");
+
+const getWatching = memoize(() => require("./watch/Watching"));
+
+const getValidateSchema = memoize(() => require("./util/validateSchema"));
+
+const getConcurrentCompilationError = memoize(() =>
+	require("./errors/ConcurrentCompilationError")
+);
+
+const getAllowOutside = memoize(() => require("./output/allowOutside"));
+const getAssetOutsideOutputPathError = memoize(() =>
+	require("./errors/AssetOutsideOutputPathError")
+);
+const getAssetOutsideOutputPathWarning = memoize(() =>
+	require("./errors/AssetOutsideOutputPathWarning")
+);
+
+/** @import { Source } from "webpack-sources" */
+/** @import { Asset, AssetInfo, AssetSymlink } from "./Compilation" */
+/**
+ * @import {
+ * 	EntryNormalized as Entry,
+ * 	OutputNormalized as OutputOptions,
+ * 	WatchOptions,
+ * 	WebpackOptionsNormalized as WebpackOptions,
+ * 	Plugins
+ * } from "../declarations/WebpackOptions"
+ */
+/** @import { WebpackPluginFunction, ErrorCallback } from "./webpack" */
+/** @import Chunk from "./graph/Chunk" */
+/** @import Dependency from "./graph/Dependency" */
+/**
+ * @import {
+ * 	ChunkHashes,
+ * 	ChunkInjectedModuleIds,
+ * 	ChunkModuleHashes,
+ * 	ChunkModuleIds,
+ * 	ChunkRetainedDependencyIds,
+ * 	ChunkRuntime,
+ * 	ChunkSiblingIds,
+ * 	FullHashChunkModuleHashes,
+ * 	HotIndex
+ * } from "./hmr/HotModuleReplacementPlugin"
+ */
+/** @import Module, { BuildInfo } from "./module/Module" */
+/** @import Watching from "./watch/Watching" */
+/** @import { RecordsChunks, RecordsModules } from "./ids/RecordIdsPlugin" */
+/** @import { PlatformTargetProperties } from "./config/target" */
+/** @import { LoggingFunction } from "./logging/createConsoleLogger" */
+/** @import { Args } from "./logging/Logger" */
+/** @import { SplitData } from "./optimize/AggressiveSplittingPlugin" */
+/**
+ * @import {
+ * 	IStats,
+ * 	InputFileSystem,
+ * 	IntermediateFileSystem,
+ * 	JsonValue,
+ * 	OutputFileSystem,
+ * 	TimeInfoEntries,
+ * 	WatchFileSystem
+ * } from "./fs/fs"
+ */
+/** @import { Schema, ValidationErrorConfiguration } from "schema-utils" */
+/** @import { PrecompiledCheck, ValidatedValue } from "./util/validateSchema" */
+
+/**
+ * Defines the compilation params type used by this module.
+ * @typedef {object} CompilationParams
+ * @property {NormalModuleFactory} normalModuleFactory
+ * @property {ContextModuleFactory} contextModuleFactory
+ */
+
+/**
+ * Defines the callback type used by this module.
+ * @template T
+ * @template [R=void]
+ * @typedef {import("./webpack").Callback<T, R>} Callback
+ */
+
+/**
+ * Defines the run as child callback callback.
+ * @callback RunAsChildCallback
+ * @param {Error | null} err
+ * @param {Chunk[]=} entries
+ * @param {Compilation=} compilation
+ * @returns {void}
+ */
+
+/**
+ * Defines the known records type used by this module.
+ * A plugin types its own fields by declaration merging: `declare module "webpack" { interface KnownRecords { myField?: MyType } }`.
+ * @augmentable
+ * @typedef {object} KnownRecords
+ * @property {SplitData[]=} aggressiveSplits
+ * @property {RecordsChunks=} chunks
+ * @property {RecordsModules=} modules
+ * @property {string=} hash
+ * @property {HotIndex=} hotIndex
+ * @property {FullHashChunkModuleHashes=} fullHashChunkModuleHashes
+ * @property {ChunkModuleHashes=} chunkModuleHashes
+ * @property {ChunkHashes=} chunkHashes
+ * @property {ChunkRuntime=} chunkRuntime
+ * @property {ChunkModuleIds=} chunkModuleIds
+ * @property {ChunkSiblingIds=} chunkSiblingIds
+ * @property {ChunkInjectedModuleIds=} chunkInjectedModuleIds
+ * @property {ChunkRetainedDependencyIds=} chunkRetainedDependencyIds
+ */
+
+// TODO in the next major release: drop the `Record<string, EXPECTED_ANY>` fallback; fields go in `KnownRecords`
+/** @typedef {KnownRecords & Record<string, KnownRecords[]> & Record<string, EXPECTED_ANY>} Records */
+
+/**
+ * Defines the asset emitted info type used by this module.
+ * @typedef {object} AssetEmittedInfo
+ * @property {Buffer} content
+ * @property {Source} source
+ * @property {Compilation} compilation
+ * @property {string} outputPath
+ * @property {string} targetPath
+ */
+
+/** @typedef {{ sizeOnlySource: SizeOnlySource | undefined, writtenTo: Map<string, number> }} CacheEntry */
+/** @typedef {{ path: string, source: Source, size: number | undefined, waiting: ({ cacheEntry: CacheEntry, file: string }[] | undefined) }} SimilarEntry */
+
+/** @typedef {WeakMap<Dependency, Module>} WeakReferences */
+/** @typedef {import("./util/WeakTupleMap").TupleElement} TupleElement */
+/** @typedef {import("./worker/Worker")} Worker */
+/** @typedef {import("./worker/Worker").WorkerOptions} WorkerOptions */
+
+/**
+ * A key element whose value in a module's memo cache has type `V`; one cast at the key's declaration makes every read and write of it checked.
+ * `V` sits in a tuple so that `Required`, which tells a typed key from a plain one, keeps an `undefined` it allows.
+ * @template V
+ * @typedef {TupleElement & { readonly __memCacheValue?: [V] }} MemCacheKey
+ */
+
+/**
+ * The type a memo cache holds under a key: its `MemCacheKey` value, else any value a plugin stored.
+ * @template K
+ * @typedef {Required<K> extends { readonly __memCacheValue: [infer V] } ? V : EXPECTED_ANY} MemCacheValue
+ */
+
+/**
+ * What `provide` stores under a key: the key's `MemCacheKey` value, else what its function returns.
+ * @template K, V
+ * @typedef {Required<K> extends { readonly __memCacheValue: [infer W] } ? W : V} MemCacheProvided
+ */
+
+/**
+ * A module's memo cache: reads and writes under a `MemCacheKey<V>` are typed `V`, `provide` by what its function returns.
+ * Plain keys stay untyped for plugins. `provide` reads the key's type from the key given, not from its function:
+ * `[R][R extends R ? 0 : never]` is `R` where TypeScript does not infer `R`, as `NoInfer` does in TypeScript 5.4 and later.
+ * @typedef {{
+ * get<K extends TupleElement>(key: K, ...rest: TupleElement[]): MemCacheValue<K> | undefined,
+ * set<K extends TupleElement>(key: K, ...restAndValue: [...TupleElement[], MemCacheValue<K>]): void,
+ * provide<K extends TupleElement, V, R extends TupleElement[] = TupleElement[]>(key: K, ...restAndCompute: [...R, (key: K, ...rest: [R][R extends R ? 0 : never]) => MemCacheProvided<K, V>]): MemCacheProvided<K, V>,
+ * cachedProvide<This, V, A extends TupleElement[] = TupleElement[]>(compute: (thisArg: This, ...key: [A][A extends A ? 0 : never]) => V, thisArg: This, args: A): V,
+ * } & Pick<import("./util/WeakTupleMap")<TupleElement[], never>, "has" | "delete" | "clear">} MemCache
+ */
+/** @typedef {{ buildInfo: BuildInfo, references: WeakReferences | undefined, lazyRequests: string | undefined, memCache: MemCache }} ModuleMemCachesItem */
+
+/**
+ * Checks whether this object is sorted.
+ * @template T
+ * @param {T[]} array an array
+ * @returns {boolean} true, if the array is sorted
+ */
+const isSorted = (array) => {
+	for (let i = 1; i < array.length; i++) {
+		if (array[i - 1] > array[i]) return false;
+	}
+	return true;
+};
+
+/**
+ * Returns the object with properties sorted by property name.
+ * @template {object} T
+ * @param {T} obj an object
+ * @param {(keyof T)[]} keys the keys of the object
+ * @returns {T} the object with properties sorted by property name
+ */
+const sortObject = (obj, keys) => {
+	const o = /** @type {T} */ ({});
+	for (const k of keys.sort()) {
+		o[k] = obj[k];
+	}
+	return o;
+};
+
+/**
+ * Returns true, if the filename contains any hash.
+ * @param {string} filename filename
+ * @param {string | string[] | undefined} hashes list of hashes
+ * @returns {boolean} true, if the filename contains any hash
+ */
+const includesHash = (filename, hashes) => {
+	if (!hashes) return false;
+	if (Array.isArray(hashes)) {
+		return hashes.some((hash) => filename.includes(hash));
+	}
+	return filename.includes(hashes);
+};
+
+// only reached by `watch()`, so a one-shot build never loads the watcher
+
+class Compiler {
+	/**
+	 * Creates an instance of Compiler.
+	 * @param {string} context the compilation path
+	 * @param {WebpackOptions} options options
+	 */
+	constructor(context, options = /** @type {WebpackOptions} */ ({})) {
+		this.hooks = Object.freeze({
+			/** @type {SyncHook<[]>} */
+			initialize: new SyncHook([]),
+
+			/** @type {SyncBailHook<[Compilation], boolean | void>} */
+			shouldEmit: new SyncBailHook(["compilation"]),
+			/** @type {AsyncSeriesHook<[Stats]>} */
+			done: new AsyncSeriesHook(["stats"]),
+			/** @type {SyncHook<[Stats]>} */
+			afterDone: new SyncHook(["stats"]),
+			/** @type {AsyncSeriesHook<[]>} */
+			additionalPass: new AsyncSeriesHook([]),
+			/** @type {AsyncSeriesHook<[Compiler]>} */
+			beforeRun: new AsyncSeriesHook(["compiler"]),
+			/** @type {AsyncSeriesHook<[Compiler]>} */
+			run: new AsyncSeriesHook(["compiler"]),
+			/** @type {AsyncSeriesHook<[Compilation]>} */
+			emit: new AsyncSeriesHook(["compilation"]),
+			/** @type {AsyncSeriesHook<[string, AssetEmittedInfo]>} */
+			assetEmitted: new AsyncSeriesHook(["file", "info"]),
+			/** @type {AsyncSeriesHook<[Compilation]>} */
+			afterEmit: new AsyncSeriesHook(["compilation"]),
+
+			/** @type {SyncHook<[Compilation, CompilationParams]>} */
+			thisCompilation: new SyncHook(["compilation", "params"]),
+			/** @type {SyncHook<[Compilation, CompilationParams]>} */
+			compilation: new SyncHook(["compilation", "params"]),
+			/** @type {SyncHook<[NormalModuleFactory]>} */
+			normalModuleFactory: new SyncHook(["normalModuleFactory"]),
+			/** @type {SyncHook<[ContextModuleFactory]>}  */
+			contextModuleFactory: new SyncHook(["contextModuleFactory"]),
+
+			/** @type {AsyncSeriesHook<[CompilationParams]>} */
+			beforeCompile: new AsyncSeriesHook(["params"]),
+			/** @type {SyncHook<[CompilationParams]>} */
+			compile: new SyncHook(["params"]),
+			/** @type {AsyncParallelHook<[Compilation]>} */
+			make: new AsyncParallelHook(["compilation"]),
+			/** @type {AsyncParallelHook<[Compilation]>} */
+			finishMake: new AsyncSeriesHook(["compilation"]),
+			/** @type {AsyncSeriesHook<[Compilation]>} */
+			afterCompile: new AsyncSeriesHook(["compilation"]),
+
+			/**
+			 * @type {AsyncSeriesHook<[]>}
+			 * @since 5.67.0
+			 */
+			readRecords: new AsyncSeriesHook([]),
+			/**
+			 * @type {AsyncSeriesHook<[]>}
+			 * @since 5.67.0
+			 */
+			emitRecords: new AsyncSeriesHook([]),
+
+			/** @type {AsyncSeriesHook<[Compiler]>} */
+			watchRun: new AsyncSeriesHook(["compiler"]),
+			/** @type {SyncHook<[Error]>} */
+			failed: new SyncHook(["error"]),
+			/** @type {SyncHook<[string | null, number]>} */
+			invalid: new SyncHook(["filename", "changeTime"]),
+			/** @type {SyncHook<[]>} */
+			watchClose: new SyncHook([]),
+			/**
+			 * @type {AsyncSeriesHook<[]>}
+			 * @since 5.17.0
+			 */
+			shutdown: new AsyncSeriesHook([]),
+
+			/** @type {SyncBailHook<[string, string, Args | undefined], true | void>} */
+			infrastructureLog: new SyncBailHook(["origin", "type", "args"]),
+
+			// TODO the following hooks are weirdly located here
+			// TODO move them for webpack 5
+			/**
+			 * @type {SyncHook<[]>}
+			 * @since 5.106.0
+			 */
+			validate: new SyncHook([]),
+			/** @type {SyncHook<[]>} */
+			environment: new SyncHook([]),
+			/** @type {SyncHook<[]>} */
+			afterEnvironment: new SyncHook([]),
+			/** @type {SyncHook<[Compiler]>} */
+			afterPlugins: new SyncHook(["compiler"]),
+			/** @type {SyncHook<[Compiler]>} */
+			afterResolvers: new SyncHook(["compiler"]),
+			/** @type {SyncBailHook<[string, Entry], boolean | void>} */
+			entryOption: new SyncBailHook(["context", "entry"])
+		});
+
+		this.webpack = webpack;
+
+		/** @type {string | undefined} */
+		this.name = undefined;
+		/** @type {Compilation | undefined} */
+		this.parentCompilation = undefined;
+		/** @type {Compiler} */
+		this.root = this;
+		/** @type {string} */
+		this.outputPath = "";
+		/** @type {Watching | undefined} */
+		this.watching = undefined;
+
+		/** @type {OutputFileSystem | null} */
+		this.outputFileSystem = null;
+		/** @type {IntermediateFileSystem | null} */
+		this.intermediateFileSystem = null;
+		/** @type {InputFileSystem | null} */
+		this.inputFileSystem = null;
+		/** @type {WatchFileSystem | null} */
+		this.watchFileSystem = null;
+
+		/** @type {string | null} */
+		this.recordsInputPath = null;
+		/** @type {string | null} */
+		this.recordsOutputPath = null;
+		/** @type {Records} */
+		this.records = {};
+		/** @type {Set<string | RegExp>} */
+		this.managedPaths = new Set();
+		/** @type {Set<string | RegExp>} */
+		this.unmanagedPaths = new Set();
+		/** @type {Set<string | RegExp>} */
+		this.immutablePaths = new Set();
+
+		/** @type {ReadonlySet<string> | undefined} */
+		this.modifiedFiles = undefined;
+		/** @type {ReadonlySet<string> | undefined} */
+		this.removedFiles = undefined;
+		/** @type {TimeInfoEntries | undefined} */
+		this.fileTimestamps = undefined;
+		/** @type {TimeInfoEntries | undefined} */
+		this.contextTimestamps = undefined;
+		/** @type {number | undefined} */
+		this.fsStartTime = undefined;
+
+		/** @type {ResolverFactory} */
+		this.resolverFactory = new ResolverFactory();
+
+		/** @type {LoggingFunction | undefined} */
+		this.infrastructureLogger = undefined;
+
+		/** @type {import("./worker/WorkerFarm") | undefined} */
+		this._workerFarm = undefined;
+		/** @type {ErrorCallback[] | undefined} */
+		this._closeCallbacks = undefined;
+		this._closed = false;
+
+		/** @type {Readonly<PlatformTargetProperties>} */
+		this.platform = {
+			web: null,
+			browser: null,
+			webworker: null,
+			node: null,
+			deno: null,
+			bun: null,
+			nwjs: null,
+			electron: null,
+			universal: null
+		};
+
+		this.options = options;
+
+		/** @type {string} */
+		this.context = context;
+
+		/** @type {RequestShortener} */
+		this.requestShortener = new RequestShortener(context, this.root);
+
+		/** @type {Cache} */
+		this.cache = new Cache();
+
+		/** @type {Map<Module, ModuleMemCachesItem> | undefined} */
+		this.moduleMemCaches = undefined;
+
+		/** @type {string} */
+		this.compilerPath = "";
+
+		/** @type {boolean} */
+		this.running = false;
+
+		/** @type {boolean} */
+		this.idle = false;
+
+		/** @type {boolean} */
+		this.watchMode = false;
+
+		/** @type {boolean} */
+		this._backCompat = this.options.experiments.backCompat !== false;
+
+		/** @type {Compilation | undefined} */
+		this._lastCompilation = undefined;
+		/** @type {NormalModuleFactory | undefined} */
+		this._lastNormalModuleFactory = undefined;
+
+		/**
+		 * @private
+		 * @type {WeakMap<Source, CacheEntry>}
+		 */
+		this._assetEmittingSourceCache = new WeakMap();
+		/**
+		 * @private
+		 * @type {Map<string, number>}
+		 */
+		this._assetEmittingWrittenFiles = new Map();
+		/**
+		 * @private
+		 * @type {Set<string>}
+		 */
+		this._assetEmittingPreviousFiles = new Set();
+		/**
+		 * @private
+		 * @type {Set<string>}
+		 */
+		this._assetEmittingLinkedFiles = new Set();
+	}
+
+	/**
+	 * Returns the cache facade instance.
+	 * @param {string} name cache name
+	 * @returns {CacheFacade} the cache facade instance
+	 */
+	getCache(name) {
+		return new CacheFacade(
+			this.cache,
+			`${this.compilerPath}${name}`,
+			// a plugin can take a cache in `apply`, before the output defaults are set
+			{ getHashFunction: () => this.options.output.hashFunction }
+		);
+	}
+
+	/**
+	 * Gets infrastructure logger.
+	 * @param {string | (() => string)} name name of the logger, or function called once to get the logger name
+	 * @returns {Logger} a logger with that name
+	 */
+	getInfrastructureLogger(name) {
+		if (!name) {
+			throw new TypeError(
+				"Compiler.getInfrastructureLogger(name) called without a name"
+			);
+		}
+		return new Logger(
+			(type, args) => {
+				if (typeof name === "function") {
+					name = name();
+					if (!name) {
+						throw new TypeError(
+							"Compiler.getInfrastructureLogger(name) called with a function not returning a name"
+						);
+					}
+				}
+				if (
+					this.hooks.infrastructureLog.call(name, type, args) === undefined &&
+					this.infrastructureLogger !== undefined
+				) {
+					this.infrastructureLogger(name, type, args);
+				}
+			},
+			(childName) => {
+				if (typeof name === "function") {
+					if (typeof childName === "function") {
+						return this.getInfrastructureLogger(() => {
+							if (typeof name === "function") {
+								name = name();
+								if (!name) {
+									throw new TypeError(
+										"Compiler.getInfrastructureLogger(name) called with a function not returning a name"
+									);
+								}
+							}
+							if (typeof childName === "function") {
+								childName = childName();
+								if (!childName) {
+									throw new TypeError(
+										"Logger.getChildLogger(name) called with a function not returning a name"
+									);
+								}
+							}
+							return `${name}/${childName}`;
+						});
+					}
+					return this.getInfrastructureLogger(() => {
+						if (typeof name === "function") {
+							name = name();
+							if (!name) {
+								throw new TypeError(
+									"Compiler.getInfrastructureLogger(name) called with a function not returning a name"
+								);
+							}
+						}
+						return `${name}/${childName}`;
+					});
+				}
+				if (typeof childName === "function") {
+					return this.getInfrastructureLogger(() => {
+						if (typeof childName === "function") {
+							childName = childName();
+							if (!childName) {
+								throw new TypeError(
+									"Logger.getChildLogger(name) called with a function not returning a name"
+								);
+							}
+						}
+						return `${name}/${childName}`;
+					});
+				}
+				return this.getInfrastructureLogger(`${name}/${childName}`);
+			}
+		);
+	}
+
+	// TODO in the next major release: solve this in a better way
+	// e.g. move compilation specific info from Modules into ModuleGraph
+	_cleanupLastCompilation() {
+		if (this._lastCompilation !== undefined) {
+			this._cleanupCompilationForCache(this._lastCompilation);
+			this._lastCompilation = undefined;
+		}
+	}
+
+	/**
+	 * Drops the graph references a finished compilation left on its modules and
+	 * chunks. Recurses, because child compilations nest: a module only reached
+	 * below the first level keeps its parser, generator and memoized
+	 * `ModuleGraph`, which pins the whole stale compilation.
+	 * @param {Compilation} compilation compilation to clean up
+	 * @returns {void}
+	 */
+	_cleanupCompilationForCache(compilation) {
+		for (const childCompilation of compilation.children) {
+			this._cleanupCompilationForCache(childCompilation);
+		}
+		for (const module of compilation.modules) {
+			ChunkGraph.clearChunkGraphForModule(module);
+			ModuleGraph.clearModuleGraphForModule(module);
+			module.cleanupForCache();
+		}
+		for (const chunk of compilation.chunks) {
+			ChunkGraph.clearChunkGraphForChunk(chunk);
+		}
+	}
+
+	// TODO in the next major release: solve this in a better way
+	_cleanupLastNormalModuleFactory() {
+		if (this._lastNormalModuleFactory !== undefined) {
+			this._lastNormalModuleFactory.cleanupForCache();
+			this._lastNormalModuleFactory = undefined;
+		}
+	}
+
+	/**
+	 * Release fields on a finished compilation that nothing reads after emit,
+	 * so the heap can shrink while user code still holds the Stats reference.
+	 * Recurses into child compilations. Stats output is preserved - only
+	 * codeGen byproducts are dropped.
+	 * @param {Compilation} compilation finished compilation to slim down
+	 * @returns {void}
+	 */
+	_releaseUnusedCompilationData(compilation) {
+		for (const child of compilation.children) {
+			this._releaseUnusedCompilationData(child);
+		}
+		// Rendered source per (module × runtime) - used only during seal/emit,
+		// never read by Stats, and not serialized to the persistent cache.
+		if (compilation.codeGenerationResults !== undefined) {
+			compilation.codeGenerationResults.map.clear();
+		}
+	}
+
+	/**
+	 * Returns a compiler watcher.
+	 * @param {WatchOptions} watchOptions the watcher's options
+	 * @param {Callback<Stats>} handler signals when the call finishes
+	 * @returns {Watching | undefined} a compiler watcher
+	 */
+	watch(watchOptions, handler) {
+		if (this.running) {
+			handler(new (getConcurrentCompilationError())());
+			return;
+		}
+
+		this.running = true;
+		this.watchMode = true;
+		const Watching = getWatching();
+		this.watching = new Watching(this, watchOptions, handler);
+		return this.watching;
+	}
+
+	/**
+	 * Processes the provided stat.
+	 * @param {Callback<Stats>} callback signals when the call finishes
+	 * @returns {void}
+	 */
+	run(callback) {
+		if (this.running) {
+			callback(new (getConcurrentCompilationError())());
+			return;
+		}
+
+		/** @type {Logger | undefined} */
+		let logger;
+
+		/**
+		 * Processes the provided err.
+		 * @param {Error | null} err error
+		 * @param {Stats=} stats stats
+		 */
+		const finalCallback = (err, stats) => {
+			if (logger) logger.time("beginIdle");
+			this.idle = true;
+			this.cache.beginIdle();
+			if (logger) logger.timeEnd("beginIdle");
+			this.running = false;
+			if (err) {
+				this.hooks.failed.call(err);
+			}
+			if (callback !== undefined) callback(err, stats);
+			this.hooks.afterDone.call(/** @type {Stats} */ (stats));
+		};
+
+		const startTime = Date.now();
+
+		this.running = true;
+
+		/**
+		 * Processes the provided err.
+		 * @param {Error | null} err error
+		 * @param {Compilation=} _compilation compilation
+		 * @returns {void}
+		 */
+		const onCompiled = (err, _compilation) => {
+			if (err) return finalCallback(err);
+
+			const compilation = /** @type {Compilation} */ (_compilation);
+
+			if (this.hooks.shouldEmit.call(compilation) === false) {
+				compilation.startTime = startTime;
+				compilation.endTime = Date.now();
+				const stats = new Stats(compilation);
+				this.hooks.done.callAsync(stats, (err) => {
+					if (err) return finalCallback(err);
+					return finalCallback(null, stats);
+				});
+				return;
+			}
+
+			process.nextTick(() => {
+				logger = compilation.getLogger("webpack.Compiler");
+				logger.time("emitAssets");
+				this.emitAssets(compilation, (err) => {
+					/** @type {Logger} */
+					(logger).timeEnd("emitAssets");
+					if (err) return finalCallback(err);
+
+					if (compilation.hooks.needAdditionalPass.call()) {
+						compilation.needAdditionalPass = true;
+
+						compilation.startTime = startTime;
+						compilation.endTime = Date.now();
+						/** @type {Logger} */
+						(logger).time("done hook");
+						const stats = new Stats(compilation);
+						this.hooks.done.callAsync(stats, (err) => {
+							/** @type {Logger} */
+							(logger).timeEnd("done hook");
+							if (err) return finalCallback(err);
+
+							this.hooks.additionalPass.callAsync((err) => {
+								if (err) return finalCallback(err);
+								this.compile(onCompiled);
+							});
+						});
+						return;
+					}
+
+					/** @type {Logger} */
+					(logger).time("emitRecords");
+					this.emitRecords((err) => {
+						/** @type {Logger} */
+						(logger).timeEnd("emitRecords");
+						if (err) return finalCallback(err);
+
+						compilation.startTime = startTime;
+						compilation.endTime = Date.now();
+						/** @type {Logger} */
+						(logger).time("done hook");
+						const stats = new Stats(compilation);
+						this.hooks.done.callAsync(stats, (err) => {
+							/** @type {Logger} */
+							(logger).timeEnd("done hook");
+							if (err) return finalCallback(err);
+							this.cache.storeBuildDependencies(
+								compilation.buildDependencies,
+								compilation.optionalBuildDependencies,
+								(err) => {
+									if (err) return finalCallback(err);
+									return finalCallback(null, stats);
+								}
+							);
+						});
+					});
+				});
+			});
+		};
+
+		const run = () => {
+			this.hooks.beforeRun.callAsync(this, (err) => {
+				if (err) return finalCallback(err);
+
+				this.hooks.run.callAsync(this, (err) => {
+					if (err) return finalCallback(err);
+
+					this.readRecords((err) => {
+						if (err) return finalCallback(err);
+
+						this.compile(onCompiled);
+					});
+				});
+			});
+		};
+
+		if (this.idle) {
+			this.cache.endIdle((err) => {
+				if (err) return finalCallback(err);
+
+				this.idle = false;
+				run();
+			});
+		} else {
+			run();
+		}
+	}
+
+	/**
+	 * Processes the provided run as child callback.
+	 * @param {RunAsChildCallback} callback signals when the call finishes
+	 * @returns {void}
+	 */
+	runAsChild(callback) {
+		const startTime = Date.now();
+
+		/**
+		 * Processes the provided err.
+		 * @param {Error | null} err error
+		 * @param {Chunk[]=} entries entries
+		 * @param {Compilation=} compilation compilation
+		 */
+		const finalCallback = (err, entries, compilation) => {
+			try {
+				callback(err, entries, compilation);
+			} catch (runAsChildErr) {
+				const err = new WebpackError(
+					`compiler.runAsChild callback error: ${runAsChildErr}`,
+					{ cause: runAsChildErr }
+				);
+				err.details = /** @type {Error} */ (runAsChildErr).stack;
+				/** @type {Compilation} */
+				(this.parentCompilation).errors.push(err);
+			}
+		};
+
+		this.compile((err, _compilation) => {
+			if (err) return finalCallback(err);
+
+			const compilation = /** @type {Compilation} */ (_compilation);
+			const parentCompilation = /** @type {Compilation} */ (
+				this.parentCompilation
+			);
+
+			parentCompilation.children.push(compilation);
+
+			for (const { name, source, info } of compilation.getAssets()) {
+				parentCompilation.emitAsset(name, source, info);
+			}
+
+			/** @type {Chunk[]} */
+			const entries = [];
+
+			for (const ep of compilation.entrypoints.values()) {
+				entries.push(...ep.chunks);
+			}
+
+			compilation.startTime = startTime;
+			compilation.endTime = Date.now();
+
+			return finalCallback(null, entries, compilation);
+		});
+	}
+
+	purgeInputFileSystem() {
+		if (this.inputFileSystem && this.inputFileSystem.purge) {
+			this.inputFileSystem.purge();
+		}
+	}
+
+	/**
+	 * Processes the provided compilation.
+	 * @param {Compilation} compilation the compilation
+	 * @param {ErrorCallback} callback signals when the assets are emitted
+	 * @returns {void}
+	 */
+	emitAssets(compilation, callback) {
+		/** @type {string} */
+		let outputPath;
+
+		/**
+		 * Processes the provided err.
+		 * @param {Error=} err error
+		 * @returns {void}
+		 */
+		const emitFiles = (err) => {
+			if (err) return callback(err);
+
+			const assets = compilation.getAssets();
+			compilation.assets = { ...compilation.assets };
+			/** @type {Map<string, SimilarEntry>} */
+			const caseInsensitiveMap = new Map();
+			/** @type {Set<string>} */
+			const allTargetPaths = new Set();
+			/** @type {undefined | ((dir: string, callback: (realDir: string | undefined, realAllowed: string[] | undefined) => void) => void)} */
+			let realOutsideResolver;
+			/**
+			 * Resolves where a directory inside output.path really is, when links lead it out of it.
+			 * @param {string} dir absolute path of the directory
+			 * @param {(realDir: string | undefined, realAllowed: string[] | undefined) => void} callback the real directory only when it is outside, with the real allowed directories
+			 * @returns {void}
+			 */
+			const resolveRealOutside = (dir, callback) => {
+				if (realOutsideResolver === undefined) {
+					realOutsideResolver = getAllowOutside().createRealOutsideResolver(
+						/** @type {OutputFileSystem} */ (this.outputFileSystem),
+						outputPath,
+						compilation.outputOptions.allowOutside
+					);
+				}
+				realOutsideResolver(dir, callback);
+			};
+			/**
+			 * Returns the path an asset is written to, without its query or hash.
+			 * @param {string} file the asset name
+			 * @returns {string} the target file
+			 */
+			const getTargetFile = (file) => {
+				const queryOrHashStringIdx = file.search(
+					QUERY_OR_FRAGMENT_DELIMITER_REGEXP
+				);
+				return queryOrHashStringIdx >= 0
+					? file.slice(0, queryOrHashStringIdx)
+					: file;
+			};
+			/**
+			 * Returns the absolute path an asset is written to.
+			 * @param {OutputFileSystem} fs the output file system
+			 * @param {string} targetFile the target file
+			 * @returns {string} the target path
+			 */
+			const getTargetPath = (fs, targetFile) =>
+				// A Windows drive-absolute targetFile is written as-is; joining it onto
+				// outputPath would produce an invalid path (e.g. C:\out\D:\file). A
+				// leading "/" stays relative to outputPath (e.g. entry name "/dir/x").
+				WINDOWS_ABS_PATH_REGEXP.test(targetFile)
+					? targetFile
+					: join(fs, outputPath, targetFile);
+			/**
+			 * Emits one asset.
+			 * @param {Asset} asset the asset
+			 * @param {(err?: Error | null) => void} callback signals when it is emitted
+			 * @returns {void}
+			 */
+			const emitAsset = ({ name: file, source, info }, callback) => {
+				const targetFile = getTargetFile(file);
+				let immutable = info.immutable;
+				if (targetFile !== file) {
+					// We may remove the hash, which is in the query string
+					// So we recheck if the file is immutable
+					// This doesn't cover all cases, but immutable is only a performance optimization anyway
+					immutable =
+						immutable &&
+						(includesHash(targetFile, info.contenthash) ||
+							includesHash(targetFile, info.chunkhash) ||
+							includesHash(targetFile, info.modulehash) ||
+							includesHash(targetFile, info.fullhash));
+				}
+
+				const fs = /** @type {OutputFileSystem} */ (this.outputFileSystem);
+				const targetPath = getTargetPath(fs, targetFile);
+
+				// TODO in the next major release: default `output.allowOutside` to `false`
+				const { allowOutside } = compilation.outputOptions;
+				/**
+				 * Reports the asset as written outside of output.path.
+				 * @param {string} path where it lands, compared with `allowOutside`
+				 * @param {string[]=} allowed the allowed directories `path` is compared with
+				 * @returns {boolean} true, when it must not be written
+				 */
+				const refuseOutside = (path, allowed) => {
+					if (allowOutside === undefined) {
+						// still written, as before the option existed
+						const AssetOutsideOutputPathWarning =
+							getAssetOutsideOutputPathWarning();
+						compilation.warnings.push(
+							new AssetOutsideOutputPathWarning(file, outputPath)
+						);
+						return false;
+					}
+					if (
+						getAllowOutside().isOutsideAllowed(
+							fs,
+							allowed && allowOutside !== false ? allowed : allowOutside,
+							path
+						)
+					) {
+						return false;
+					}
+					const AssetOutsideOutputPathError = getAssetOutsideOutputPathError();
+					compilation.errors.push(
+						new AssetOutsideOutputPathError(file, outputPath)
+					);
+					return true;
+				};
+				const leadsOutside =
+					allowOutside !== true &&
+					isOutsideDirectory(relative(fs, outputPath, targetPath));
+				if (leadsOutside && refuseOutside(targetPath)) return callback();
+
+				/**
+				 * Processes the provided err.
+				 * @param {Error=} err error
+				 * @returns {void}
+				 */
+				const writeOut = (err) => {
+					if (err) return callback(err);
+					allTargetPaths.add(targetPath);
+
+					// a link is created rather than written, and none of the content
+					// caching below applies to one
+					if (info.symlink) {
+						return this._emitSymlink(
+							compilation,
+							{ file, source, outputPath, targetPath },
+							info.symlink,
+							callback
+						);
+					}
+
+					// check if the target file has already been written by this Compiler
+					const targetFileGeneration =
+						this._assetEmittingWrittenFiles.get(targetPath);
+
+					// create an cache entry for this Source if not already existing
+					let cacheEntry = this._assetEmittingSourceCache.get(source);
+					if (cacheEntry === undefined) {
+						/** @type {CacheEntry["writtenTo"]} */
+						const writtenTo = new Map();
+						cacheEntry = { sizeOnlySource: undefined, writtenTo };
+						this._assetEmittingSourceCache.set(source, cacheEntry);
+					}
+
+					/** @type {SimilarEntry | undefined} */
+					let similarEntry;
+
+					const checkSimilarFile = () => {
+						const caseInsensitiveTargetPath = targetPath.toLowerCase();
+						similarEntry = caseInsensitiveMap.get(caseInsensitiveTargetPath);
+						if (similarEntry !== undefined) {
+							const { path: other, source: otherSource } = similarEntry;
+							if (isSourceEqual(otherSource, source)) {
+								// Size may or may not be available at this point.
+								// If it's not available add to "waiting" list and it will be updated once available
+								if (similarEntry.size !== undefined) {
+									updateWithReplacementSource(similarEntry.size);
+								} else {
+									if (!similarEntry.waiting) similarEntry.waiting = [];
+									similarEntry.waiting.push({ file, cacheEntry });
+								}
+								alreadyWritten();
+							} else {
+								const err =
+									new WebpackError(`Prevent writing to file that only differs in casing or query string from already written file.
+This will lead to a race-condition and corrupted files on case-insensitive file systems.
+${targetPath}
+${other}`);
+								err.file = file;
+								callback(err);
+							}
+							return true;
+						}
+						caseInsensitiveMap.set(
+							caseInsensitiveTargetPath,
+							(similarEntry = /** @type {SimilarEntry} */ ({
+								path: targetPath,
+								source,
+								size: undefined,
+								waiting: undefined
+							}))
+						);
+						return false;
+					};
+
+					/**
+					 * get the binary (Buffer) content from the Source
+					 * @returns {Buffer} content for the source
+					 */
+					const getContent = () => {
+						if (typeof source.buffer === "function") {
+							return source.buffer();
+						}
+						const bufferOrString = source.source();
+						if (Buffer.isBuffer(bufferOrString)) {
+							return bufferOrString;
+						}
+						return Buffer.from(bufferOrString, "utf8");
+					};
+
+					const alreadyWritten = () => {
+						// cache the information that the Source has been already been written to that location
+						if (targetFileGeneration === undefined) {
+							const newGeneration = 1;
+							this._assetEmittingWrittenFiles.set(targetPath, newGeneration);
+							cacheEntry.writtenTo.set(targetPath, newGeneration);
+						} else {
+							cacheEntry.writtenTo.set(targetPath, targetFileGeneration);
+						}
+						callback();
+					};
+
+					/**
+					 * Write the file to output file system
+					 * @param {Buffer} content content to be written
+					 * @returns {void}
+					 */
+					const doWrite = (content) => {
+						/** @type {OutputFileSystem} */
+						(this.outputFileSystem).writeFile(targetPath, content, (err) => {
+							if (err) return callback(err);
+
+							// set on what was just written, so a file the comparison above
+							// left alone keeps what it already carries
+							this._setAssetFileAttributes(targetPath, info, (err) => {
+								if (err) return callback(err);
+
+								// information marker that the asset has been emitted
+								compilation.emittedAssets.add(file);
+
+								// cache the information that the Source has been written to that location
+								const newGeneration =
+									targetFileGeneration === undefined
+										? 1
+										: targetFileGeneration + 1;
+								cacheEntry.writtenTo.set(targetPath, newGeneration);
+								this._assetEmittingWrittenFiles.set(targetPath, newGeneration);
+								this.hooks.assetEmitted.callAsync(
+									file,
+									{
+										content,
+										source,
+										outputPath,
+										compilation,
+										targetPath
+									},
+									callback
+								);
+							});
+						});
+					};
+
+					/**
+					 * Updates with replacement source.
+					 * @param {number} size size
+					 */
+					const updateWithReplacementSource = (size) => {
+						updateFileWithReplacementSource(file, cacheEntry, size);
+						/** @type {SimilarEntry} */
+						(similarEntry).size = size;
+						if (
+							/** @type {SimilarEntry} */ (similarEntry).waiting !== undefined
+						) {
+							for (const { file, cacheEntry } of /** @type {SimilarEntry} */ (
+								similarEntry
+							).waiting) {
+								updateFileWithReplacementSource(file, cacheEntry, size);
+							}
+						}
+					};
+
+					/**
+					 * Updates file with replacement source.
+					 * @param {string} file file
+					 * @param {CacheEntry} cacheEntry cache entry
+					 * @param {number} size size
+					 */
+					const updateFileWithReplacementSource = (file, cacheEntry, size) => {
+						// Create a replacement resource which only allows to ask for size
+						// This allows to GC all memory allocated by the Source
+						// (expect when the Source is stored in any other cache)
+						if (!cacheEntry.sizeOnlySource) {
+							cacheEntry.sizeOnlySource = new SizeOnlySource(size);
+						}
+						compilation.updateAsset(file, cacheEntry.sizeOnlySource, {
+							size
+						});
+					};
+
+					/**
+					 * Keeps the file already on disk, giving it the permissions and times
+					 * the asset carries - the build which wrote it may not have set them.
+					 * Only the modification time is compared, as reading a file moves its
+					 * access time.
+					 * @param {IStats} stats stats of the file on disk
+					 * @returns {void}
+					 */
+					const keepExistingFile = (stats) => {
+						const differs =
+							(info.mode !== undefined &&
+								(stats.mode & PERMISSIONS_MASK) !== info.mode) ||
+							(info.timestamps !== undefined &&
+								// compared at the precision `utimes` wrote, as a `Date` drops
+								// the sub-millisecond part a filesystem may report
+								Math.trunc(stats.mtimeMs) !==
+									Math.trunc(info.timestamps.mtime));
+						if (!differs) return alreadyWritten();
+						this._setAssetFileAttributes(targetPath, info, (err) => {
+							if (err) return callback(err);
+							alreadyWritten();
+						});
+					};
+
+					/**
+					 * Process existing file.
+					 * @param {IStats} stats stats
+					 * @returns {void}
+					 */
+					const processExistingFile = (stats) => {
+						// skip emitting if it's already there and an immutable file
+						if (immutable) {
+							updateWithReplacementSource(stats.size);
+							return keepExistingFile(stats);
+						}
+
+						const content = getContent();
+
+						updateWithReplacementSource(content.length);
+
+						// Skip rewriting content already on disk, which would move the
+						// mtime and wake watchers. Size is compared first, as a cheap
+						// negative match.
+						if (content.length === stats.size) {
+							compilation.comparedForEmitAssets.add(file);
+							return /** @type {OutputFileSystem} */ (
+								this.outputFileSystem
+							).readFile(targetPath, (err, existingContent) => {
+								if (
+									err ||
+									!content.equals(/** @type {Buffer} */ (existingContent))
+								) {
+									return doWrite(content);
+								}
+								return keepExistingFile(stats);
+							});
+						}
+
+						return doWrite(content);
+					};
+
+					const processMissingFile = () => {
+						const content = getContent();
+
+						updateWithReplacementSource(content.length);
+
+						return doWrite(content);
+					};
+
+					/**
+					 * Reports again a file written through a link out of output.path
+					 * that is left as it is, so it is not checked again.
+					 * @returns {void}
+					 */
+					const reportLinkedFile = () => {
+						if (
+							allowOutside === undefined &&
+							this._assetEmittingLinkedFiles.has(targetPath)
+						) {
+							refuseOutside(targetPath);
+						}
+					};
+
+					/**
+					 * Checks where the file leads when it is a link, as written through it,
+					 * also for a file written before, which a link asset may have replaced since.
+					 * @param {(stats: IStats | undefined, checked: boolean) => void} next called unless it must not be written, with the file's lstat when it is no link, and whether it was checked
+					 * @returns {void}
+					 */
+					const checkLinkedFile = (next) => {
+						// an allowed path can hold a link that leads further out
+						if (
+							allowOutside === true ||
+							(leadsOutside && !Array.isArray(allowOutside))
+						) {
+							return next(undefined, false);
+						}
+						if (!fs.lstat || !fs.readlink) return next(undefined, false);
+						// a file that is no link loads nothing more
+						fs.lstat(targetPath, (err, stats) => {
+							if (err || !(/** @type {IStats} */ (stats).isSymbolicLink())) {
+								this._assetEmittingLinkedFiles.delete(targetPath);
+								return next(err ? undefined : stats, true);
+							}
+							getAllowOutside().resolveLinkedFile(fs, targetPath, (linked) => {
+								if (linked === undefined) return next(undefined, false);
+								const linkedDir = dirname(fs, linked);
+								resolveRealOutside(linkedDir, (realDir, realAllowed) => {
+									if (
+										realDir !== undefined &&
+										refuseOutside(
+											join(fs, realDir, relative(fs, linkedDir, linked)),
+											realAllowed
+										)
+									) {
+										return callback();
+									}
+									if (realDir === undefined) {
+										this._assetEmittingLinkedFiles.delete(targetPath);
+									} else {
+										this._assetEmittingLinkedFiles.add(targetPath);
+									}
+									next(undefined, false);
+								});
+							});
+						});
+					};
+
+					// if the target file has already been written
+					if (targetFileGeneration !== undefined) {
+						// check if the Source has been written to this target file
+						const writtenGeneration = cacheEntry.writtenTo.get(targetPath);
+						if (writtenGeneration === targetFileGeneration) {
+							// if yes, we may skip writing the file
+							// if it's already there
+							// (we assume one doesn't modify files while the Compiler is running, other then removing them)
+
+							if (this._assetEmittingPreviousFiles.has(targetPath)) {
+								const sizeOnlySource = /** @type {SizeOnlySource} */ (
+									cacheEntry.sizeOnlySource
+								);
+
+								// We assume that assets from the last compilation say intact on disk (they are not removed)
+								compilation.updateAsset(file, sizeOnlySource, {
+									size: sizeOnlySource.size()
+								});
+
+								reportLinkedFile();
+								return callback();
+							}
+							// Settings immutable will make it accept file content without comparing when file exist
+							immutable = true;
+						} else if (!immutable) {
+							if (checkSimilarFile()) return;
+							// We wrote to this file before which has very likely a different content
+							// skip comparing and assume content is different for performance
+							// This case happens often during watch mode.
+							return checkLinkedFile(() => processMissingFile());
+						}
+					}
+
+					if (checkSimilarFile()) return;
+					if (this.options.output.compareBeforeEmit) {
+						checkLinkedFile((fileStats, checked) => {
+							// lstat and stat agree on a file that is no link, or is missing
+							if (checked) {
+								return fileStats !== undefined && fileStats.isFile()
+									? processExistingFile(fileStats)
+									: processMissingFile();
+							}
+							/** @type {OutputFileSystem} */
+							(this.outputFileSystem).stat(targetPath, (err, stats) => {
+								const exists = !err && /** @type {IStats} */ (stats).isFile();
+
+								if (exists) {
+									processExistingFile(/** @type {IStats} */ (stats));
+								} else {
+									processMissingFile();
+								}
+							});
+						});
+					} else {
+						checkLinkedFile(() => processMissingFile());
+					}
+				};
+
+				if (/\/|\\/.test(targetFile)) {
+					const dir = dirname(fs, targetPath);
+					// an allowed directory can hold a link that leads further out
+					if (
+						allowOutside === true ||
+						(leadsOutside && !Array.isArray(allowOutside))
+					) {
+						return mkdirp(fs, dir, writeOut);
+					}
+					// a link inside output.path can lead the file out of it
+					resolveRealOutside(dir, (realDir, realAllowed) => {
+						if (
+							realDir !== undefined &&
+							refuseOutside(
+								join(fs, realDir, relative(fs, dir, targetPath)),
+								realAllowed
+							)
+						) {
+							return callback();
+						}
+						mkdirp(fs, dir, writeOut);
+					});
+				} else {
+					writeOut();
+				}
+			};
+			/**
+			 * Finishes the emit.
+			 * @param {Error | null | undefined} err error
+			 * @returns {void}
+			 */
+			const finish = (err) => {
+				// Clear map to free up memory
+				caseInsensitiveMap.clear();
+				if (err) {
+					this._assetEmittingPreviousFiles.clear();
+					return callback(err);
+				}
+
+				this._assetEmittingPreviousFiles = allTargetPaths;
+
+				this.hooks.afterEmit.callAsync(compilation, (err) => {
+					if (err) return callback(err);
+
+					return callback(null);
+				});
+			};
+			// a link is created first: a file below it is checked once it exists,
+			// and a real path resolved before it is resolved again
+			const links = assets.filter((asset) => asset.info.symlink);
+			const files =
+				links.length === 0
+					? assets
+					: assets.filter((asset) => !asset.info.symlink);
+			/**
+			 * Emits the assets that are no links.
+			 * @returns {void}
+			 */
+			const emitRest = () => asyncLib.eachLimit(files, 15, emitAsset, finish);
+			if (links.length === 0) return emitRest();
+			// one at a time, shallowest first: a link below another is checked
+			// once that one exists, with nothing resolved before it was created
+			const fs = /** @type {OutputFileSystem} */ (this.outputFileSystem);
+			/** @type {Map<Asset, number>} */
+			const depths = new Map();
+			for (const asset of links) {
+				const targetPath = getTargetPath(fs, getTargetFile(asset.name));
+				depths.set(asset, targetPath.split(PATH_SEPARATOR_REGEXP).length);
+			}
+			links.sort(
+				(a, b) =>
+					/** @type {number} */ (depths.get(a)) -
+					/** @type {number} */ (depths.get(b))
+			);
+			asyncLib.eachLimit(
+				links,
+				1,
+				(asset, callback) => {
+					realOutsideResolver = undefined;
+					emitAsset(asset, callback);
+				},
+				(err) => {
+					if (err) return finish(err);
+					realOutsideResolver = undefined;
+					emitRest();
+				}
+			);
+		};
+
+		this.hooks.emit.callAsync(compilation, (err) => {
+			if (err) return callback(err);
+			outputPath = compilation.getPath(this.outputPath, {});
+			mkdirp(
+				/** @type {OutputFileSystem} */ (this.outputFileSystem),
+				outputPath,
+				emitFiles
+			);
+		});
+	}
+
+	/**
+	 * Gives the file an asset was written to the permissions and the times the
+	 * asset carries. A symbolic link never carries either, as both follow it to
+	 * its target.
+	 * @private
+	 * @param {string} targetPath absolute path of the file
+	 * @param {AssetInfo} info info of the asset
+	 * @param {ErrorCallback} callback signals when the call finishes
+	 * @returns {void}
+	 */
+	_setAssetFileAttributes(targetPath, info, callback) {
+		const { mode, timestamps } = info;
+		if (mode === undefined && timestamps === undefined) return callback(null);
+		const fs = /** @type {OutputFileSystem} */ (this.outputFileSystem);
+
+		/**
+		 * @param {(Error | null)=} err error of the step before
+		 * @returns {void}
+		 */
+		const setTimestamps = (err) => {
+			if (err) return callback(err);
+			if (timestamps === undefined) return callback(null);
+			if (!fs.utimes) {
+				return callback(
+					new WebpackError(
+						`Unable to set the times of '${targetPath}': the output file system cannot set them`
+					)
+				);
+			}
+			fs.utimes(
+				targetPath,
+				new Date(timestamps.atime),
+				new Date(timestamps.mtime),
+				(err) => callback(err || null)
+			);
+		};
+
+		if (mode === undefined) return setTimestamps();
+		if (!fs.chmod) {
+			return callback(
+				new WebpackError(
+					`Unable to set the permissions of '${targetPath}': the output file system cannot set them`
+				)
+			);
+		}
+		fs.chmod(targetPath, mode, setTimestamps);
+	}
+
+	/**
+	 * Creates an asset which is a symbolic link, replacing whatever else is at
+	 * its path. An existing link already pointing there is left alone, so a watch
+	 * rebuild does not touch it.
+	 * @private
+	 * @param {Compilation} compilation the compilation
+	 * @param {object} asset the asset which is a link
+	 * @param {string} asset.file the filename of the asset
+	 * @param {Source} asset.source content of the asset, which is what the link points at
+	 * @param {string} asset.outputPath absolute path the assets are emitted into
+	 * @param {string} asset.targetPath absolute path the link is created at
+	 * @param {AssetSymlink} symlink what the link points at
+	 * @param {ErrorCallback} callback signals when the call finishes
+	 * @returns {void}
+	 */
+	_emitSymlink(compilation, asset, symlink, callback) {
+		const { file, source, outputPath, targetPath } = asset;
+		const fs = /** @type {OutputFileSystem} */ (this.outputFileSystem);
+		if (!fs.symlink) {
+			return callback(
+				new WebpackError(
+					`Unable to emit '${file}' as a symbolic link: the output file system cannot create one`
+				)
+			);
+		}
+		const { target, isDirectory } = symlink;
+
+		const created = () => {
+			compilation.emittedAssets.add(file);
+			this.hooks.assetEmitted.callAsync(
+				file,
+				{
+					content: Buffer.from(target, "utf8"),
+					source,
+					outputPath,
+					compilation,
+					targetPath
+				},
+				callback
+			);
+		};
+
+		const create = () => {
+			/** @type {NonNullable<OutputFileSystem["symlink"]>} */
+			(fs.symlink)(target, targetPath, isDirectory ? "dir" : "file", (err) => {
+				if (err) return callback(err);
+				created();
+			});
+		};
+
+		const replace = () => {
+			if (!fs.unlink) return create();
+			fs.unlink(targetPath, () => create());
+		};
+
+		if (!fs.readlink) return replace();
+		fs.readlink(targetPath, (err, existingTarget) => {
+			if (!err && existingTarget === target) return callback(null);
+			replace();
+		});
+	}
+
+	/**
+	 * Processes the provided error callback.
+	 * @param {ErrorCallback} callback signals when the call finishes
+	 * @returns {void}
+	 */
+	emitRecords(callback) {
+		if (this.hooks.emitRecords.isUsed()) {
+			if (this.recordsOutputPath) {
+				asyncLib.parallel(
+					[
+						(/** @type {ErrorCallback} */ cb) =>
+							this.hooks.emitRecords.callAsync(cb),
+						this._emitRecords.bind(this)
+					],
+					(/** @type {Error | null | undefined} */ err) =>
+						callback(/** @type {Error | null} */ (err))
+				);
+			} else {
+				this.hooks.emitRecords.callAsync(callback);
+			}
+		} else if (this.recordsOutputPath) {
+			this._emitRecords(callback);
+		} else {
+			callback(null);
+		}
+	}
+
+	/**
+	 * Processes the provided error callback.
+	 * @param {ErrorCallback} callback signals when the call finishes
+	 * @returns {void}
+	 */
+	_emitRecords(callback) {
+		const writeFile = () => {
+			/** @type {OutputFileSystem} */
+			(this.outputFileSystem).writeFile(
+				/** @type {string} */ (this.recordsOutputPath),
+				JSON.stringify(
+					this.records,
+					// the records file is JSON, so each value written is a JSON value
+					(n, /** @type {JsonValue} */ value) => {
+						if (
+							typeof value === "object" &&
+							value !== null &&
+							!Array.isArray(value)
+						) {
+							const keys = Object.keys(value);
+							if (!isSorted(keys)) {
+								return sortObject(value, keys);
+							}
+						}
+						return value;
+					},
+					2
+				),
+				callback
+			);
+		};
+
+		const recordsOutputPathDirectory = dirname(
+			/** @type {OutputFileSystem} */
+			(this.outputFileSystem),
+			/** @type {string} */
+			(this.recordsOutputPath)
+		);
+		if (!recordsOutputPathDirectory) {
+			return writeFile();
+		}
+		mkdirp(
+			/** @type {OutputFileSystem} */ (this.outputFileSystem),
+			recordsOutputPathDirectory,
+			(err) => {
+				if (err) return callback(err);
+				writeFile();
+			}
+		);
+	}
+
+	/**
+	 * Processes the provided error callback.
+	 * @param {ErrorCallback} callback signals when the call finishes
+	 * @returns {void}
+	 */
+	readRecords(callback) {
+		if (this.hooks.readRecords.isUsed()) {
+			if (this.recordsInputPath) {
+				asyncLib.parallel(
+					[
+						(/** @type {ErrorCallback} */ cb) =>
+							this.hooks.readRecords.callAsync(cb),
+						this._readRecords.bind(this)
+					],
+					(/** @type {Error | null | undefined} */ err) =>
+						callback(/** @type {Error | null} */ (err))
+				);
+			} else {
+				this.records = {};
+				this.hooks.readRecords.callAsync(callback);
+			}
+		} else if (this.recordsInputPath) {
+			this._readRecords(callback);
+		} else {
+			this.records = {};
+			callback(null);
+		}
+	}
+
+	/**
+	 * Processes the provided error callback.
+	 * @param {ErrorCallback} callback signals when the call finishes
+	 * @returns {void}
+	 */
+	_readRecords(callback) {
+		if (!this.recordsInputPath) {
+			this.records = {};
+			return callback(null);
+		}
+		/** @type {InputFileSystem} */
+		(this.inputFileSystem).stat(this.recordsInputPath, (err) => {
+			// It doesn't exist
+			// We can ignore this.
+			if (err) return callback(null);
+
+			/** @type {InputFileSystem} */
+			(this.inputFileSystem).readFile(
+				/** @type {string} */
+				(this.recordsInputPath),
+				(err, content) => {
+					if (err) return callback(err);
+
+					try {
+						this.records =
+							/** @type {Records} */
+							(parseJson(/** @type {Buffer} */ (content).toString("utf8")));
+					} catch (parseErr) {
+						return callback(
+							new Error(
+								`Cannot parse records: ${
+									/** @type {Error} */ (parseErr).message
+								}`
+							)
+						);
+					}
+
+					return callback(null);
+				}
+			);
+		});
+	}
+
+	/**
+	 * Creates a child compiler.
+	 * @param {Compilation} compilation the compilation
+	 * @param {string} compilerName the compiler's name
+	 * @param {number} compilerIndex the compiler's index
+	 * @param {Partial<OutputOptions>=} outputOptions the output options
+	 * @param {Plugins=} plugins the plugins to apply
+	 * @returns {Compiler} a child compiler
+	 */
+	createChildCompiler(
+		compilation,
+		compilerName,
+		compilerIndex,
+		outputOptions,
+		plugins
+	) {
+		const childCompiler = new Compiler(this.context, {
+			...this.options,
+			output: {
+				...this.options.output,
+				...outputOptions
+			}
+		});
+		childCompiler.name = compilerName;
+		childCompiler.outputPath = this.outputPath;
+		childCompiler.inputFileSystem = this.inputFileSystem;
+		childCompiler.outputFileSystem = null;
+		childCompiler.resolverFactory = this.resolverFactory;
+		childCompiler.modifiedFiles = this.modifiedFiles;
+		childCompiler.removedFiles = this.removedFiles;
+		childCompiler.fileTimestamps = this.fileTimestamps;
+		childCompiler.contextTimestamps = this.contextTimestamps;
+		childCompiler.fsStartTime = this.fsStartTime;
+		childCompiler.cache = this.cache;
+		childCompiler.compilerPath = `${this.compilerPath}${compilerName}|${compilerIndex}|`;
+		childCompiler._backCompat = this._backCompat;
+
+		const relativeCompilerName = makePathsRelative(
+			this.context,
+			compilerName,
+			this.root
+		);
+		if (!this.records[relativeCompilerName]) {
+			this.records[relativeCompilerName] = [];
+		}
+		if (this.records[relativeCompilerName][compilerIndex]) {
+			childCompiler.records =
+				/** @type {Records} */
+				(this.records[relativeCompilerName][compilerIndex]);
+		} else {
+			/** @type {Records[]} */
+			(this.records[relativeCompilerName]).push((childCompiler.records = {}));
+		}
+
+		childCompiler.parentCompilation = compilation;
+		childCompiler.root = this.root;
+		if (Array.isArray(plugins)) {
+			for (const plugin of plugins) {
+				if (typeof plugin === "function") {
+					/** @type {WebpackPluginFunction} */
+					(plugin).call(childCompiler, childCompiler);
+				} else if (plugin) {
+					plugin.apply(childCompiler);
+				}
+			}
+		}
+		for (const name in this.hooks) {
+			if (
+				![
+					"make",
+					"compile",
+					"emit",
+					"afterEmit",
+					"invalid",
+					"done",
+					"thisCompilation"
+				].includes(name) &&
+				childCompiler.hooks[/** @type {keyof Compiler["hooks"]} */ (name)]
+			) {
+				childCompiler.hooks[
+					/** @type {keyof Compiler["hooks"]} */
+					(name)
+				].taps = [
+					...this.hooks[
+						/** @type {keyof Compiler["hooks"]} */
+						(name)
+					].taps
+				];
+			}
+		}
+
+		compilation.hooks.childCompiler.call(
+			childCompiler,
+			compilerName,
+			compilerIndex
+		);
+
+		return childCompiler;
+	}
+
+	isChild() {
+		return Boolean(this.parentCompilation);
+	}
+
+	/**
+	 * Creates a compilation.
+	 * @param {CompilationParams} params the compilation parameters
+	 * @returns {Compilation} compilation
+	 */
+	createCompilation(params) {
+		this._cleanupLastCompilation();
+		return (this._lastCompilation = new Compilation(this, params));
+	}
+
+	/**
+	 * Returns the created compilation.
+	 * @param {CompilationParams} params the compilation parameters
+	 * @returns {Compilation} the created compilation
+	 */
+	newCompilation(params) {
+		const compilation = this.createCompilation(params);
+		compilation.name = this.name;
+		compilation.records = this.records;
+		this.hooks.thisCompilation.call(compilation, params);
+		this.hooks.compilation.call(compilation, params);
+		return compilation;
+	}
+
+	createNormalModuleFactory() {
+		this._cleanupLastNormalModuleFactory();
+		const normalModuleFactory = new NormalModuleFactory({
+			context: this.options.context,
+			fs: /** @type {InputFileSystem} */ (this.inputFileSystem),
+			resolverFactory: this.resolverFactory,
+			options: this.options.module,
+			associatedObjectForCache: this.root
+		});
+		this._lastNormalModuleFactory = normalModuleFactory;
+		this.hooks.normalModuleFactory.call(normalModuleFactory);
+		return normalModuleFactory;
+	}
+
+	createContextModuleFactory() {
+		const contextModuleFactory = new ContextModuleFactory(this.resolverFactory);
+		this.hooks.contextModuleFactory.call(contextModuleFactory);
+		return contextModuleFactory;
+	}
+
+	newCompilationParams() {
+		const params = {
+			normalModuleFactory: this.createNormalModuleFactory(),
+			contextModuleFactory: this.createContextModuleFactory()
+		};
+		return params;
+	}
+
+	/**
+	 * Processes the provided compilation.
+	 * @param {Callback<Compilation>} callback signals when the compilation finishes
+	 * @returns {void}
+	 */
+	compile(callback) {
+		const params = this.newCompilationParams();
+		this.hooks.beforeCompile.callAsync(params, (err) => {
+			if (err) return callback(err);
+
+			this.hooks.compile.call(params);
+
+			const compilation = this.newCompilation(params);
+
+			const logger = compilation.getLogger("webpack.Compiler");
+
+			logger.time("make hook");
+			this.hooks.make.callAsync(compilation, (err) => {
+				logger.timeEnd("make hook");
+				if (err) return callback(err);
+
+				logger.time("finish make hook");
+				this.hooks.finishMake.callAsync(compilation, (err) => {
+					logger.timeEnd("finish make hook");
+					if (err) return callback(err);
+
+					process.nextTick(() => {
+						logger.time("finish compilation");
+						compilation.finish((err) => {
+							logger.timeEnd("finish compilation");
+							if (err) return callback(err);
+
+							logger.time("seal compilation");
+							compilation.seal((err) => {
+								logger.timeEnd("seal compilation");
+								if (err) return callback(err);
+
+								logger.time("afterCompile hook");
+								this.hooks.afterCompile.callAsync(compilation, (err) => {
+									logger.timeEnd("afterCompile hook");
+									if (err) return callback(err);
+
+									return callback(null, compilation);
+								});
+							});
+						});
+					});
+				});
+			});
+		});
+	}
+
+	/**
+	 * The compiler's pool, created on first use when `experiments.threads` is on.
+	 * @returns {import("./worker/WorkerPool") | undefined} the pool
+	 */
+	_getWorkerPool() {
+		const farm = this.root._workerFarm;
+		return farm === undefined ? undefined : farm.getPool();
+	}
+
+	/**
+	 * Returns a worker bound to `workerPath`. The pool behind it is shared by the compiler and ended on close. Without `experiments.threads`, calls run directly on the main thread unless `options.numWorkers` asks for threads; without `worker_threads`, they always do.
+	 * @since 5.113.0
+	 * @experimental
+	 * @template {import("./worker/Worker").WorkerModule} [M=import("./worker/Worker").WorkerDefaultModule] exports of the worker module
+	 * @param {string | URL} workerPath absolute path or file URL of a CommonJS module
+	 * @param {WorkerOptions=} options options
+	 * @returns {import("./worker/Worker")<M>} the worker
+	 * @throws {Error} after `close()` when no worker was created before
+	 */
+	worker(workerPath, options) {
+		if (this.root !== this) {
+			return /** @type {import("./worker/Worker")<M>} */ (
+				this.root.worker(workerPath, options)
+			);
+		}
+		let farm = this._workerFarm;
+		if (farm === undefined) {
+			if (this._closed || this._closeCallbacks !== undefined) {
+				throw new Error(
+					"compiler.worker() cannot create a worker after compiler.close()"
+				);
+			}
+			farm = this._workerFarm = new (require("./worker/WorkerFarm"))(this);
+		}
+		return /** @type {import("./worker/Worker")<M>} */ (
+			farm.getWorker(workerPath, options)
+		);
+	}
+
+	/**
+	 * Processes the provided error callback.
+	 * @param {ErrorCallback} callback signals when the compiler closes
+	 * @returns {void}
+	 */
+	close(callback) {
+		if (this.root === this && this._workerFarm !== undefined) {
+			this._workerFarm.close();
+		}
+		if (this.watching) {
+			// When there is still an active watching, close this first
+			this.watching.close((_err) => {
+				this.close(callback);
+			});
+			return;
+		}
+		if (this._closed) {
+			callback(null);
+			return;
+		}
+		if (this._closeCallbacks !== undefined) {
+			this._closeCallbacks.push(callback);
+			return;
+		}
+		/** @type {ErrorCallback[]} */
+		const callbacks = [callback];
+		this._closeCallbacks = callbacks;
+		/**
+		 * @param {Error | null | undefined} err error
+		 * @returns {void}
+		 */
+		const done = (err) => {
+			// a failed shutdown stays open, so the next close() retries it
+			if (!err) this._closed = true;
+			this._closeCallbacks = undefined;
+			for (const closeCallback of callbacks) closeCallback(err || null);
+		};
+		const shutdown = () => {
+			this.hooks.shutdown.callAsync((err) => {
+				if (err) return done(err);
+				// Defer a microtask so a close() made inside the run callback can't
+				// release codeGenerationResults before afterDone fires on the same stack.
+				const lastCompilation = this._lastCompilation;
+				if (lastCompilation !== undefined) {
+					Promise.resolve().then(() => {
+						this._releaseUnusedCompilationData(lastCompilation);
+					});
+				}
+				this._lastCompilation = undefined;
+				this._lastNormalModuleFactory = undefined;
+				this.cache.shutdown(done);
+			});
+		};
+		if (this.root === this && this._workerFarm !== undefined) {
+			this._workerFarm.end().then(shutdown, shutdown);
+			return;
+		}
+		shutdown();
+	}
+
+	/**
+	 * Validates a value against a schema, skipping the schema when the precompiled check passes
+	 * @template {ValidatedValue} T
+	 * @param {Schema | (() => Schema)} schema schema, or a function returning it so a valid value never reads it
+	 * @param {T} value value
+	 * @param {(ValidationErrorConfiguration | PrecompiledCheck<T>)=} options name and data path of the errors, read from a schema titled `"<name> <baseDataPath>"` when not given; the check can take its place
+	 * @param {PrecompiledCheck<T>=} check check precompiled from the schema with `schema-utils precompile`
+	 * @returns {void}
+	 */
+	validate(schema, value, options, check) {
+		// Avoid validation at all when disabled
+		if (this.options.validate === false) {
+			return;
+		}
+
+		getValidateSchema()(schema, value, options, check);
+	}
+}
+
+module.exports = Compiler;

@@ -1,0 +1,373 @@
+import type {
+  ArgumentMetadata,
+  ContextType,
+  PipeTransform,
+} from '@nestjs/common';
+import {
+  type Controller,
+  CUSTOM_ROUTE_ARGS_METADATA,
+  isEmptyArray,
+  PARAMTYPES_METADATA,
+} from '@nestjs/common/internal';
+import type { ContextId } from '@nestjs/core';
+import {
+  ContextUtils,
+  type ExecutionContextHost,
+  FORBIDDEN_MESSAGE,
+  type GuardsConsumer,
+  type GuardsContextCreator,
+  HandlerMetadataStorage,
+  type InterceptorsConsumer,
+  type InterceptorsContextCreator,
+  type ParamProperties,
+  type ParamsMetadata,
+  type PipesConsumer,
+  type PipesContextCreator,
+  STATIC_CONTEXT,
+} from '@nestjs/core/internal';
+import { MESSAGE_METADATA, PARAM_ARGS_METADATA } from '../constants.js';
+import { WsException } from '../errors/ws-exception.js';
+import { WsParamsFactory } from '../factories/ws-params-factory.js';
+import { ExceptionFiltersContext } from './exception-filters-context.js';
+import { DEFAULT_CALLBACK_METADATA } from './ws-metadata-constants.js';
+import { WsProxy } from './ws-proxy.js';
+
+type WsParamProperties = ParamProperties & { metatype?: any };
+export interface WsHandlerMetadata {
+  argsLength: number;
+  paramtypes: any[];
+  getParamsMetadata: (
+    moduleKey: string,
+    contextId?: ContextId,
+    inquirerId?: string,
+  ) => WsParamProperties[];
+}
+
+const isThenable = (value: unknown): value is PromiseLike<unknown> =>
+  value !== null &&
+  (typeof value === 'object' || typeof value === 'function') &&
+  typeof (value as PromiseLike<unknown>).then === 'function';
+
+export class WsContextCreator {
+  private readonly contextUtils = new ContextUtils();
+  private readonly wsParamsFactory = new WsParamsFactory();
+  private readonly handlerMetadataStorage =
+    new HandlerMetadataStorage<WsHandlerMetadata>();
+
+  constructor(
+    private readonly wsProxy: WsProxy,
+    private readonly exceptionFiltersContext: ExceptionFiltersContext,
+    private readonly pipesContextCreator: PipesContextCreator,
+    private readonly pipesConsumer: PipesConsumer,
+    private readonly guardsContextCreator: GuardsContextCreator,
+    private readonly guardsConsumer: GuardsConsumer,
+    private readonly interceptorsContextCreator: InterceptorsContextCreator,
+    private readonly interceptorsConsumer: InterceptorsConsumer,
+  ) {}
+
+  public create<T extends ParamsMetadata = ParamsMetadata>(
+    instance: Controller,
+    callback: (...args: unknown[]) => void,
+    moduleKey: string,
+    methodName: string,
+    contextId = STATIC_CONTEXT,
+    inquirerId?: string,
+  ): (...args: any[]) => Promise<void> {
+    const contextType: ContextType = 'ws';
+    const { argsLength, paramtypes, getParamsMetadata } = this.getMetadata<T>(
+      instance,
+      methodName,
+      contextType,
+    );
+    const exceptionHandler = this.exceptionFiltersContext.create(
+      instance,
+      callback,
+      moduleKey,
+      contextId,
+      inquirerId,
+    );
+    const pipes = this.pipesContextCreator.create(
+      instance,
+      callback,
+      moduleKey,
+      contextId,
+      inquirerId,
+    );
+    const guards = this.guardsContextCreator.create(
+      instance,
+      callback,
+      moduleKey,
+      contextId,
+      inquirerId,
+    );
+    const interceptors = this.interceptorsContextCreator.create(
+      instance,
+      callback,
+      moduleKey,
+      contextId,
+      inquirerId,
+    );
+
+    const paramsMetadata = getParamsMetadata(moduleKey, contextId, inquirerId);
+    const paramsOptions = paramsMetadata
+      ? this.contextUtils.mergeParamsMetatypes(paramsMetadata, paramtypes)
+      : [];
+    // Optional call, as an older "@nestjs/core" may not implement it
+    this.contextUtils.warnOnMissingParamtypes?.(
+      instance,
+      methodName,
+      paramtypes,
+      pipes,
+      paramsOptions,
+    );
+    const fnApplyPipes = this.createPipesFn(pipes, paramsOptions);
+
+    const fnCanActivate = this.createGuardsFn(
+      guards,
+      instance,
+      callback,
+      contextType,
+    );
+
+    const handler = (initialArgs: unknown[], args: unknown[]) => async () => {
+      if (fnApplyPipes) {
+        const pendingPipes = fnApplyPipes(initialArgs, ...args);
+        pendingPipes && (await pendingPipes);
+        return callback.apply(instance, initialArgs);
+      }
+      return callback.apply(instance, args);
+    };
+    const targetPattern = this.reflectCallbackPattern(callback);
+    return this.wsProxy.create(
+      async (...args: unknown[]) => {
+        // The pattern is already appended by `WsProxy` before this callback runs,
+        // so it is the last element of `args` at this point.
+        const initialArgs = this.contextUtils.createNullArray(argsLength);
+        fnCanActivate && (await fnCanActivate(args));
+
+        return this.interceptorsConsumer.intercept(
+          interceptors,
+          args,
+          instance,
+          callback,
+          handler(initialArgs, args),
+          contextType,
+        );
+      },
+      exceptionHandler,
+      targetPattern,
+    );
+  }
+
+  public reflectCallbackParamtypes(
+    instance: Controller,
+    callback: (...args: any[]) => any,
+  ): any[] {
+    return Reflect.getMetadata(PARAMTYPES_METADATA, instance, callback.name);
+  }
+
+  public reflectCallbackPattern(callback: (...args: any[]) => any): string {
+    return Reflect.getMetadata(MESSAGE_METADATA, callback);
+  }
+
+  public createGuardsFn<TContext extends string = ContextType>(
+    guards: any[],
+    instance: Controller,
+    callback: (...args: unknown[]) => any,
+    contextType?: TContext,
+  ): Function | null {
+    const canActivateFn = async (args: any[]) => {
+      const canActivate = await this.guardsConsumer.tryActivate<TContext>(
+        guards,
+        args,
+        instance,
+        callback,
+        contextType,
+      );
+      if (!canActivate) {
+        throw new WsException(FORBIDDEN_MESSAGE);
+      }
+    };
+    return guards.length ? canActivateFn : null;
+  }
+
+  public getMetadata<TMetadata, TContext extends ContextType = ContextType>(
+    instance: Controller,
+    methodName: string,
+    contextType: TContext,
+  ): WsHandlerMetadata {
+    const cacheMetadata = this.handlerMetadataStorage.get(instance, methodName);
+    if (cacheMetadata) {
+      return cacheMetadata;
+    }
+    const metadata =
+      this.contextUtils.reflectCallbackMetadata<TMetadata>(
+        instance,
+        methodName,
+        PARAM_ARGS_METADATA,
+      ) || DEFAULT_CALLBACK_METADATA;
+    const keys = Object.keys(metadata);
+    const argsLength = this.contextUtils.getArgumentsLength(keys, metadata);
+    const paramtypes = this.contextUtils.reflectCallbackParamtypes(
+      instance,
+      methodName,
+    );
+    const contextFactory = this.contextUtils.getContextFactory(
+      contextType,
+      instance,
+      instance[methodName],
+    );
+    const getParamsMetadata = (
+      moduleKey: string,
+      contextId = STATIC_CONTEXT,
+      inquirerId?: string,
+    ) =>
+      this.exchangeKeysForValues(
+        keys,
+        metadata,
+        moduleKey,
+        this.wsParamsFactory,
+        contextFactory,
+        contextId,
+        inquirerId,
+      );
+
+    const handlerMetadata: WsHandlerMetadata = {
+      argsLength,
+      paramtypes,
+      getParamsMetadata,
+    };
+    this.handlerMetadataStorage.set(instance, methodName, handlerMetadata);
+    return handlerMetadata;
+  }
+
+  public exchangeKeysForValues<TMetadata = any>(
+    keys: string[],
+    metadata: TMetadata,
+    moduleContext: string,
+    paramsFactory: WsParamsFactory,
+    contextFactory: (args: unknown[]) => ExecutionContextHost,
+    contextId = STATIC_CONTEXT,
+    inquirerId?: string,
+  ): ParamProperties[] {
+    this.pipesContextCreator.setModuleContext(moduleContext);
+
+    return keys.map(key => {
+      const { index, data, pipes: pipesCollection, schema } = metadata[key];
+      const pipes = this.pipesContextCreator.createConcreteContext(
+        pipesCollection,
+        contextId,
+        inquirerId,
+      );
+      const type = this.contextUtils.mapParamType(key);
+
+      if (key.includes(CUSTOM_ROUTE_ARGS_METADATA)) {
+        const { factory } = metadata[key];
+        const customExtractValue = this.contextUtils.getCustomFactory(
+          factory,
+          data,
+          contextFactory,
+        );
+        return {
+          index,
+          extractValue: customExtractValue,
+          type,
+          data,
+          pipes,
+          schema,
+        };
+      }
+      const numericType = Number(type);
+      const extractValue = (...args: any[]) =>
+        paramsFactory.exchangeKeyForValue(numericType, data, args);
+
+      return { index, extractValue, type: numericType, data, pipes, schema };
+    });
+  }
+
+  public createPipesFn(
+    pipes: PipeTransform[],
+    paramsOptions: (ParamProperties & { metatype?: unknown })[],
+  ):
+    | ((args: unknown[], ...params: unknown[]) => Promise<unknown> | undefined)
+    | null {
+    if (!paramsOptions.length) {
+      return null;
+    }
+    // Which pipes a param runs through is fixed for the handler, so it is
+    // worked out once here rather than on every call.
+    const params = paramsOptions.map(
+      ({
+        index,
+        extractValue,
+        type,
+        data,
+        metatype,
+        pipes: paramPipes,
+        schema,
+      }) => ({
+        index,
+        extractValue,
+        metadata: { metatype, type, data, schema } as ArgumentMetadata,
+        pipes: pipes.concat(paramPipes),
+      }),
+    );
+
+    const applyPipes = async (
+      args: unknown[],
+      param: (typeof params)[number],
+      value: unknown,
+    ) => {
+      args[param.index] = await this.getParamValue(
+        value,
+        param.metadata,
+        param.pipes,
+      );
+    };
+
+    const settle = async (pending: Promise<void>[]) => {
+      try {
+        await Promise.all(pending);
+      } catch (err) {
+        // The pipes of the other parameters are still running. Answering now
+        // would free the message's slot (see "maxConcurrentMessages" of the
+        // adapters) while their work goes on, so a client could have any
+        // number of them running by sending messages that fail fast.
+        await Promise.allSettled(pending);
+        throw err;
+      }
+    };
+
+    return (args: unknown[], ...extractArgs: unknown[]) => {
+      // A value no pipe runs on is final once extracted and needs no promise,
+      // unless it is a thenable, which getParamValue() has always settled.
+      // The rest, and any extractor that throws, go through one
+      // Promise.all() in param order, as before.
+      let pending: Promise<void>[] | undefined;
+      for (let i = 0; i < params.length; i++) {
+        const param = params[i];
+        try {
+          const value = param.extractValue(...extractArgs);
+          if (param.pipes.length > 0 || isThenable(value)) {
+            (pending ??= []).push(applyPipes(args, param, value));
+          } else {
+            args[param.index] = value;
+          }
+        } catch (err) {
+          (pending ??= []).push(Promise.reject(err));
+        }
+      }
+      return pending && settle(pending);
+    };
+  }
+
+  public async getParamValue<T>(
+    value: T,
+    metadata: ArgumentMetadata,
+    pipes: PipeTransform[],
+  ): Promise<any> {
+    return isEmptyArray(pipes)
+      ? value
+      : this.pipesConsumer.apply(value, metadata, pipes);
+  }
+}

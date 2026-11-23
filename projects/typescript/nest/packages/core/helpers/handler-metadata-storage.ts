@@ -1,0 +1,79 @@
+import { IncomingMessage } from 'http';
+import { Observable } from 'rxjs';
+import { ContextId } from '../injector/instance-wrapper.js';
+import { HeaderStream } from '../router/sse-stream.js';
+import type { StreamingBody } from '../router/streaming-body.js';
+import { getClassRef } from './class-ref-registry.js';
+import { ParamProperties } from './context-utils.js';
+import type { StreamableFile, Type } from '@nestjs/common';
+
+export const HANDLER_METADATA_SYMBOL = Symbol.for('handler_metadata:cache');
+
+export interface HandlerObservableNotifier {
+  subscribe(listener: () => void): { unsubscribe(): void };
+}
+
+export type HandleResponseFn = HandlerResponseBasicFn | HandleSseResponseFn;
+
+export type HandlerResponseBasicFn = <TResult, TResponse>(
+  result: TResult,
+  res: TResponse,
+  req?: any,
+  handlerObservable$?: HandlerObservableNotifier,
+  handlerStreams?: (StreamableFile | StreamingBody)[],
+) => any;
+
+export type HandleSseResponseFn = <
+  TResult extends Observable<unknown> = any,
+  TResponse extends HeaderStream = any,
+  TRequest extends IncomingMessage = any,
+>(
+  result: TResult,
+  res: TResponse,
+  req: TRequest,
+) => any;
+
+export interface HandlerMetadata {
+  argsLength: number;
+  isSseHandler: boolean;
+  paramtypes: any[];
+  httpStatusCode: number;
+  responseHeaders: any[];
+  hasCustomHeaders: boolean;
+  getParamsMetadata: (
+    moduleKey: string,
+    contextId?: ContextId,
+    inquirerId?: string,
+  ) => (ParamProperties & { metatype?: any })[];
+  fnHandleResponse: HandleResponseFn;
+}
+
+export class HandlerMetadataStorage<
+  TValue = HandlerMetadata,
+  TKey extends Type<unknown> = any,
+> {
+  // Keyed by class: same-named classes must not share an entry, and neither
+  // must classes that a mixin helper gave the same `constructor`.
+  private readonly [HANDLER_METADATA_SYMBOL] = new WeakMap<
+    Function,
+    Map<string, TValue>
+  >();
+
+  set(controller: TKey, methodName: string, metadata: TValue) {
+    const ctor = getClassRef(controller);
+    if (!ctor) {
+      return;
+    }
+    let handlers = this[HANDLER_METADATA_SYMBOL].get(ctor);
+    if (!handlers) {
+      handlers = new Map<string, TValue>();
+      this[HANDLER_METADATA_SYMBOL].set(ctor, handlers);
+    }
+    handlers.set(methodName, metadata);
+  }
+
+  get(controller: TKey, methodName: string): TValue | undefined {
+    const handlers = this[HANDLER_METADATA_SYMBOL].get(getClassRef(controller));
+    return handlers?.get(methodName);
+  }
+}

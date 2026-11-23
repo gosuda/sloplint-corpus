@@ -1,0 +1,541 @@
+use nu_test_support::prelude::*;
+use rstest::rstest;
+
+#[test]
+fn use_module_file_within_block(playground: Playground) -> Result {
+    playground.file(
+        "spam.nu",
+        r#"
+                export def foo [] {
+                    echo "hello world"
+                }
+            "#,
+    )?;
+
+    let code = "
+            def bar [] {
+                use spam.nu foo;
+                foo
+            };
+            bar
+        ";
+
+    test()
+        .cwd(playground.path())
+        .run(code)
+        .expect_value_eq("hello world")
+}
+
+#[test]
+fn use_keeps_doc_comments(playground: Playground) -> Result {
+    playground.file(
+        "spam.nu",
+        r#"
+                # this is my foo command
+                export def foo [
+                    x:string # this is an x parameter
+                ] {
+                    echo "hello world"
+                }
+            "#,
+    )?;
+
+    let code = "
+            use spam.nu foo;
+            help foo
+        ";
+
+    let output: String = test().cwd(playground.path()).run(code)?;
+    assert_contains("this is my foo command", &output);
+    assert_contains("this is an x parameter", &output);
+    Ok(())
+}
+
+#[test]
+fn use_eval_export_env(playground: Playground) -> Result {
+    playground.file(
+        "spam.nu",
+        indoc::indoc! {"
+            export-env { $env.FOO = 'foo' }
+        "},
+    )?;
+
+    let mut tester = test().cwd(playground.path());
+    let () = tester.run("use spam.nu")?;
+    tester.run("$env.FOO").expect_value_eq("foo")
+}
+
+#[test]
+fn use_eval_export_env_hide(playground: Playground) -> Result {
+    playground.file(
+        "spam.nu",
+        indoc::indoc! {"
+            export-env { hide-env FOO }
+        "},
+    )?;
+
+    let mut tester = test().cwd(playground.path());
+    let () = tester.run("$env.FOO = 'foo'")?;
+    let () = tester.run("use spam.nu")?;
+
+    let err = tester.run("$env.FOO").expect_shell_error()?;
+    match err {
+        ShellError::EnvVarNotFoundAtRuntime { envvar_name, .. } => {
+            assert_eq!(envvar_name, "FOO");
+            Ok(())
+        }
+        err => Err(err.into()),
+    }
+}
+
+#[test]
+fn use_do_cd(playground: Playground) -> Result {
+    playground.file(
+        "test1/test2/spam.nu",
+        indoc::indoc! {"
+            export-env { cd test1/test2 }
+        "},
+    )?;
+
+    let mut tester = test().cwd(playground.path());
+    let () = tester.run("use test1/test2/spam.nu")?;
+    tester
+        .run("$env.PWD | path basename")
+        .expect_value_eq("test2")
+}
+
+#[test]
+fn use_do_cd_file_relative(playground: Playground) -> Result {
+    playground.file(
+        "test1/test2/spam.nu",
+        indoc::indoc! {"
+            export-env { cd ($env.FILE_PWD | path join '..') }
+        "},
+    )?;
+
+    let mut tester = test().cwd(playground.path());
+    let () = tester.run("use test1/test2/spam.nu")?;
+    tester
+        .run("$env.PWD | path basename")
+        .expect_value_eq("test1")
+}
+
+#[test]
+fn use_overlay_hide_keeps_cd(playground: Playground) -> Result {
+    playground.file(
+        "test1/test2/spam.nu",
+        indoc::indoc! {"
+            export-env {
+                overlay new spam
+                cd test1/test2
+                overlay hide spam
+            }
+        "},
+    )?;
+
+    let mut tester = test().cwd(playground.path());
+    let () = tester.run("use test1/test2/spam.nu")?;
+    tester
+        .run("$env.PWD | path basename")
+        .expect_value_eq("test2")
+}
+
+#[test]
+fn use_export_env_combined(playground: Playground) -> Result {
+    playground.file(
+        "spam.nu",
+        indoc::indoc! {"
+            def foo [] { 'foo' }
+            alias bar = foo
+            export-env { $env.FOO = (bar) }
+        "},
+    )?;
+
+    let mut tester = test().cwd(playground.path());
+    let () = tester.run("use spam.nu")?;
+    tester.run("$env.FOO").expect_value_eq("foo")
+}
+
+#[test]
+fn use_module_creates_accurate_did_you_mean_1() -> Result {
+    let code = r#"
+        module spam {
+            export def foo [] {
+                "foo"
+            }
+        }
+        
+        use spam
+        foo
+    "#;
+
+    let err = test().run(code).expect_shell_error()?;
+    match err {
+        ShellError::ExternalCommand { help, .. } => {
+            assert_eq!(help, "Did you mean `spam foo`?");
+            Ok(())
+        }
+        err => Err(err.into()),
+    }
+}
+
+#[test]
+fn use_module_creates_accurate_did_you_mean_2() -> Result {
+    let code = r#"
+        module spam {
+            export def foo [] {
+                "foo"
+            }
+        }
+        
+        foo
+    "#;
+
+    let err = test().run(code).expect_shell_error()?;
+    match err {
+        ShellError::ExternalCommand { help, .. } => {
+            assert_contains("A command with that name exists in module `spam`.", help);
+            Ok(())
+        }
+        err => Err(err.into()),
+    }
+}
+
+#[rstest]
+#[case("def fizz [] { }")]
+#[case("extern fizz []")]
+#[case("alias fizz = ^git")]
+fn do_not_suggest_later_def(#[case] forward_decl: &str) -> Result {
+    let mut tester = test();
+    let () = tester.run("def buzz [] { fizz }")?;
+    let () = tester.run(forward_decl)?;
+
+    let err = tester.run("buzz").expect_shell_error()?;
+    match err {
+        ShellError::ExternalCommand { help, .. } => {
+            assert_eq!(
+                help,
+                "`fizz` is neither a Nushell built-in or a known external command"
+            );
+            Ok(())
+        }
+        err => Err(err.into()),
+    }
+}
+
+#[rstest]
+#[case::alias("alias st = str trim", "hide st", "st", "`st`")]
+#[case::module_command(
+    "module spam { export def baz [] {} }; use spam",
+    "hide 'spam baz'",
+    "spam baz",
+    "`spam baz`"
+)]
+fn do_not_suggest_command_hidden_from_later_overlay(
+    #[case] definition: &str,
+    #[case] hide: &str,
+    #[case] call: &str,
+    #[case] hidden_name: &str,
+) -> Result {
+    // Separate source units: the command is merged into overlay `zero` before `hide` runs with
+    // `x` active, so the hide is recorded in `x`.
+    let mut tester = test();
+    let () = tester.run(definition)?;
+    let () = tester.run("overlay new x")?;
+    let () = tester.run(hide)?;
+
+    let err = tester.run(call).expect_shell_error()?;
+    match err {
+        ShellError::ExternalCommand { help, .. } => {
+            assert_contains_not(hidden_name, help);
+            Ok(())
+        }
+        err => Err(err.into()),
+    }
+}
+
+#[test]
+fn suggest_only_imported_path() -> Result {
+    let mut tester = test();
+    let () = tester.run("use std/dirs")?;
+
+    let err = tester.run("gt").expect_shell_error()?;
+
+    // here it should _not_ suggest "goto",
+    // which is only available via "dirs goto"
+    match err {
+        ShellError::ExternalCommand { help, .. } => {
+            assert_eq!(help, "Did you mean `get`?");
+            Ok(())
+        }
+        err => Err(err.into()),
+    }
+}
+
+#[rstest]
+#[case("use spam")]
+#[case("use spam main")]
+#[case("use spam [ main ]")]
+#[case("use spam *")]
+fn use_main(#[case] use_module: &str) -> Result {
+    let mut tester = test();
+    let () = tester.run(r#"module spam { export def main [] { "spam" } }"#)?;
+    let () = tester.run(use_module)?;
+    tester.run("spam").expect_value_eq("spam")
+}
+
+#[test]
+fn use_main_def_env() -> Result {
+    let mut tester = test();
+    let () = tester.run(r#"module spam { export def --env main [] { $env.SPAM = "spam" } }"#)?;
+    let () = tester.run("use spam")?;
+    let () = tester.run("spam")?;
+    tester.run("$env.SPAM").expect_value_eq("spam")
+}
+
+#[test]
+fn use_main_def_known_external() -> Result {
+    let mut tester = test().inherit_rust_toolchain_env();
+    let () = tester.run("module cargo { export extern main [] }")?;
+    let () = tester.run("use cargo")?;
+    let outcome: String = tester.run("cargo --version")?;
+    assert_contains("cargo", outcome);
+    Ok(())
+}
+
+#[test]
+fn use_main_not_exported() -> Result {
+    let mut tester = test();
+    let () = tester.run(r#"module unique-module-name { def main [] { "hi" } }"#)?;
+    let () = tester.run("use unique-module-name")?;
+    let err = tester.run("unique-module-name").expect_shell_error()?;
+    assert!(matches!(err, ShellError::ExternalCommand { .. }));
+    Ok(())
+}
+
+#[test]
+fn use_sub_subname_error_if_not_from_submodule() -> Result {
+    let code = "
+        module spam {
+            export def foo [] {}
+            export def bar [] {}
+        }
+
+        use spam foo bar
+    ";
+
+    let err = test().run(code).expect_parse_error()?;
+    match err {
+        ParseError::WrongImportPattern(msg, ..) => {
+            assert_contains("try `use <module> [<name1>, <name2>]`", msg);
+            Ok(())
+        }
+        err => Err(err.into()),
+    }
+}
+
+#[test]
+fn can_use_sub_subname_from_submodule() -> Result {
+    let code = r#"
+        module spam {
+            export module foo {
+                export def bar [] {
+                    "bar"
+                }
+            }
+        }
+
+        use spam foo bar
+        bar
+    "#;
+
+    test().run(code).expect_value_eq("bar")
+}
+
+#[test]
+fn test_use_with_printing_file_pwd(playground: Playground) -> Result {
+    playground.file(
+        "mod.nu",
+        "
+            export-env {
+                $env.CAPTURED_FILE_PWD = $env.FILE_PWD
+            }
+        ",
+    )?;
+
+    test()
+        .cwd(playground.path())
+        .run("use .; $env.CAPTURED_FILE_PWD")
+        .expect_value_eq(playground.path())
+}
+
+#[test]
+fn test_use_with_printing_current_file(playground: Playground) -> Result {
+    let path = playground.file(
+        "mod.nu",
+        "
+            export-env {
+                $env.CAPTURED_CURRENT_FILE = $env.CURRENT_FILE
+            }
+        ",
+    )?;
+
+    test()
+        .cwd(playground.path())
+        .run("use .; $env.CAPTURED_CURRENT_FILE")
+        .expect_value_eq(path)
+}
+
+#[test]
+fn report_errors_in_export_env() -> Result {
+    let code = r#"
+        module spam {
+            export-env { error make -u {msg: "reported"} }
+        }
+        
+        use spam
+    "#;
+
+    let err = test().run(code).expect_shell_error()?;
+    assert_contains("reported", err.to_string());
+    Ok(())
+}
+
+#[test]
+fn use_keyword_named_module_with_main_errors() -> Result {
+    let code = r#"
+        module run { export def main [] { "hello" } }
+        use run
+    "#;
+
+    let err = test().run(code).expect_parse_error()?;
+    match err {
+        ParseError::KeywordShadowModuleMain(name, ..) => {
+            assert_eq!(name, "run");
+            Ok(())
+        }
+        err => Err(err.into()),
+    }
+}
+
+#[rstest]
+#[case("run")]
+#[case("if")]
+#[case("where")]
+#[case("source")]
+#[case("overlay")]
+fn use_keyword_named_module_with_main_errors_for_keyword(#[case] keyword: &str) -> Result {
+    let code = format!(
+        r#"module {kw} {{ export def main [] {{ "hello" }} }}
+        use {kw}"#,
+        kw = keyword
+    );
+
+    let err = test().run(&code).expect_parse_error()?;
+    match err {
+        ParseError::KeywordShadowModuleMain(name, ..) => {
+            assert_eq!(name, keyword);
+            Ok(())
+        }
+        err => Err(err.into()),
+    }
+}
+
+#[test]
+fn use_keyword_named_module_without_main_works() -> Result {
+    let code = r#"
+        module run { export def helper [] { "hello" } }
+        use run helper
+        helper
+    "#;
+
+    test().run(code).expect_value_eq("hello")
+}
+
+#[test]
+fn use_non_keyword_module_with_main_works() -> Result {
+    let code = r#"
+        module spam { export def main [] { "hello" } }
+        use spam
+        spam
+    "#;
+
+    test().run(code).expect_value_eq("hello")
+}
+
+#[test]
+fn overlay_use_keyword_named_module_with_main_errors() -> Result {
+    let code = r#"
+        module run { export def main [] { "hello" } }
+        overlay use run
+    "#;
+
+    let err = test().run(code).expect_parse_error()?;
+    match err {
+        ParseError::KeywordShadowModuleMain(name, ..) => {
+            assert_eq!(name, "run");
+            Ok(())
+        }
+        err => Err(err.into()),
+    }
+}
+
+#[test]
+fn overlay_use_keyword_named_module_as_different_name_works(playground: Playground) -> Result {
+    playground.file(
+        "run.nu",
+        indoc::indoc! {"
+            export def main [] { 'hello' }
+        "},
+    )?;
+
+    test()
+        .cwd(playground.path())
+        .run("overlay use run.nu as my_run; my_run")
+        .expect_value_eq("hello")
+}
+
+#[test]
+fn use_keyword_named_module_file_with_main_errors(playground: Playground) -> Result {
+    playground.file(
+        "run.nu",
+        indoc::indoc! {"
+            export def main [] { 'hello' }
+        "},
+    )?;
+
+    let err = test()
+        .cwd(playground.path())
+        .run("use run.nu")
+        .expect_parse_error()?;
+
+    match err {
+        ParseError::KeywordShadowModuleMain(name, ..) => {
+            assert_eq!(name, "run");
+            Ok(())
+        }
+        err => Err(err.into()),
+    }
+}
+
+#[rstest]
+#[case::const_list("const names = [f]; use spam ...$names")]
+#[case::let_list("let names = [f]; use spam ...$names")]
+#[case::list_literal("use spam ...[f]")]
+#[case::after_member("use spam f ...[g]")]
+#[case::std("const names = [log]; use std ...$names")]
+#[case::export_use("module eggs { export use spam ...[f] }")]
+#[case::export_use_top("export use spam ...[f]")]
+fn use_spread_members_errors(#[case] code: &str) -> Result {
+    let mut tester = test();
+    let () = tester.run("module spam { export def f [] { 'f' } }")?;
+
+    let err = tester.run(code).expect_parse_error()?;
+    match err {
+        ParseError::WrongImportPattern(msg, ..) => {
+            assert_contains("cannot spread in an import pattern", msg);
+            Ok(())
+        }
+        err => Err(err.into()),
+    }
+}
