@@ -536,6 +536,55 @@ class TestAddLocal(unittest.TestCase):
         manifest = open(os.path.join(root, "corpus.toml")).read()
         self.assertNotIn("nested-demo", manifest)
 
+    def _nest_upstream(self, files):
+        upstream = tempfile.mkdtemp(prefix="corpus-upstream-")
+        for rel, content in files.items():
+            write(os.path.join(upstream, rel), content)
+        subprocess.run(["git", "init", "-q", upstream], check=True, timeout=60)
+        subprocess.run(["git", "-C", upstream, "add", "-A"], check=True, timeout=60)
+        subprocess.run(["git", "-C", upstream, "-c", "user.name=t",
+                        "-c", "user.email=t@t", "commit", "-qm", "fixture"],
+                       check=True, timeout=60)
+        rev = subprocess.run(["git", "-C", upstream, "rev-parse", "HEAD"],
+                             capture_output=True, text=True, check=True,
+                             timeout=60).stdout.strip()
+        return upstream, rev
+
+    @unittest.skipUnless(HAS_GIT and HAS_ASKALONO, "needs git and askalono")
+    def test_add_ignores_uncopied_nested_license(self):
+        upstream, rev = self._nest_upstream({
+            "LICENSE": MIT_TEXT,
+            "src/lib.rs": "pub fn f() {}\n",
+            "src/vendor/README.md": "# vendored docs\n",
+            "src/vendor/COPYING": "Different License Text\n",
+        })
+        self.addCleanup(shutil.rmtree, upstream, True)
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        proc = run_tool(root, "add", "--url", upstream, "--rev", rev,
+                        "--lang", "rust", "--spdx", "MIT", "--name", "nest-ok",
+                        "--paths", "src/**", "--reason", "uncopied nested license")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertTrue(os.path.isfile(
+            os.path.join(root, "projects", "rust", "nest-ok", "src", "lib.rs")))
+        self.assertEqual(run_tool(root, "verify", "--offline").returncode, 0)
+
+    @unittest.skipUnless(HAS_GIT, "needs git")
+    def test_add_rejects_nested_notice(self):
+        upstream, rev = self._nest_upstream({
+            "LICENSE": MIT_TEXT,
+            "src/lib.rs": "pub fn f() {}\n",
+            "src/NOTICE": "Third-party attribution that differs\n",
+        })
+        self.addCleanup(shutil.rmtree, upstream, True)
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        proc = run_tool(root, "add", "--url", upstream, "--rev", rev,
+                        "--lang", "rust", "--spdx", "MIT", "--name", "nest-notice",
+                        "--paths", "src/**", "--reason", "nested notice fixture")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("governed by nested src/NOTICE", proc.stdout)
+
     @unittest.skipUnless(HAS_GIT, "needs git")
     def test_add_pinned_no_files(self):
         upstream, rev = make_local_git_repo(MIT_TEXT)

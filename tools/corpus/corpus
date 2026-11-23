@@ -682,7 +682,7 @@ def check_upstream_nesting(cache, selected, root_texts, errors, tag):
         scopes = rel.split("/")[:-1]
         for depth in range(1, len(scopes) + 1):
             scope = "/".join(scopes[:depth])
-            for base in LICENSE_NAMES:
+            for base in LICENSE_NAMES + NOTICE_NAMES:
                 candidate = os.path.join(cache, scope, base)
                 if not os.path.isfile(candidate) or os.path.islink(candidate):
                     continue
@@ -791,6 +791,7 @@ def cmd_add(args):
         return record_entry(root, args, url, patterns, excludes, storage,
                             tree_hash, stamp, False)
     os.makedirs(projdir)
+    copied = []
     for rel, full in selected:
         if os.path.islink(full):
             continue
@@ -804,6 +805,7 @@ def cmd_add(args):
         dest = os.path.join(projdir, rel)
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         shutil.copyfile(full, dest)
+        copied.append((rel, full))
     license_src = None
     for base in LICENSE_NAMES:
         candidate = os.path.join(cache, base)
@@ -832,7 +834,7 @@ def cmd_add(args):
             with open(path, "rb") as fh:
                 root_texts.append(fh.read())
     nesting_errors = []
-    check_upstream_nesting(cache, selected, root_texts, nesting_errors,
+    check_upstream_nesting(cache, copied, root_texts, nesting_errors,
                            "project %s" % args.name)
     if nesting_errors:
         shutil.rmtree(cache, ignore_errors=True)
