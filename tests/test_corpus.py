@@ -174,6 +174,25 @@ class TestSpdx(unittest.TestCase):
     def test_noassertion_ids(self):
         self.assertEqual(corpus.spdx_ids("NOASSERTION"), {"NOASSERTION"})
 
+    def test_wellformed_expressions(self):
+        for expr in ("MIT", "MIT OR Apache-2.0", "(MIT OR Apache-2.0)",
+                     "MIT AND Apache-2.0", "MIT WITH LLVM-exception",
+                     "GPL-3.0-only", "NOASSERTION"):
+            self.assertTrue(corpus._spdx_wellformed(expr), expr)
+        for expr in ("", "MIT OR", "OR MIT", "MIT OR OR Apache-2.0",
+                     "MIT WITH", "MIT AND", "(MIT OR Apache-2.0"):
+            self.assertFalse(corpus._spdx_wellformed(expr), expr)
+
+    def test_malformed_spdx_refused_in_add(self):
+        root = make_repo(mode="private")
+        self.addCleanup(shutil.rmtree, root, True)
+        proc = run_tool(root, "add", "--url", "https://example.com/x",
+                        "--rev", "a" * 40, "--lang", "rust",
+                        "--spdx", "MIT OR", "--name", "bador",
+                        "--paths", "src/**", "--reason", "malformed")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("not a well-formed expression", proc.stdout)
+
 
 class TestGlobs(unittest.TestCase):
     def test_double_star_spans_directories(self):

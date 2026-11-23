@@ -165,6 +165,26 @@ def _spdx_public_ok(expr):
     return True
 
 
+def _spdx_wellformed(expr):
+    if expr.count("(") != expr.count(")"):
+        return False
+    core = expr.replace("(", " ").replace(")", " ")
+    parts = core.split()
+    if not parts:
+        return False
+    expect_id = True
+    for part in parts:
+        if expect_id:
+            if part in ("OR", "AND", "WITH") or SPDX_ID_RE.fullmatch(part) is None:
+                return False
+            expect_id = False
+        elif part not in ("OR", "AND", "WITH"):
+            return False
+        else:
+            expect_id = True
+    return not expect_id
+
+
 def public_spdx_ok(expr):
     return _spdx_public_ok(expr)
 
@@ -429,6 +449,8 @@ def verify_project(root, project, mode, errors):
         errors.append("%s: rev must be a 40-hex commit, never a branch or tag" % tag)
     if not isinstance(spdx, str) or not spdx_ids(spdx):
         errors.append("%s: spdx must name at least one SPDX id" % tag)
+    elif not _spdx_wellformed(spdx):
+        errors.append("%s: spdx %r is not a well-formed expression" % (tag, spdx))
     if storage not in ("copied", "pinned"):
         errors.append("%s: storage must be copied or pinned" % tag)
         return 0
@@ -733,6 +755,9 @@ def cmd_add(args):
         return 1
     if not NAME_RE.match(args.name):
         fail("bad name; use [a-z0-9-]")
+        return 1
+    if not _spdx_wellformed(args.spdx):
+        fail("spdx %r is not a well-formed expression" % args.spdx)
         return 1
     existing = set()
     for entry in data.get("project", []):
