@@ -168,6 +168,17 @@ class TestGlobs(unittest.TestCase):
         self.assertFalse(corpus.match_subset("src/net/tcp.rs", ["src/*.rs"]))
 
 
+class TestExtensions(unittest.TestCase):
+    def test_starlark_build_files(self):
+        self.assertTrue(corpus.extension_ok("starlark", "BUILD"))
+        self.assertTrue(corpus.extension_ok("starlark", "WORKSPACE"))
+        self.assertTrue(corpus.extension_ok("starlark", "BUILD.bazel"))
+        self.assertTrue(corpus.extension_ok("starlark", "MODULE.bazel"))
+        self.assertTrue(corpus.extension_ok("starlark", "WORKSPACE.bazel"))
+        self.assertTrue(corpus.extension_ok("starlark", "rules/foo.bzl"))
+        self.assertFalse(corpus.extension_ok("starlark", "README.md"))
+
+
 class TestHeaders(unittest.TestCase):
     def test_clean_headers_pass(self):
         root = make_repo()

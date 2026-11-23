@@ -57,7 +57,7 @@ EXTENSIONS = {
     "zig": [".zig"],
     "ocaml": [".ml", ".mli"],
     "odin": [".odin"],
-    "starlark": [".bzl", ".star"],
+    "starlark": [".bzl", ".star", ".bazel"],
     "lean": [".lean"],
     "quint": [".qnt"],
     "tlaplus": [".tla"],
@@ -65,7 +65,7 @@ EXTENSIONS = {
     "dafny": [".dfy"],
     "racket": [".rkt", ".rktd", ".rktl"],
 }
-STARLARK_SPECIAL = frozenset({"BUILD", ".bazel"})
+STARLARK_SPECIAL = frozenset({"BUILD", "WORKSPACE"})
 
 LICENSE_NAMES = ("LICENSE", "LICENSE.txt", "LICENSE.md", "LICENCE", "LICENCE.txt",
                  "COPYING", "COPYING.txt")
