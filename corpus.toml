@@ -289,3 +289,91 @@ added_by = "CorpusPopC1"
 added_on = "2026-11-23"
 reason = "IoT application helpers plus two integrations"
 notice_present_upstream = false
+
+[[project]]
+name = "gin"
+language = "go"
+url = "https://github.com/gin-gonic/gin"
+rev = "0f09c3a9b4626d9fe9979cf4d0521d6ae32ab646"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:b794e861a9a10732be3b8cbca2d95f0b8798cc601b97f1b2200ab69631bbf7ec"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "web framework, small library"
+notice_present_upstream = false
+
+[[project]]
+name = "grpc-go"
+language = "go"
+url = "https://github.com/grpc/grpc-go"
+rev = "341c59808a9aaaf920baa4f1c1cd6c9087cae229"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:5d2f5818970baa60da39a5d7015a63625ba2ce5c7c3fdc18a76b59f1bb7aaf82"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "RPC framework, mid-size library"
+notice_present_upstream = true
+
+[[project]]
+name = "moby"
+language = "go"
+url = "https://github.com/moby/moby"
+rev = "8b0c45e42959ea5322cfb33bfb97a40ed64d4a07"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["daemon/**", "pkg/**"]
+exclude = ["daemon/logger/syslog/internal/srslog/**", "daemon/server/httputils/internal/httputil/**"]
+tree_hash = "sha256:1b60cdd3c59ed6cc49479efacbd9cb125e0e40281da0574c24b8261f7f7d6f62"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "container runtime subset (daemon, pkg), application"
+notice_present_upstream = true
+
+[[project]]
+name = "k8s-api"
+language = "go"
+url = "https://github.com/kubernetes/kubernetes"
+rev = "43cbb94ee845ad387717fe851bf5f421b7284329"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["staging/src/k8s.io/api/**", "pkg/apis/**"]
+exclude = ["**/*.pb.go", "**/*zz_generated*", "pkg/apis/core/validation/validation_test.go"]
+tree_hash = "sha256:a2aa965413c254e5d392bfcfca21f38d83217c25f73d84901390f61e72907cfb"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "orchestrator API types, application"
+notice_present_upstream = false
+
+[[project]]
+name = "cli"
+language = "go"
+url = "https://github.com/cli/cli"
+rev = "de06af2c2ea536d5722fda35dc2001565f9b9f64"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+exclude = ["api/queries_repo_test.go", "pkg/cmd/repo/create/create_test.go", "pkg/cmd/repo/license/list/list_test.go"]
+tree_hash = "sha256:4fe735db21208625b0826d991551e32913534849965dd616bff8ad2661b18ac7"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "CLI application, tool (3 license-text testdata files excluded)"
+notice_present_upstream = false
+
+[[project]]
+name = "testify"
+language = "go"
+url = "https://github.com/stretchr/testify"
+rev = "87a7b9d57689f6579db2da795ab8deeab29cb724"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+exclude = ["internal/difflib/**", "internal/spew/**"]
+tree_hash = "sha256:620b3713fcb8ffdd4cd2bd95f61fb675ba12efd31fb3dd1440440ebaffb48dea"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "test helpers, small library"
+notice_present_upstream = false
