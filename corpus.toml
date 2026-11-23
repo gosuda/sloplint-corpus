@@ -128,3 +128,117 @@ added_by = "CorpusPopC6"
 added_on = "2026-11-23"
 reason = "specification-journey tutorial files; beginner-syntax spread"
 notice_present_upstream = false
+
+[[project]]
+name = "community-modules"
+language = "tlaplus"
+url = "https://github.com/tlaplus/CommunityModules"
+rev = "cbf7a667423a3768aa3c87fe622faf7db1baa2e7"
+spdx = "MIT"
+storage = "copied"
+paths = ["modules/*.tla", "modules/*/*.tla", "tests/*.tla", "tests/*/*.tla", ".smoke/*.tla", ".smoke/*/*.tla"]
+tree_hash = "sha256:6cf5f9920d8e02093bd723473b01fb3a2ce6e1bedef6987531029688a1945606"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "community modules plus unit and smoke tests; library and test-fixture spread"
+notice_present_upstream = false
+
+
+[[project]]
+name = "tlaplus"
+language = "tlaplus"
+url = "https://github.com/tlaplus/tlaplus"
+rev = "bc1b506bdcad80bb518bf3776a9161c34ff0fc4c"
+spdx = "MIT"
+storage = "copied"
+paths = ["general/*.tla", "general/*/*.tla", "general/*/*/*.tla", "general/*/*/*/*.tla", "tlatools/*.tla", "tlatools/*/*.tla", "tlatools/*/*/*.tla", "tlatools/*/*/*/*.tla", "tlatools/*/*/*/*/*.tla", "tlatools/*/*/*/*/*/*.tla"]
+exclude = ["*.toolbox/*.tla", "*.toolbox/*/*.tla", "*.toolbox/*/*/*.tla", "tlatools/org.lamport.tlatools/test-model/Bug156/TE.tla"]
+tree_hash = "sha256:9fcde0a72cbae3ea6ce6e1512f5becf56633c8ef6a934a6be41cd3aab7fc4670"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "TLC regression suite and general specs; model-checker edge cases and bug archives; generated toolbox copies and one 2.9 MB generated Trace Explorer file excluded"
+notice_present_upstream = false
+
+[[project]]
+name = "tla-plus"
+language = "tlaplus"
+url = "https://github.com/pingcap/tla-plus"
+rev = "5649f86df14c73b0ab8773dda3802bc1937ace8d"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["*.tla"]
+tree_hash = "sha256:eacd086ce3d26c70d8a46afb5f7e5c3cbc4fd5c44eac7ab590098f9fa0d7f952"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "industrial Percolator/transaction specs"
+notice_present_upstream = false
+
+[[project]]
+name = "azure-cosmos-tla"
+language = "tlaplus"
+url = "https://github.com/Azure/azure-cosmos-tla"
+rev = "a8357c9c0a8d0ed710c68a64bc3a9ed0dc860a8a"
+spdx = "MIT"
+storage = "copied"
+paths = ["*.tla"]
+tree_hash = "sha256:8c1606e20135ed9830ebad4062b0922f7a979de661b5511dbe997c8b8b9bc6ce"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "industrial Cosmos DB spec, 2022 era"
+notice_present_upstream = false
+
+[[project]]
+name = "kafka-tlaplus"
+language = "tlaplus"
+url = "https://github.com/Vanlightly/kafka-tlaplus"
+rev = "823615e8a0962d0160c11d9affb2576c56b7c054"
+spdx = "MIT"
+storage = "copied"
+paths = ["*.tla"]
+tree_hash = "sha256:6cd83db9b8b06e1903ea5299f1b1a88f0947614b7eeda64460c3a7cc3c4852f4"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "industrial Kafka replication and transaction specs"
+notice_present_upstream = false
+
+[[project]]
+name = "tla-linearizability"
+language = "tlaplus"
+url = "https://github.com/lorin/tla-linearizability"
+rev = "4a5e1b2dd296f6b70f16aded1a1706ef62b74a9d"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["*.tla"]
+tree_hash = "sha256:51b40b20d07bcaf691d9e16eeff06df14505ae0fc741fb58c61584a3b1488f6d"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "classic linearizability spec, 2022 era"
+notice_present_upstream = false
+
+[[project]]
+name = "pluscal"
+language = "tlaplus"
+url = "https://github.com/belaban/pluscal"
+rev = "1c7430f2ee2b8099b5d14db6bf1341e698a0cfba"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["*.tla"]
+tree_hash = "sha256:c43201807915de0aaf53d04e1f73807c8ef0531eba2a508924264bd9e944d1b7"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "PlusCal algorithm-language sources, 2017 era"
+notice_present_upstream = false
+
+[[project]]
+name = "sloplint-tla-fixtures"
+language = "tlaplus"
+url = "https://github.com/gosuda/sloplint"
+rev = "d9d257c83580879f5b742ef7d78a3df202b317f4"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["crates/sloplint/tests/fixtures/*/*/*.tla"]
+tree_hash = "sha256:fc3445977f5c21fea20a61750394c42fbffbbb38ffd44f861b0d1f29d6b66483"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "own linter TLA fixtures incl near-miss edge cases; vendored tree-sitter copy excluded by subset scope"
+notice_present_upstream = false
