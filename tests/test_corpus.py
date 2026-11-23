@@ -328,6 +328,25 @@ class TestAddLocal(unittest.TestCase):
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("not on the public allowlist", proc.stdout)
 
+    @unittest.skipUnless(HAS_GIT, "needs git")
+    def test_add_pinned_no_files(self):
+        upstream, rev = make_local_git_repo(MIT_TEXT)
+        self.addCleanup(shutil.rmtree, upstream, True)
+        root = make_repo(mode="private")
+        self.addCleanup(shutil.rmtree, root, True)
+        proc = run_tool(root, "add", "--url", upstream, "--rev", rev,
+                        "--lang", "rust", "--spdx", "NOASSERTION",
+                        "--name", "pin-demo", "--storage", "pinned",
+                        "--paths", "src/**", "--reason", "unlicensed fixture")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("PASS add: pinned pin-demo", proc.stdout)
+        self.assertFalse(os.path.exists(
+            os.path.join(root, "projects", "rust", "pin-demo")))
+        fetch = run_tool(root, "fetch", "--lang", "rust", "--allow-unlicensed")
+        self.assertEqual(fetch.returncode, 0, fetch.stdout + fetch.stderr)
+        check = run_tool(root, "fetch", "--check", "--allow-unlicensed")
+        self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
+
 
 FAKE_SLOPLINT = """#!/bin/sh
 cat <<'EOF'

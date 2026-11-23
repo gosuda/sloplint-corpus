@@ -516,6 +516,40 @@ def match_subset(relpath, patterns):
     return False
 
 
+def record_entry(root, args, url, patterns, excludes, storage, tree_hash, stamp, notice_flag):
+    entry = ("\n[[project]]\n"
+             "name = \"%s\"\n"
+             "language = \"%s\"\n"
+             "url = \"%s\"\n"
+             "rev = \"%s\"\n"
+             "spdx = \"%s\"\n"
+             "storage = \"%s\"\n"
+             "paths = [%s]\n" % (
+                 args.name, args.lang, url, args.rev, args.spdx, storage,
+                 ", ".join('"%s"' % p for p in patterns)))
+    if excludes:
+        entry += "exclude = [%s]\n" % ", ".join('"%s"' % p for p in excludes)
+    entry += ("tree_hash = \"%s\"\n"
+              "added_by = \"%s\"\n"
+              "added_on = \"%s\"\n"
+              "reason = \"%s\"\n"
+              "notice_present_upstream = %s\n" % (
+                  tree_hash, args.added_by or "unknown", stamp, args.reason,
+                  "true" if notice_flag else "false"))
+    manifest_path = find_manifest(root, args.manifest)
+    with open(manifest_path, "a", encoding="utf-8") as fh:
+        fh.write(entry)
+    verify_args = argparse.Namespace(root=root, manifest=args.manifest, reuse=False)
+    if cmd_verify(verify_args) != 0:
+        fail("added tree does not pass verify; entry kept for inspection")
+        return 1
+    if storage == "pinned":
+        sys.stdout.write("PASS add: pinned %s\n" % args.name)
+    else:
+        sys.stdout.write("PASS add: projects/%s/%s\n" % (args.lang, args.name))
+    return 0
+
+
 def cmd_add(args):
     root = os.path.abspath(args.root)
     data, problems = load_manifest(root, args.manifest)
@@ -587,6 +621,23 @@ def cmd_add(args):
         shutil.rmtree(cache, ignore_errors=True)
         fail("projects/%s/%s already exists" % (args.lang, args.name))
         return 1
+    stamp = time.strftime("%Y-%m-%d")
+    if storage == "pinned":
+        staged = os.path.join(root, ".cache", "tmp", "stage-" + args.name)
+        if os.path.exists(staged):
+            shutil.rmtree(staged)
+        os.makedirs(staged)
+        for rel, full in selected:
+            if os.path.islink(full):
+                continue
+            dest = os.path.join(staged, rel)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            shutil.copyfile(full, dest)
+        tree_hash = compute_tree_hash(staged)
+        shutil.rmtree(staged, ignore_errors=True)
+        shutil.rmtree(cache, ignore_errors=True)
+        return record_entry(root, args, url, patterns, excludes, storage,
+                            tree_hash, stamp, False)
     os.makedirs(projdir)
     for rel, full in selected:
         if os.path.islink(full):
@@ -623,7 +674,6 @@ def cmd_add(args):
     notice_flag = bool(notice_src)
     if notice_src is not None:
         shutil.copyfile(notice_src, os.path.join(projdir, os.path.basename(notice_src)))
-    stamp = time.strftime("%Y-%m-%d")
     with open(os.path.join(projdir, "UPSTREAM.md"), "w", encoding="utf-8") as fh:
         fh.write("# Upstream provenance\n\n")
         fh.write("url: %s\n" % url)
@@ -636,34 +686,8 @@ def cmd_add(args):
         fh.write("modifications: unmodified subset copy\n")
     tree_hash = compute_tree_hash(projdir)
     shutil.rmtree(cache, ignore_errors=True)
-    entry = ("\n[[project]]\n"
-             "name = \"%s\"\n"
-             "language = \"%s\"\n"
-             "url = \"%s\"\n"
-             "rev = \"%s\"\n"
-             "spdx = \"%s\"\n"
-             "storage = \"%s\"\n"
-             "paths = [%s]\n" % (
-                 args.name, args.lang, url, args.rev, args.spdx, storage,
-                 ", ".join('"%s"' % p for p in patterns)))
-    if excludes:
-        entry += "exclude = [%s]\n" % ", ".join('"%s"' % p for p in excludes)
-    entry += ("tree_hash = \"%s\"\n"
-              "added_by = \"%s\"\n"
-              "added_on = \"%s\"\n"
-              "reason = \"%s\"\n"
-              "notice_present_upstream = %s\n" % (
-                  tree_hash, args.added_by or "unknown", stamp, args.reason,
-                  "true" if notice_flag else "false"))
-    manifest_path = find_manifest(root, args.manifest)
-    with open(manifest_path, "a", encoding="utf-8") as fh:
-        fh.write(entry)
-    verify_args = argparse.Namespace(root=root, manifest=args.manifest, reuse=False)
-    if cmd_verify(verify_args) != 0:
-        fail("added tree does not pass verify; entry kept for inspection")
-        return 1
-    sys.stdout.write("PASS add: projects/%s/%s\n" % (args.lang, args.name))
-    return 0
+    return record_entry(root, args, url, patterns, excludes, storage,
+                        tree_hash, stamp, notice_flag)
 
 
 def cached_pinned_dir(root, language, name):
