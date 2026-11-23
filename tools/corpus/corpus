@@ -92,6 +92,18 @@ COPYLEFT_PHRASES = (
     "copyleft",
 )
 
+NON_ALLOWLIST_HEADER_PHRASES = (
+    ("bsd 3-clause", "BSD-3-Clause"),
+    ("bsd-3-clause", "BSD-3-Clause"),
+    ("bsd 2-clause", "BSD-2-Clause"),
+    ("bsd-2-clause", "BSD-2-Clause"),
+    ("redistribution and use in source and binary forms", "BSD"),
+    ("licensed under the bsd", "BSD"),
+    ("bsd license", "BSD"),
+    ("isc license", "ISC"),
+    ("and/or distribute this software for any purpose", "ISC"),
+)
+
 SECRET_PATTERNS = (
     ("aws-access-key", re.compile(rb"\bAKIA[0-9A-Z]{16}\b")),
     ("github-token", re.compile(rb"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}\b")),
@@ -103,8 +115,11 @@ SECRET_PATTERNS = (
 )
 
 SPDX_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+-]*")
-SPDX_HEADER_RE = re.compile(r"SPDX-License-Identifier\s*:\s*([^\s*]+(?:\s+(?:OR|AND|WITH)\s+[^\s*]+)*)",
-                             re.IGNORECASE)
+DOCREF_RE = re.compile(r"DocumentRef-[A-Za-z0-9.-]+:LicenseRef-[A-Za-z0-9.-]+")
+SPDX_HEADER_RE = re.compile(r"SPDX-License-Identifier\s*:[ \t]*"
+                             r"([A-Za-z0-9.+:() \t-]+?)[ \t]*"
+                             r"(?:[^A-Za-z0-9.+:()\s-].*)?$",
+                             re.IGNORECASE | re.MULTILINE)
 
 
 def fail(msg):
@@ -142,27 +157,106 @@ def manifest_mode(data):
 
 
 def spdx_ids(expr):
-    cleaned = re.sub(r"\bWITH\s+[A-Za-z0-9.+-]+", " ", expr)
-    ids = set()
+    ids = set(DOCREF_RE.findall(expr))
+    cleaned = DOCREF_RE.sub(" ", expr)
+    cleaned = re.sub(r"\bWITH\s+[A-Za-z0-9.+-]+", " ", cleaned)
     for token in SPDX_ID_RE.findall(cleaned):
-        if token in ("OR", "AND"):
+        if token in ("OR", "AND", "WITH"):
             continue
         ids.add(token)
     return ids
 
+def _spdx_tokenize(expr):
+    tokens = []
+    pos = 0
+    while pos < len(expr):
+        char = expr[pos]
+        if char.isspace():
+            pos += 1
+        elif char == "(" or char == ")":
+            tokens.append(char)
+            pos += 1
+        else:
+            match = DOCREF_RE.match(expr, pos)
+            if match is None:
+                match = SPDX_ID_RE.match(expr, pos)
+            if match is None:
+                return None
+            tokens.append(match.group(0))
+            pos = match.end()
+    return tokens
+
+
+def _spdx_parse(tokens):
+    pos = 0
+
+    def parse_or():
+        nonlocal pos
+        left = parse_and()
+        if left is None:
+            return None
+        while pos < len(tokens) and tokens[pos] == "OR":
+            pos += 1
+            right = parse_and()
+            if right is None:
+                return None
+            left = (left[0] + right[0], left[1] or right[1], left[2] or right[2])
+        return left
+
+    def parse_and():
+        nonlocal pos
+        left = parse_unary()
+        if left is None:
+            return None
+        while pos < len(tokens) and tokens[pos] == "AND":
+            pos += 1
+            right = parse_unary()
+            if right is None:
+                return None
+            left = (left[0] + right[0], True, left[2] or right[2])
+        return left
+
+    def parse_unary():
+        nonlocal pos
+        if pos < len(tokens) and tokens[pos] == "(":
+            pos += 1
+            node = parse_or()
+            if node is None or pos >= len(tokens) or tokens[pos] != ")":
+                return None
+            pos += 1
+            return node
+        if pos < len(tokens) and tokens[pos] not in ("OR", "AND", "WITH", "(", ")"):
+            name = tokens[pos]
+            pos += 1
+            if pos + 1 < len(tokens) and tokens[pos] == "WITH":
+                pos += 1
+                if (tokens[pos] in ("OR", "AND", "WITH", "(", ")")
+                        or ":" in tokens[pos]
+                        or tokens[pos].startswith(("LicenseRef-", "DocumentRef-"))):
+                    return None
+                pos += 1
+                return ([name], False, True)
+            return ([name], False, False)
+        return None
+
+    node = parse_or()
+    if node is None or pos != len(tokens):
+        return None
+    return node
+
 
 def _spdx_public_ok(expr):
-    core = expr.replace("(", " ").replace(")", " ")
-    parts = core.split()
-    if not parts or len(parts) % 2 == 0:
+    parsed = _spdx_parse(_spdx_tokenize(expr) or [])
+    if parsed is None:
         return False
-    for index, part in enumerate(parts):
-        if index % 2 == 0:
-            if part not in PUBLIC_ALLOWLIST:
-                return False
-        elif part != "OR":
-            return False
-    return True
+    ids, has_and, has_with = parsed
+    if has_and or has_with or not ids:
+        return False
+    return all(item in PUBLIC_ALLOWLIST for item in ids)
+
+
+def _spdx_wellformed(expr):
+    return _spdx_parse(_spdx_tokenize(expr) or []) is not None
 
 
 def public_spdx_ok(expr):
@@ -262,6 +356,13 @@ def has_copyleft_phrase(text):
     lowered = text.lower()
     return any(phrase in lowered for phrase in COPYLEFT_PHRASES)
 
+def non_allowlist_header_license(text):
+    lowered = text.lower()
+    for phrase, label in NON_ALLOWLIST_HEADER_PHRASES:
+        if phrase in lowered:
+            return label
+    return None
+
 
 def scan_secrets(content):
     hits = []
@@ -337,6 +438,16 @@ def check_headers(projdir, language, declared_ids, public, errors, tag):
                               "(MIT, Apache-2.0, OR only)" % (tag, rel, bad_expr))
             elif has_copyleft_phrase(text):
                 errors.append("%s: %s header carries copyleft license text" % (tag, rel))
+            elif not ids and non_allowlist_header_license(text) is not None:
+                errors.append("%s: %s header carries %s license text outside the public "
+                              "allowlist (MIT, Apache-2.0, OR only)" %
+                              (tag, rel, non_allowlist_header_license(text)))
+            else:
+                bad = {i for i in ids if i not in declared_ids}
+                if bad:
+                    errors.append("%s: %s header names %s outside declared spdx" %
+                                  (tag, rel, sorted(bad)[0]))
+                    continue
         else:
             bad = {i for i in ids if i not in declared_ids}
             if bad:
@@ -423,6 +534,8 @@ def verify_project(root, project, mode, errors):
         errors.append("%s: rev must be a 40-hex commit, never a branch or tag" % tag)
     if not isinstance(spdx, str) or not spdx_ids(spdx):
         errors.append("%s: spdx must name at least one SPDX id" % tag)
+    elif not _spdx_wellformed(spdx):
+        errors.append("%s: spdx %r is not a well-formed expression" % (tag, spdx))
     if storage not in ("copied", "pinned"):
         errors.append("%s: storage must be copied or pinned" % tag)
         return 0
@@ -468,6 +581,12 @@ def verify_project(root, project, mode, errors):
     if notice_flag and not notice_present:
         errors.append("%s: notice_present_upstream is true but no NOTICE file is present" % tag)
     total = check_project_files(projdir, language, errors, tag)
+    sources = 0
+    for rel, full in list_project_files(projdir):
+        if extension_ok(language, rel) and os.path.isfile(full) and not os.path.islink(full):
+            sources += 1
+    if sources == 0:
+        errors.append("%s: copied entry has no source files for %s" % (tag, language))
     if total > MAX_PROJECT_BYTES:
         errors.append("%s: project is %d bytes, above the %d cap" %
                       (tag, total, MAX_PROJECT_BYTES))
@@ -574,14 +693,34 @@ def cmd_verify(args):
 
 
 def _glob_to_regex(pattern):
-    slot = "\x00DS\x00"
-    tmp = pattern.replace("**/", slot)
     out = []
     i = 0
-    while i < len(tmp):
-        char = tmp[i]
-        if char == "*":
-            if i + 1 < len(tmp) and tmp[i + 1] == "*":
+    while i < len(pattern):
+        char = pattern[i]
+        if char == "\\" and i + 1 < len(pattern):
+            out.append(re.escape(pattern[i + 1]))
+            i += 2
+        elif char == "[":
+            end = pattern.find("]", i + 1)
+            if end == -1:
+                out.append(re.escape(char))
+                i += 1
+            else:
+                body = pattern[i + 1:end]
+                if body.startswith("!"):
+                    body = "^" + body[1:]
+                elif body.startswith("^"):
+                    body = "\\^" + body[1:]
+                if not body or body == "^":
+                    out.append(re.escape(pattern[i:end + 1]))
+                else:
+                    out.append("(?!/)[" + body.replace("\\", "\\\\") + "]")
+                i = end + 1
+        elif char == "*":
+            if pattern.startswith("**/", i):
+                out.append("(?:.*/)?")
+                i += 3
+            elif i + 1 < len(pattern) and pattern[i + 1] == "*":
                 out.append(".*")
                 i += 2
             else:
@@ -590,17 +729,29 @@ def _glob_to_regex(pattern):
         elif char == "?":
             out.append("[^/]")
             i += 1
-        elif tmp.startswith(slot, i):
-            out.append("(?:.*/)?")
-            i += len(slot)
         else:
             out.append(re.escape(char))
             i += 1
     return "".join(out)
 
 
+def check_subset(patterns):
+    for pattern in patterns:
+        while pattern.startswith("./"):
+            pattern = pattern[2:]
+        try:
+            re.compile(_glob_to_regex(pattern))
+        except re.error as exc:
+            return "bad path pattern %r: %s" % (pattern, exc)
+    return None
+
+
 def match_subset(relpath, patterns):
     for pattern in patterns:
+        while pattern.startswith("./"):
+            pattern = pattern[2:]
+        if relpath == pattern:
+            return True
         if re.fullmatch(_glob_to_regex(pattern), relpath):
             return True
     return False
@@ -682,7 +833,7 @@ def check_upstream_nesting(cache, selected, root_texts, errors, tag):
         scopes = rel.split("/")[:-1]
         for depth in range(1, len(scopes) + 1):
             scope = "/".join(scopes[:depth])
-            for base in LICENSE_NAMES:
+            for base in LICENSE_NAMES + NOTICE_NAMES:
                 candidate = os.path.join(cache, scope, base)
                 if not os.path.isfile(candidate) or os.path.islink(candidate):
                     continue
@@ -710,6 +861,16 @@ def cmd_add(args):
     if not NAME_RE.match(args.name):
         fail("bad name; use [a-z0-9-]")
         return 1
+    if not _spdx_wellformed(args.spdx):
+        fail("spdx %r is not a well-formed expression" % args.spdx)
+        return 1
+    existing = set()
+    for entry in data.get("project", []):
+        if isinstance(entry, dict) and isinstance(entry.get("name"), str):
+            existing.add(entry["name"])
+    if args.name in existing:
+        fail("project %s already exists in the manifest" % args.name)
+        return 1
     if args.lang not in EXTENSIONS:
         fail("unknown language %s" % args.lang)
         return 1
@@ -732,6 +893,12 @@ def cmd_add(args):
         return 1
     scratch_parent = os.path.join(root, ".cache", "tmp")
     os.makedirs(scratch_parent, exist_ok=True)
+    patterns = [p.strip() for p in args.paths.split(",") if p.strip()]
+    excludes = [p.strip() for p in (args.exclude or "").split(",") if p.strip()]
+    problem = check_subset(patterns + excludes)
+    if problem is not None:
+        fail(problem)
+        return 1
     cache = tempfile.mkdtemp(prefix="add-" + args.name + "-", dir=scratch_parent)
     proc = subprocess.run(["git", "clone", "--quiet", url, cache],
                           capture_output=True, text=True, timeout=600)
@@ -745,8 +912,14 @@ def cmd_add(args):
         shutil.rmtree(cache, ignore_errors=True)
         fail("rev %s not found upstream" % args.rev)
         return 1
-    patterns = [p.strip() for p in args.paths.split(",") if p.strip()]
-    excludes = [p.strip() for p in (args.exclude or "").split(",") if p.strip()]
+    if storage == "copied":
+        for base in LICENSE_NAMES + NOTICE_NAMES:
+            candidate = os.path.join(cache, base)
+            if os.path.islink(candidate):
+                shutil.rmtree(cache, ignore_errors=True)
+                fail("upstream %s is a symlink; refusing to copy linked license text"
+                     % base)
+                return 1
     selected = []
     for dirpath, dirnames, filenames in os.walk(cache):
         if ".git" in dirnames:
@@ -768,10 +941,8 @@ def cmd_add(args):
         return 1
     stamp = time.strftime("%Y-%m-%d")
     if storage == "pinned":
-        staged = os.path.join(root, ".cache", "tmp", "stage-" + args.name)
-        if os.path.exists(staged):
-            shutil.rmtree(staged)
-        os.makedirs(staged)
+        staged = tempfile.mkdtemp(prefix="stage-" + args.name + "-",
+                                  dir=scratch_parent)
         for rel, full in selected:
             if os.path.islink(full):
                 continue
@@ -784,6 +955,7 @@ def cmd_add(args):
         return record_entry(root, args, url, patterns, excludes, storage,
                             tree_hash, stamp, False)
     os.makedirs(projdir)
+    copied = []
     for rel, full in selected:
         if os.path.islink(full):
             continue
@@ -797,18 +969,24 @@ def cmd_add(args):
         dest = os.path.join(projdir, rel)
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         shutil.copyfile(full, dest)
-    license_src = None
+        copied.append((rel, full))
+    if not copied:
+        shutil.rmtree(cache, ignore_errors=True)
+        shutil.rmtree(projdir, ignore_errors=True)
+        fail("path subset copied no source files for %s; refusing empty entry" %
+             args.lang)
+        return 1
+    license_srcs = []
     for base in LICENSE_NAMES:
         candidate = os.path.join(cache, base)
         if os.path.isfile(candidate):
-            license_src = candidate
-            break
-    if license_src is None and storage == "copied":
+            license_srcs.append(candidate)
+    if not license_srcs and storage == "copied":
         shutil.rmtree(cache, ignore_errors=True)
         shutil.rmtree(projdir, ignore_errors=True)
         fail("upstream has no LICENSE or COPYING file")
         return 1
-    if license_src is not None:
+    for license_src in license_srcs:
         shutil.copyfile(license_src, os.path.join(projdir, os.path.basename(license_src)))
     notice_src = None
     for base in NOTICE_NAMES:
@@ -820,12 +998,12 @@ def cmd_add(args):
     if notice_src is not None:
         shutil.copyfile(notice_src, os.path.join(projdir, os.path.basename(notice_src)))
     root_texts = []
-    for path in [license_src, notice_src]:
+    for path in license_srcs + [notice_src]:
         if path is not None:
             with open(path, "rb") as fh:
                 root_texts.append(fh.read())
     nesting_errors = []
-    check_upstream_nesting(cache, selected, root_texts, nesting_errors,
+    check_upstream_nesting(cache, copied, root_texts, nesting_errors,
                            "project %s" % args.name)
     if nesting_errors:
         shutil.rmtree(cache, ignore_errors=True)
@@ -893,9 +1071,18 @@ def cmd_fetch(args):
             sys.stdout.write("PASS fetch --check %s\n" % tag)
         else:
             declared = spdx_ids(project.get("spdx", ""))
+            custom = sorted(item for item in declared
+                            if item.lower().startswith(("licenseref-", "documentref-"))
+                            or ":" in item)
             if ("NOASSERTION" in declared or not declared) and not args.allow_unlicensed:
                 fail("%s: pinned entry has no license; refusing (owner decision c default); "
                      "re-run with --allow-unlicensed for a logged local copy" % tag)
+                failures += 1
+                continue
+            if custom and not args.allow_unlicensed and not args.check:
+                fail("%s: pinned entry declares custom license %s; refusing without "
+                     "explicit consent; re-run with --allow-unlicensed for a logged "
+                     "local copy" % (tag, custom[0]))
                 failures += 1
                 continue
             dest = cached_pinned_dir(root, language, name)
@@ -914,13 +1101,30 @@ def cmd_fetch(args):
                     continue
                 sys.stdout.write("PASS fetch --check %s\n" % tag)
                 continue
-            tmp = os.path.join(root, ".cache", "tmp", "fetch-" + name)
-            if os.path.exists(tmp):
-                shutil.rmtree(tmp)
-            os.makedirs(os.path.dirname(tmp), exist_ok=True)
+            stored = project.get("paths", [])
+            stored_excludes = project.get("exclude", [])
+            if (not isinstance(stored, list) or not stored
+                    or not all(isinstance(item, str) for item in stored)):
+                fail("%s: pinned entry needs a non-empty paths subset" % tag)
+                failures += 1
+                continue
+            if (not isinstance(stored_excludes, list)
+                    or not all(isinstance(item, str) for item in stored_excludes)):
+                fail("%s: pinned entry needs exclude as a list of strings" % tag)
+                failures += 1
+                continue
+            problem = check_subset(stored + stored_excludes)
+            if problem is not None:
+                fail("%s: %s" % (tag, problem))
+                failures += 1
+                continue
+            scratch_parent = os.path.join(root, ".cache", "tmp")
+            os.makedirs(scratch_parent, exist_ok=True)
+            tmp = tempfile.mkdtemp(prefix="fetch-" + name + "-", dir=scratch_parent)
             proc = subprocess.run(["git", "clone", "--quiet", project["url"], tmp],
                                   capture_output=True, text=True, timeout=600)
             if proc.returncode != 0:
+                shutil.rmtree(tmp, ignore_errors=True)
                 fail("%s: git clone failed" % tag)
                 failures += 1
                 continue
@@ -982,6 +1186,14 @@ def cmd_measure(args):
         return 1
     projects = [p for p in data.get("project", [])
                 if p.get("language") == language and p.get("storage") == "copied"]
+    missing = [p.get("name", "?") for p in projects
+               if not os.path.isdir(os.path.join(root, "projects", language,
+                                                 p.get("name", "")))]
+    if missing:
+        for name in sorted(missing):
+            fail("project %s: copied entry is missing projects/%s/%s" %
+                 (name, language, name))
+        return 1
     binary = find_sloplint(args.sloplint)
     if binary is None:
         fail("sloplint binary not found (PATH or CORPUS_SLOPLINT); refusing")
@@ -1013,8 +1225,6 @@ def cmd_measure(args):
     wall_ms = 0
     for project in sorted(projects, key=lambda p: p.get("name", "")):
         projdir = os.path.join(root, "projects", language, project["name"])
-        if not os.path.isdir(projdir):
-            continue
         start = time.monotonic()
         try:
             proc = subprocess.run(
@@ -1114,6 +1324,17 @@ def cmd_measure(args):
     return 0
 
 
+def seed_name(pname, rel):
+    pathhash = hashlib.sha256(("%s/%s" % (pname, rel)).encode(
+        "utf-8", "surrogateescape")).hexdigest()[:16]
+    stem = "%s__%s" % (pname, os.path.basename(rel))
+    suffix = "__" + pathhash
+    if len((stem + suffix).encode("utf-8", "surrogateescape")) > 200:
+        budget = 200 - len(suffix.encode("utf-8", "surrogateescape"))
+        stem = stem.encode("utf-8", "surrogateescape")[:budget].decode("utf-8", "ignore")
+    return "%s__%s" % (stem, pathhash)
+
+
 def cmd_seeds(args):
     root = os.path.abspath(args.root)
     data, problems = load_manifest(root, args.manifest)
@@ -1135,6 +1356,11 @@ def cmd_seeds(args):
                 priority = set(json.load(fh).get("parse_error_files", []))
         except Exception:
             pass
+    def order(item):
+        rel, full, pname, size, digest = item
+        short = "%s/%s" % (pname, rel)
+        return (0 if short in priority or rel in priority else 1, size, short)
+
     candidates = []
     for project in sorted(projects, key=lambda p: p.get("name", "")):
         projdir = os.path.join(root, "projects", language, project["name"])
@@ -1149,6 +1375,7 @@ def cmd_seeds(args):
             with open(full, "rb") as fh:
                 digest = hashlib.sha256(fh.read()).hexdigest()
             candidates.append((rel, full, project["name"], size, digest))
+    candidates.sort(key=order)
     seen = set()
     unique = []
     for item in candidates:
@@ -1156,27 +1383,54 @@ def cmd_seeds(args):
             continue
         seen.add(item[4])
         unique.append(item)
-
-    def order(item):
-        rel, full, pname, size, digest = item
-        short = "%s/%s" % (pname, rel)
-        return (0 if short in priority or rel in priority else 1, size, short)
-
-    unique.sort(key=order)
     out = os.path.abspath(args.out)
     os.makedirs(out, exist_ok=True)
     used = 0
     written = 0
+    planned = {}
     for rel, full, pname, size, digest in unique:
         if used + size > args.max_bytes:
             continue
-        flat = "%s__%s__%s" % (pname, rel.replace("/", "__"), digest[:12])
+        planned[seed_name(pname, rel)] = (full, size)
+        used += size
+    ledger = out + ".corpus-seeds." + language + ".json"
+    previous = []
+    if os.path.isfile(ledger):
+        try:
+            with open(ledger, encoding="utf-8") as fh:
+                previous = json.load(fh)
+        except Exception:
+            previous = []
+    else:
+        legacy = os.path.join(out, ".corpus-seeds." + language + ".json")
+        if os.path.isfile(legacy):
+            try:
+                with open(legacy, encoding="utf-8") as fh:
+                    previous = json.load(fh)
+            except Exception:
+                previous = []
+    if isinstance(previous, list):
+        for stale in previous:
+            if stale in planned or os.path.basename(stale) != stale:
+                continue
+            victim = os.path.join(out, stale)
+            if os.path.isfile(victim) and not os.path.islink(victim):
+                os.remove(victim)
+    for flat in sorted(planned):
+        full, size = planned[flat]
         with open(full, "rb") as src:
             content = src.read()
         with open(os.path.join(out, flat), "wb") as dst:
             dst.write(content)
-        used += size
         written += 1
+    for name in sorted(os.listdir(out)):
+        if name.startswith(".corpus-seeds.") and name.endswith(".json"):
+            victim = os.path.join(out, name)
+            if os.path.isfile(victim) and not os.path.islink(victim):
+                os.remove(victim)
+    with open(ledger, "w", encoding="utf-8") as fh:
+        json.dump(sorted(planned), fh)
+        fh.write("\n")
     sys.stdout.write("PASS seeds %s: %d files, %d bytes -> %s\n" % (language, written, used, out))
     return 0
 
@@ -1197,6 +1451,7 @@ def cmd_stats(args):
         storage = project.get("storage", "")
         if storage == "copied":
             row["copied"] += 1
+            projdir = os.path.join(root, "projects", language, project.get("name", ""))
             for rel, full in list_project_files(projdir):
                 if extension_ok(language, rel) and os.path.isfile(full) and not os.path.islink(full):
                     row["files"] += 1
