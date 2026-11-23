@@ -183,6 +183,15 @@ class TestSpdx(unittest.TestCase):
                      "MIT WITH", "MIT AND", "(MIT OR Apache-2.0"):
             self.assertFalse(corpus._spdx_wellformed(expr), expr)
 
+    def test_misplaced_parentheses_rejected(self):
+        for expr in (")MIT(", "(GPL-3.0-only OR) MIT", "MIT (Apache-2.0)",
+                     "((MIT OR Apache-2.0)", "(MIT OR Apache-2.0))", "()",
+                     "MIT WITH (LLVM-exception)"):
+            self.assertFalse(corpus._spdx_wellformed(expr), expr)
+        for expr in ("(MIT)", "((MIT))", "MIT AND (Apache-2.0 OR MIT)",
+                     "(Apache-2.0 WITH LLVM-exception) OR MIT"):
+            self.assertTrue(corpus._spdx_wellformed(expr), expr)
+
     def test_malformed_spdx_refused_in_add(self):
         root = make_repo(mode="private")
         self.addCleanup(shutil.rmtree, root, True)

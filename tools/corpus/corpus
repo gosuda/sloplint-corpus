@@ -153,40 +153,95 @@ def spdx_ids(expr):
         ids.add(token)
     return ids
 
+def _spdx_tokenize(expr):
+    tokens = []
+    pos = 0
+    while pos < len(expr):
+        char = expr[pos]
+        if char.isspace():
+            pos += 1
+        elif char == "(" or char == ")":
+            tokens.append(char)
+            pos += 1
+        else:
+            match = DOCREF_RE.match(expr, pos)
+            if match is None:
+                match = SPDX_ID_RE.match(expr, pos)
+            if match is None:
+                return None
+            tokens.append(match.group(0))
+            pos = match.end()
+    return tokens
+
+
+def _spdx_parse(tokens):
+    pos = 0
+
+    def parse_or():
+        nonlocal pos
+        left = parse_and()
+        if left is None:
+            return None
+        while pos < len(tokens) and tokens[pos] == "OR":
+            pos += 1
+            right = parse_and()
+            if right is None:
+                return None
+            left = (left[0] + right[0], left[1] or right[1], left[2] or right[2])
+        return left
+
+    def parse_and():
+        nonlocal pos
+        left = parse_unary()
+        if left is None:
+            return None
+        while pos < len(tokens) and tokens[pos] == "AND":
+            pos += 1
+            right = parse_unary()
+            if right is None:
+                return None
+            left = (left[0] + right[0], True, left[2] or right[2])
+        return left
+
+    def parse_unary():
+        nonlocal pos
+        if pos < len(tokens) and tokens[pos] == "(":
+            pos += 1
+            node = parse_or()
+            if node is None or pos >= len(tokens) or tokens[pos] != ")":
+                return None
+            pos += 1
+            return node
+        if pos < len(tokens) and tokens[pos] not in ("OR", "AND", "WITH", "(", ")"):
+            name = tokens[pos]
+            pos += 1
+            if pos + 1 < len(tokens) and tokens[pos] == "WITH":
+                pos += 1
+                if tokens[pos] in ("OR", "AND", "WITH", "(", ")"):
+                    return None
+                pos += 1
+                return ([name], False, True)
+            return ([name], False, False)
+        return None
+
+    node = parse_or()
+    if node is None or pos != len(tokens):
+        return None
+    return node
+
+
 def _spdx_public_ok(expr):
-    core = DOCREF_RE.sub(" LicenseRefX ", expr)
-    core = core.replace("(", " ").replace(")", " ")
-    parts = core.split()
-    if not parts or len(parts) % 2 == 0:
+    parsed = _spdx_parse(_spdx_tokenize(expr) or [])
+    if parsed is None:
         return False
-    for index, part in enumerate(parts):
-        if index % 2 == 0:
-            if part not in PUBLIC_ALLOWLIST:
-                return False
-        elif part != "OR":
-            return False
-    return True
+    ids, has_and, has_with = parsed
+    if has_and or has_with or not ids:
+        return False
+    return all(item in PUBLIC_ALLOWLIST for item in ids)
 
 
 def _spdx_wellformed(expr):
-    core = DOCREF_RE.sub(" LicenseRefX ", expr)
-    if core.count("(") != core.count(")"):
-        return False
-    core = core.replace("(", " ").replace(")", " ")
-    parts = core.split()
-    if not parts:
-        return False
-    expect_id = True
-    for part in parts:
-        if expect_id:
-            if part in ("OR", "AND", "WITH") or SPDX_ID_RE.fullmatch(part) is None:
-                return False
-            expect_id = False
-        elif part not in ("OR", "AND", "WITH"):
-            return False
-        else:
-            expect_id = True
-    return not expect_id
+    return _spdx_parse(_spdx_tokenize(expr) or []) is not None
 
 
 def public_spdx_ok(expr):
