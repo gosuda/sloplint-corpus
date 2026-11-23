@@ -1,0 +1,417 @@
+/*
+ * Copyright (C) from 2022 The Play Framework Contributors <https://github.com/playframework>, 2011-2021 Lightbend Inc. <https://www.lightbend.com>
+ */
+
+package play.sbt
+
+import scala.jdk.CollectionConverters.*
+
+import sbt.*
+import sbt.internal.inc.Analysis
+import sbt.Keys.*
+import sbt.Path.*
+
+import com.typesafe.sbt.packager.archetypes.JavaAppPackaging
+import com.typesafe.sbt.packager.universal.UniversalPlugin.autoImport.*
+import com.typesafe.sbt.packager.Keys.*
+import com.typesafe.sbt.web.SbtWeb.autoImport.*
+import com.typesafe.sbt.web.SbtWeb.autoImport.WebKeys.*
+import play.core.PlayVersion
+import play.dev.filewatch.FileWatchService
+import play.sbt.routes.RoutesCompiler.autoImport.*
+import play.sbt.routes.RoutesKeys
+import play.sbt.run.toLoggerProxy
+import play.sbt.run.PlayRun
+import play.sbt.PlayImport.PlayKeys.*
+import play.sbt.PlayInternalKeys.*
+import play.sbt.PluginCompat.*
+import play.twirl.sbt.Import.TwirlKeys.*
+import play.TemplateImports
+import xsbti.FileConverter
+
+object PlaySettings {
+  lazy val minimalJavaSettings = Seq[Setting[?]](
+    templateImports ++= TemplateImports.minimalJavaTemplateImports.asScala.toSeq,
+    routesImport ++= Seq("play.libs.F")
+  )
+
+  lazy val defaultJavaSettings = Seq[Setting[?]](
+    templateImports ++= TemplateImports.defaultJavaTemplateImports.asScala.toSeq,
+    routesImport ++= Seq("play.libs.F")
+  )
+
+  lazy val defaultScalaSettings = Seq[Setting[?]](
+    templateImports ++= TemplateImports.defaultScalaTemplateImports.asScala.toSeq
+  )
+
+  lazy val serviceGlobalSettings: Seq[Setting[?]] = Seq(
+  )
+
+  // Settings for a Play service (not a web project)
+  lazy val serviceSettings: Seq[Setting[?]] = Def.settings(
+    onLoadMessage := {
+      val javaVersion            = sys.props("java.specification.version")
+      val unsupportedJavaWarning =
+        s"Java version is ${sys.props("java.specification.version")}. Play supports only Java 17, 21 and 25."
+      val exclamationMarksWarning = "!".repeat(unsupportedJavaWarning.length + 4)
+      """|  __              __
+         |  \ \     ____   / /____ _ __  __
+         |   \ \   / __ \ / // __ `// / / /
+         |   / /  / /_/ // // /_/ // /_/ /
+         |  /_/  / .___//_/ \__,_/ \__, /
+         |      /_/               /____/
+         |""".stripMargin.linesIterator.map(Colors.green).mkString("\n") +
+        s"""|
+            |
+            |Version ${play.core.PlayVersion.current} running Java ${System.getProperty("java.version")}
+            |
+            |${Colors.bold(
+             "Play is run entirely by the community. Please consider contributing and/or donating:"
+           )}
+            |https://www.playframework.com/sponsors
+            |
+            |""".stripMargin +
+        (if (javaVersion != "17" && javaVersion != "21" && javaVersion != "25")
+           s"""${Colors.red(exclamationMarksWarning)}
+              |  ${Colors.red(unsupportedJavaWarning)}
+              |${Colors.red(exclamationMarksWarning)}
+              |
+              |""".stripMargin
+         else "")
+    },
+    scalacOptions ++= Seq("-deprecation", "-unchecked", "-encoding", "utf8"),
+    Compile / javacOptions ++= Seq("-encoding", "utf8", "-g"),
+    playPlugin                   := false,
+    generateAssetsJar            := true,
+    externalizeResources         := true,
+    externalizeResourcesExcludes := Nil,
+    includeDocumentationInBinary := true,
+    Compile / doc / javacOptions := List("-encoding", "utf8"),
+    libraryDependencies += {
+      if (playPlugin.value)
+        "org.playframework" %% "play" % PlayVersion.current % "provided"
+      else
+        "org.playframework" %% "play-server" % PlayVersion.current
+    },
+    libraryDependencies += "org.playframework" %% "play-test" % PlayVersion.current % "test",
+    Test / parallelExecution                   := false,
+    Test / fork                                := true,
+    Test / testOptions += Tests.Argument(TestFrameworks.Specs2, "sequential", "true", "junitxml", "console"),
+    Test / testOptions += Tests.Argument(TestFrameworks.JUnit, "--ignore-runners=org.specs2.runner.JUnitRunner"),
+    // Adds app directory's source files to continuous hot reloading
+    watchSources ++= uncached {
+      ((Compile / sourceDirectory).value ** "*" --- (Assets / sourceDirectory).value ** "*").get()
+    },
+    commands ++= {
+      import PlayCommands.*
+      import PlayRun.*
+      Seq(playStartCommand, playRunProdCommand, playTestProdCommand, playStopProdCommand, h2Command)
+    },
+    // Assets classloader (used by PlayRun.playDefaultRunTask)
+    PlayInternalKeys.playAllAssets := uncached { Seq.empty },
+    PlayRun.playAssetsClassLoaderSetting,
+    PlayRun.playWatchSettings,
+    // THE `in Compile` IS IMPORTANT!
+    Compile / Keys.run             := PlayRun.playDefaultRunTask.evaluated,
+    Compile / Keys.run / mainClass := Some("play.core.server.DevServerStart"),
+    Compile / Keys.bgRun           := PlayRun.playDefaultBgRunTask.evaluated,
+    PlayInternalKeys.playStop      := uncached {
+      playInteractionMode.value match {
+        case x: PlayNonBlockingInteractionMode => x.stop()
+        case _                                 => sys.error("Play interaction mode must be non blocking to stop it")
+      }
+    },
+    shellPrompt := PlayCommands.playPrompt,
+    // all dependencies from outside the project (all dependency jars)
+    playDependencyClasspath := uncached((Runtime / externalDependencyClasspath).value),
+    // all user classes, in this project and any other subprojects that it depends on
+    playReloaderClasspath := uncached {
+      // Select the classpath dynamically so the unselected strategy does not add
+      // unnecessary product or packaging tasks to the task graph.
+      Def.taskDyn {
+        if (exportJars.value) {
+          Def.task {
+            // Play's reloader needs live classes and resources from the current
+            // project. Dependencies may remain JAR-backed because Play recompiles
+            // them before creating a fresh application classloader.
+            implicit val fc: FileConverter = fileConverter.value
+            val currentProjectDirectories  =
+              ((Compile / productDirectories).value ++
+                (Compile / resourceDirectories).value.filter(_.exists())).distinct
+            val currentProjectArtifact = toNioPath((Compile / packageBin / artifactPath).value).toAbsolutePath
+              .normalize()
+            val currentProjectPaths = (currentProjectDirectories.map(_.toPath) :+ currentProjectArtifact)
+              .map(_.toAbsolutePath.normalize())
+              .toSet
+            val dependencyProducts = (Runtime / internalDependencyClasspath).value.filterNot { entry =>
+              currentProjectPaths(toNioPath(entry.data).toAbsolutePath.normalize())
+            }
+            val currentProjectProducts = currentProjectDirectories.map { directory =>
+              Attributed.blank(toFileRef(directory))
+            }
+            currentProjectProducts ++ dependencyProducts
+          }
+        } else {
+          // Preserve the directory-backed classpath used when JAR exports are
+          // disabled, including the sbt 1 default behavior.
+          Def.task {
+            Classpaths
+              .concatDistinct(Runtime / exportedProducts, Runtime / internalDependencyClasspath)
+              .value
+          }
+        }
+      }.value
+    },
+    // filter out asset directories from the classpath (supports sbt-web 1.0 and 1.1)
+    playReloaderClasspath ~= { _.filter(_.get(toKey(WebKeys.webModulesLib)).isEmpty) },
+    playCommonClassloader := uncached { PlayCommands.playCommonClassloaderTask.value },
+    playCompileEverything := uncached { PlayCommands.playCompileEverythingTask.value.asInstanceOf[Seq[Analysis]] },
+    playReload            := uncached { PlayCommands.playReloadTask.value },
+    ivyLoggingLevel       := UpdateLogging.DownloadOnly,
+    playMonitoredFiles    := uncached { PlayCommands.playMonitoredFilesTask.value },
+    fileWatchService      := {
+      FileWatchService.detect(pollInterval.value.toMillis.toInt, sLog.value)
+    },
+    playDefaultPort    := 9000,
+    playDefaultAddress := "0.0.0.0",
+    // Default hooks
+    playRunHooks        := uncached { Nil },
+    playInteractionMode := PlayConsoleInteractionMode,
+    // Settings
+    devSettings := Nil,
+    // Native packaging
+    Compile / mainClass := Some("play.core.server.ProdServerStart"),
+    // Support for externalising resources
+    Universal / mappings ++= {
+      val resourceMappings = (Compile / playExternalizedResources).value
+      if (externalizeResources.value) {
+        resourceMappings.map {
+          case (resource, path) => resource -> ("conf/" + path)
+        }
+      } else Nil
+    },
+    scriptClasspath := {
+      val scriptClasspathValue = scriptClasspath.value
+      if (externalizeResources.value) {
+        "../conf/" +: scriptClasspathValue
+      } else scriptClasspathValue
+    },
+    // taskDyn ensures we only build the sans externalised jar if we need to
+    scriptClasspathOrdering := Def.taskDyn {
+      val oldValue = scriptClasspathOrdering.value
+      if (externalizeResources.value) {
+        Def.task {
+          // Filter out the regular jar
+          val jar                 = (Runtime / packageBin).value
+          val jarSansExternalized = (Runtime / playJarSansExternalized).value
+          oldValue.map {
+            case (packageBinJar, _) if jar == packageBinJar =>
+              val id      = projectID.value
+              val art     = (playJarSansExternalized / (Compile / artifact)).value
+              val jarName =
+                JavaAppPackaging.makeJarName(id.organization, id.name, id.revision, art.name, art.classifier)
+              jarSansExternalized -> ("lib/" + jarName)
+            case other => other
+          }
+        }
+      } else {
+        Def.task(oldValue)
+      }
+    }.value,
+    Universal / mappings ++= Def.taskDyn {
+      implicit val fc: FileConverter = fileConverter.value
+      // the documentation will only be included if includeDocumentation is true (see: https://www.scala-sbt.org/1.x/docs/Tasks.html#Dynamic+Computations+with)
+      if (includeDocumentationInBinary.value) {
+        Def.task {
+          val docDirectory    = (Compile / doc).value
+          val docDirectoryLen = docDirectory.getCanonicalPath.length
+          val pathFinder      = docDirectory ** "*"
+          pathFinder.get().map { (docFile: File) =>
+            toFileRef(docFile) -> ("share/doc/api/" + docFile.getCanonicalPath.substring(docDirectoryLen))
+          }
+        }
+      } else {
+        Def.task {
+          Seq[(FileRef, String)]()
+        }
+      }
+    }.value,
+    Universal / mappings ++= {
+      val pathFinder                 = baseDirectory.value * "README*"
+      implicit val fc: FileConverter = fileConverter.value
+      pathFinder.get().map { (readmeFile: File) => toFileRef(readmeFile) -> readmeFile.getName }
+    },
+    // Adds the Play application directory to the command line args passed to Play
+    bashScriptExtraDefines += "addJava \"-Duser.dir=$(realpath \"$(cd \"${app_home}/..\"; pwd -P)\"  $(is_cygwin && echo \"fix\"))\"\n",
+    generateSecret := ApplicationSecretGenerator.generateSecretTask.value,
+    updateSecret   := uncached { ApplicationSecretGenerator.updateSecretTask.value },
+    // by default, compile any routes files in the root named "routes" or "*.routes"
+    Compile / RoutesKeys.routes / sources ++= {
+      val dirs = (Compile / unmanagedResourceDirectories).value
+      (dirs * "routes").get() ++ (dirs * "*.routes").get()
+    },
+    inConfig(Compile)(externalizedSettings),
+    // Avoid duplicated asset files in dist packages, see https://github.com/playframework/playframework/issues/5765
+    Assets / WebKeys.addExportedMappingsToPackageBinMappings     := false,
+    TestAssets / WebKeys.addExportedMappingsToPackageBinMappings := false,
+  )
+
+  /**
+   * All default settings for a Play project with the Full (web) profile and the PlayLayout. Normally these are
+   * enabled by the PlayWeb and PlayService plugin and will be added separately.
+   */
+  @deprecated("Use serviceSettings for a Play app or service, and add webSettings for a web app", "2.7.0")
+  lazy val defaultSettings = serviceSettings ++ webSettings
+
+  lazy val webSettings = Seq[Setting[?]](
+    constructorAnnotations += "@jakarta.inject.Inject()",
+    playMonitoredFiles ++= uncached { (Compile / compileTemplates / sourceDirectories).value },
+    routesImport ++= Seq("controllers.Assets.Asset"),
+    // The default packageOptions get set here (and do set the main class by default which we want to avoid):
+    // https://github.com/sbt/sbt/blob/v1.10.0/main/src/main/scala/sbt/Defaults.scala#L1725-L1740
+    Compile / packageBin / packageOptions := (Compile / packageBin / packageOptions).value.filter {
+      case _: MainClass => false // The jar(s) should not contain a main class
+      case _            => true
+    },
+    // sbt-web
+    Assets / jsFilter         := new PatternFilter("""[^_].*\.js""".r.pattern),
+    WebKeys.stagingDirectory  := WebKeys.stagingDirectory.value / "public",
+    playAssetsWithCompilation := uncached { (Compile / compile).value.asInstanceOf[Analysis] },
+    playAssetsWithCompilation := uncached { playAssetsWithCompilation.dependsOn((Assets / assets).?).value },
+    // Assets for run mode
+    PlayRun.playPrefixAndAssetsSetting,
+    PlayRun.playAllAssetsSetting,
+    assetsPrefix := "public/",
+    // Assets for distribution
+    Assets / WebKeys.packagePrefix := assetsPrefix.value,
+    // The ...-assets.jar should contain the same META-INF/MANIFEST.MF file like the main app jar
+    Assets / packageBin / packageOptions := (Runtime / packageBin / packageOptions).value,
+    playPackageAssets                    := uncached { (Assets / packageBin).value },
+    scriptClasspathOrdering              := Def.taskDyn {
+      val oldValue = scriptClasspathOrdering.value
+      // only create a assets-jar if the task is active
+      // this actually disables calling playPackageAssets, which in turn would call packageBin in Assets
+      // without these calls no assets jar will be created
+      if (generateAssetsJar.value) {
+        Def.task {
+          val (id, art) = (projectID.value, (Assets / packageBin / artifact).value)
+          val jarName   = JavaAppPackaging.makeJarName(id.organization, id.name, id.revision, art.name, Some("assets"))
+          oldValue :+ playPackageAssets.value -> ("lib/" + jarName)
+        }
+      } else {
+        Def.task(oldValue)
+      }
+    }.value,
+    // Assets for testing
+    TestAssets / public := (TestAssets / public).value / assetsPrefix.value,
+    Test / fullClasspath ++= uncached {
+      Def.taskDyn {
+        implicit val fc: FileConverter = fileConverter.value
+        val testAssetsDir              = (TestAssets / assets).value.getParentFile
+        Def.task {
+          if (testAssetsDir.exists()) Seq(Attributed.blank(toFileRef(testAssetsDir))) else Nil
+        }
+      }.value
+    },
+    // With JAR exports, sbt-web can discover a module from both its JAR manifest
+    // and Play's separately exported asset directory.
+    Assets / WebKeys.internalWebModules ~= (_.distinct),
+    TestAssets / WebKeys.internalWebModules ~= (_.distinct),
+  ) ++ exportedAssetsSettings(Compile, Assets) ++ exportedAssetsSettings(Test, TestAssets)
+
+  /**
+   * sbt-web normally exports asset directories with project products. It skips those
+   * directories when exportJars is enabled, but Play intentionally keeps assets out of
+   * the main project JAR and publishes them in a separate assets JAR. Keep exporting
+   * the directories inside the build so dependent projects and tests can use them.
+   * These contributions are uncached because their state markers are evaluated at
+   * runtime and therefore cannot participate in sbt 2's action cache.
+   */
+  private def exportedAssetsSettings(
+      productsConfiguration: Configuration,
+      assetsConfiguration: Configuration
+  ): Seq[Setting[?]] = Def.settings(
+    productsConfiguration / exportedProducts ++= uncached {
+      exportedAssetsForDependencies(assetsConfiguration / exportedAssets).value
+    },
+    productsConfiguration / exportedProductsIfMissing ++= uncached {
+      exportedAssetsForDependencies(assetsConfiguration / exportedAssetsIfMissing).value
+    },
+    productsConfiguration / exportedProductsNoTracking ++= uncached {
+      exportedAssetsForDependencies(assetsConfiguration / exportedAssetsNoTracking).value
+    }
+  )
+
+  /**
+   * Exports an sbt-web asset directory as an additional classpath product when
+   * normal products are exported as JARs. Play keeps assets out of the main
+   * project JAR, so dependent projects still need this directory.
+   *
+   * The state markers suppress asset exports without evaluating the asset task.
+   * Play's marker applies only to the application being reloaded, allowing its
+   * dependencies to keep exporting assets. sbt-web's marker disables all asset
+   * exports while the reloader classpath itself is constructed.
+   */
+  private def exportedAssetsForDependencies(
+      directoryTask: ScopedTaskable[File]
+  ): Def.Initialize[Task[Classpath]] = Def.taskDyn {
+    val currentState   = state.value
+    val jarsExported   = exportJars.value
+    val exportDisabled = currentState
+      .get(playProjectWithDisabledAssetExports)
+      .contains(thisProjectRef.value)
+    if (!jarsExported || exportDisabled || currentState.get(WebKeys.disableExportedProducts).getOrElse(false)) {
+      // Do not evaluate directoryTask: producing the directory can run the asset
+      // pipeline that these state markers are intended to suppress.
+      Def.task(Nil)
+    } else {
+      Def.task {
+        implicit val fc: FileConverter = fileConverter.value
+        val directory                  = directoryTask.toTask.value
+        if (directory.exists()) {
+          Seq(Attributed.blank(toFileRef(directory)).put(toKey(webModulesLib), moduleName.value))
+        } else {
+          Nil
+        }
+      }
+    }
+  }
+
+  /**
+   * Settings for creating a jar that excludes externalized resources
+   */
+  private def externalizedSettings: Seq[Setting[?]] = Def.settings(
+    Defaults.packageTaskSettings(playJarSansExternalized, playJarSansExternalized / mappings),
+    playExternalizedResources := uncached {
+      implicit val fc: FileConverter = fileConverter.value
+      val rdirs                      = unmanagedResourceDirectories.value
+      (unmanagedResources.value --- rdirs --- PathFinder(externalizeResourcesExcludes.value))
+        .pair(relativeTo(rdirs) | flat)
+        .map(mapping => (toFileRef(mapping._1), mapping._2))
+    },
+    playJarSansExternalized / mappings := {
+      implicit val fc: FileConverter = fileConverter.value
+      // packageBin mappings have all the copied resources from the classes directory
+      // so we need to get the copied resources, and map the source files to the destination files,
+      // so we can then exclude the destination files
+      val packageBinMappings = (packageBin / mappings).value
+      val externalized       = playExternalizedResources.value.map(_._1).toSet
+      val copied             = copyResources.value
+      val toExclude          = copied
+        .filter { case (source, _) => externalized(toFileRef(source)) }
+        .flatMap {
+          case (source, dest) =>
+            // sbt 1 package mappings refer to the copied resource, while sbt 2
+            // mappings retain the original source. Exclude either representation.
+            Seq(toFileRef(source), toFileRef(dest))
+        }
+        .toSet
+      packageBinMappings.filterNot {
+        case (file, _) => toExclude(file)
+      }
+    },
+    playJarSansExternalized / artifactClassifier := Option("sans-externalized"),
+    // The ...-sans-externalized.jar should contain the same META-INF/MANIFEST.MF file like the main app jar
+    playJarSansExternalized / packageOptions := (Runtime / packageBin / packageOptions).value,
+  )
+}

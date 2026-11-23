@@ -1,0 +1,908 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:isolate';
+
+import 'package:ansi_styles/ansi_styles.dart';
+import 'package:args/args.dart';
+import 'package:collection/collection.dart';
+import 'package:path/path.dart' as p;
+import 'package:prompts/prompts.dart' as prompts;
+import 'package:pub_semver/pub_semver.dart';
+import 'package:yaml/yaml.dart';
+
+import '../logging.dart';
+import '../workspace.dart';
+import 'environment_variable_key.dart';
+import 'exception.dart';
+import 'io.dart' show dirExists;
+import 'platform.dart';
+import 'process_output_cancel_token.dart';
+
+const globalOptionVerbose = 'verbose';
+const globalOptionQuiet = 'quiet';
+const globalOptionSdkPath = 'sdk-path';
+
+const autoSdkPathOptionValue = 'auto';
+
+const filterOptionScope = 'scope';
+const filterOptionCategory = 'category';
+const filterOptionIgnore = 'ignore';
+const filterOptionDirExists = 'dir-exists';
+const filterOptionFileExists = 'file-exists';
+const filterOptionDiff = 'diff';
+const filterOptionNoPrivate = 'no-private';
+const filterOptionPrivate = 'private';
+const filterOptionPublished = 'published';
+const filterOptionFlutter = 'flutter';
+const filterOptionDependsOn = 'depends-on';
+const filterOptionNoDependsOn = 'no-depends-on';
+const filterOptionIncludeDependents = 'include-dependents';
+const filterOptionIncludeDependencies = 'include-dependencies';
+const filterOptionPostFilter = 'post-filter';
+const filterOptionPostFilters = 'post-filters';
+
+const publishOptionDryRun = 'dry-run';
+const publishOptionNoDryRun = 'no-dry-run';
+const publishOptionGitTagVersion = 'git-tag-version';
+const publishOptionNoGitTagVersion = 'no-git-tag-version';
+const publishOptionYes = 'yes';
+const publishOptionForce = 'force';
+const publishOptionServer = 'server';
+const publishOptionSkipValidation = 'skip-validation';
+
+/// The default command used to invoke Melos itself when a script needs to run
+/// a nested Melos command, such as `melos exec` or `melos run`.
+///
+/// This relies on Melos being available on the `PATH` (i.e. a global
+/// installation). When Melos is run from a local installation (e.g. as a
+/// `dev_dependency`) it is invoked through the Dart SDK instead so that
+/// scripts work without a global installation. See
+/// https://github.com/invertase/melos/issues/511.
+const defaultMelosCommand = ['melos'];
+
+extension Let<T> on T? {
+  R? let<R>(R Function(T value) cb) {
+    if (this == null) {
+      return null;
+    }
+
+    return cb(this as T);
+  }
+}
+
+/// Utility function to write inline multi-line strings with indentation and
+/// without trailing a new line.
+///
+/// ```dart
+/// print(multiLine([
+///  'The quick brown fox jumps over the lazy dog.',
+///  '', // Empty line
+///  'Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod.',
+/// ]));
+/// ```
+String multiLine(List<String> lines) => lines.join('\n');
+
+final melosPackageUri = Uri.parse('package:melos/melos.dart');
+
+final _camelCasedDelimiterRegExp = RegExp(r'[_\s-]+');
+
+extension StringUtils on String {
+  String addStepPrefixEmoji() {
+    return '➡️  Step: $this';
+  }
+
+  String indent(String indent) {
+    final split = this.split('\n');
+
+    final buffer = StringBuffer();
+
+    buffer.writeln(split.first);
+
+    for (var i = 1; i < split.length; i++) {
+      buffer.write(indent);
+      if (i + 1 == split.length) {
+        // last line
+        buffer.write(split[i]);
+      } else {
+        buffer.writeln(split[i]);
+      }
+    }
+
+    return buffer.toString();
+  }
+
+  String withoutTrailing(String trailer) {
+    if (endsWith(trailer)) {
+      return substring(0, length - trailer.length);
+    }
+    return this;
+  }
+
+  String get capitalized {
+    if (isEmpty) {
+      return this;
+    }
+    return '${this[0].toUpperCase()}${substring(1)}';
+  }
+
+  String get camelCased {
+    if (isEmpty) {
+      return this;
+    }
+    var isFirstWord = true;
+    return splitMapJoin(
+      _camelCasedDelimiterRegExp,
+      onMatch: (m) => '',
+      onNonMatch: (n) {
+        if (isFirstWord) {
+          isFirstWord = false;
+          return n;
+        }
+        return n.capitalized;
+      },
+    );
+  }
+}
+
+int get terminalWidth {
+  if (currentPlatform.environment.containsKey(
+    EnvironmentVariableKey.melosTerminalWidth,
+  )) {
+    return int.tryParse(
+          currentPlatform.environment[EnvironmentVariableKey
+              .melosTerminalWidth]!,
+          radix: 10,
+        ) ??
+        80;
+  }
+
+  if (stdout.hasTerminal) {
+    return stdout.terminalColumns;
+  }
+
+  return 80;
+}
+
+// https://regex101.com/r/XlfVPy/1
+final _dartSdkVersionRegexp = RegExp(r'^Dart SDK version: (\S+)');
+
+Version currentDartVersion(String dartTool) {
+  final result = Process.runSync(
+    dartTool,
+    ['--version'],
+    stdoutEncoding: utf8,
+    stderrEncoding: utf8,
+    runInShell: true,
+  );
+
+  if (result.exitCode != 0) {
+    throw Exception(
+      'Failed to get current Dart version:\n${result.stdout}\n${result.stderr}',
+    );
+  }
+
+  // Older Dart SDK versions output to stderr instead of stdout.
+  final stdout = result.stdout as String;
+  final stderr = result.stderr as String;
+  final versionOutput = stdout.trim().isEmpty ? stderr : stdout;
+
+  final versionString = _dartSdkVersionRegexp
+      .matchAsPrefix(versionOutput)
+      ?.group(1);
+  if (versionString == null) {
+    throw Exception('Unable to parse Dart version from:\n$versionOutput');
+  }
+
+  return Version.parse(versionString);
+}
+
+T _promptWithTerminal<T>(
+  T Function() runPrompt, {
+  required String message,
+  T? defaultsTo,
+  T? defaultsToWithoutPrompt,
+  bool requirePrompt = false,
+}) {
+  if (stdin.hasTerminal) {
+    try {
+      return runPrompt();
+    } on StdinException {
+      // `stdin.hasTerminal` can be true while stdin does not actually support
+      // the terminal operations the prompt requires (e.g. reading the echo
+      // mode fails with errno 19 in some sandboxed/piped environments).
+      // Degrade to the non-interactive behaviour below instead of crashing.
+    }
+  }
+
+  if (!requirePrompt) {
+    if (defaultsToWithoutPrompt is T) {
+      return defaultsToWithoutPrompt;
+    }
+
+    if (defaultsTo is T) {
+      return defaultsTo;
+    }
+  }
+
+  throw PromptException(message);
+}
+
+class PromptException extends MelosException {
+  PromptException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => 'Was unable to prompt for input:\n$message';
+}
+
+String promptInput(
+  String message, {
+  String? defaultsTo,
+  String? defaultsToWithoutPrompt,
+  bool requirePrompt = false,
+}) {
+  return _promptWithTerminal(
+    () => prompts.get(message, defaultsTo: defaultsTo),
+    message: message,
+    defaultsTo: defaultsTo,
+    defaultsToWithoutPrompt: defaultsToWithoutPrompt,
+    requirePrompt: requirePrompt,
+  );
+}
+
+bool promptBool({
+  String message = 'Continue?',
+  bool defaultsTo = false,
+  bool? defaultsToWithoutPrompt,
+  bool requirePrompt = false,
+}) {
+  return _promptWithTerminal(
+    () => prompts.getBool(message, defaultsTo: defaultsTo),
+    message: message,
+    defaultsTo: defaultsTo,
+    defaultsToWithoutPrompt: defaultsToWithoutPrompt,
+    requirePrompt: requirePrompt,
+  );
+}
+
+T promptChoice<T>(
+  String message,
+  Iterable<T> options, {
+  T? defaultsTo,
+  T? defaultsToWithoutPrompt,
+  String prompt = 'Enter your choice',
+  bool interactive = true,
+  bool requirePrompt = false,
+}) {
+  return _promptWithTerminal(
+    () => prompts.choose(
+      message,
+      options,
+      defaultsTo: defaultsTo,
+      prompt: prompt,
+      interactive: interactive,
+    )!,
+    message: message,
+    defaultsTo: defaultsTo,
+    defaultsToWithoutPrompt: defaultsToWithoutPrompt,
+    requirePrompt: requirePrompt,
+  );
+}
+
+bool get isCI {
+  final keys = currentPlatform.environment.keys;
+  return keys.contains('CI') ||
+      keys.contains('CONTINUOUS_INTEGRATION') ||
+      keys.contains('BUILD_NUMBER') ||
+      keys.contains('RUN_ID');
+}
+
+String printablePath(String path) {
+  return p.posix
+      .prettyUri(p.posix.normalize(path))
+      .replaceAll(RegExp(r'[/\\]+'), '/');
+}
+
+String get pathEnvVarSeparator => currentPlatform.isWindows ? ';' : ':';
+
+String addToPathEnvVar({
+  required String directory,
+  required String currentPath,
+  bool prepend = false,
+}) {
+  if (prepend) {
+    return '$directory$pathEnvVarSeparator$currentPath';
+  } else {
+    return '$currentPath$pathEnvVarSeparator$directory';
+  }
+}
+
+/// Default pub cache locations when [EnvironmentVariableKey.pubCache] is
+/// unset.
+///
+/// Windows can have a cache under Local *and* Roaming, and
+/// `Isolate.resolvePackageUri` may report either, so remapping has to try
+/// both. Returns an empty list when no default location can be determined.
+List<String> _defaultPubCacheDirectories() {
+  if (currentPlatform.isWindows) {
+    final dirs = <String>[];
+    final localAppData = currentPlatform.environment['LOCALAPPDATA'];
+    if (localAppData != null && localAppData.isNotEmpty) {
+      dirs.add(p.join(localAppData, 'Pub', 'Cache'));
+    }
+    final appData = currentPlatform.environment['APPDATA'];
+    if (appData != null && appData.isNotEmpty) {
+      dirs.add(p.join(appData, 'Pub', 'Cache'));
+    }
+    if (dirs.isNotEmpty) {
+      return dirs;
+    }
+  }
+  final home =
+      currentPlatform.environment['HOME'] ??
+      currentPlatform.environment['USERPROFILE'] ??
+      '';
+  if (home.isEmpty) {
+    return const [];
+  }
+  return [p.join(home, '.pub-cache')];
+}
+
+/// Rewrites [resolvedRoot] from a default pub-cache location into the cache
+/// pointed to by [EnvironmentVariableKey.pubCache].
+///
+/// The rewrite only happens when [probeSubdirectory] is missing under
+/// [resolvedRoot], [resolvedRoot] is inside a default pub-cache location, and
+/// the rewritten root does contain [probeSubdirectory]; in every other case
+/// [resolvedRoot] is returned unchanged.
+///
+/// This covers globally-activated Melos when `Isolate.resolvePackageUri`
+/// still reports `$HOME/.pub-cache` while the packages actually live in a
+/// custom `PUB_CACHE` (see invertase/melos#749).
+String applyPubCacheOverride(
+  String resolvedRoot, {
+  required String probeSubdirectory,
+}) {
+  final pubCacheEnv =
+      currentPlatform.environment[EnvironmentVariableKey.pubCache];
+  if (pubCacheEnv == null || pubCacheEnv.isEmpty) {
+    return resolvedRoot;
+  }
+  // Pub resolves a relative PUB_CACHE against the working directory.
+  final pubCache = p.normalize(p.absolute(pubCacheEnv));
+
+  final resolved = p.normalize(resolvedRoot);
+  if (p.equals(pubCache, resolved) || p.isWithin(pubCache, resolved)) {
+    return resolvedRoot;
+  }
+  if (_probeDirExists(p.join(resolved, probeSubdirectory))) {
+    return resolvedRoot;
+  }
+
+  for (final defaultCache in _defaultPubCacheDirectories().map(p.normalize)) {
+    if (!p.equals(defaultCache, resolved) &&
+        !p.isWithin(defaultCache, resolved)) {
+      continue;
+    }
+    final rewritten = p.equals(defaultCache, resolved)
+        ? pubCache
+        : p.normalize(
+            p.join(pubCache, p.relative(resolved, from: defaultCache)),
+          );
+    if (_probeDirExists(p.join(rewritten, probeSubdirectory))) {
+      return rewritten;
+    }
+  }
+  return resolvedRoot;
+}
+
+/// [dirExists] variant that treats unreadable paths as missing, since the
+/// probed locations may not be stat-able by the current user (for example
+/// `/root/.pub-cache` when running as a regular user).
+bool _probeDirExists(String path) {
+  try {
+    return dirExists(path);
+  } on FileSystemException {
+    return false;
+  }
+}
+
+Future<String>? _melosRoot;
+
+Future<String> getMelosRoot() => _melosRoot ??= _resolveMelosRoot();
+
+Future<String> _resolveMelosRoot() async {
+  final melosPackageFileUri = await Isolate.resolvePackageUri(melosPackageUri);
+
+  // Get from lib/melos.dart to the package root
+  return p.normalize('${melosPackageFileUri!.toFilePath()}/../..');
+}
+
+String melosStatePathForDirectory(String directory) =>
+    p.join(directory, '.melos');
+
+String pubspecPathForDirectory(String directory) =>
+    p.join(directory, 'pubspec.yaml');
+
+String pubspecOverridesPathForDirectory(String directory) =>
+    p.join(directory, 'pubspec_overrides.yaml');
+
+String relativePath(String path, String from) {
+  return p.normalize(p.relative(path, from: from)).replaceAll(r'\', '/');
+}
+
+String listAsPaddedTable(List<List<String>> table, {int paddingSize = 1}) {
+  final output = <String>[];
+  final maxColumnSizes = <int, int>{};
+  for (final row in table) {
+    var i = 0;
+    for (final column in row) {
+      if (maxColumnSizes[i] == null ||
+          maxColumnSizes[i]! < AnsiStyles.strip(column).length) {
+        maxColumnSizes[i] = AnsiStyles.strip(column).length;
+      }
+      i++;
+    }
+  }
+
+  for (final row in table) {
+    var i = 0;
+    final rowBuffer = StringBuffer();
+    for (final column in row) {
+      final colWidth = maxColumnSizes[i]! + paddingSize;
+      final cellWidth = AnsiStyles.strip(column).length;
+      var padding = colWidth - cellWidth;
+      if (padding < paddingSize) {
+        padding = paddingSize;
+      }
+
+      // last cell of the list, no need for padding
+      if (i + 1 >= row.length) {
+        padding = 0;
+      }
+
+      rowBuffer.write('$column${List.filled(padding, ' ').join()}');
+      i++;
+    }
+    output.add(rowBuffer.toString());
+  }
+
+  return output.join('\n');
+}
+
+extension YamlUtils on YamlNode {
+  /// Converts a YAML node to a regular mutable Dart object.
+  Object? toPlainObject() {
+    final node = this;
+    if (node is YamlScalar) {
+      return node.value;
+    }
+    if (node is YamlMap) {
+      return {
+        for (final entry in node.nodes.entries)
+          (entry.key as YamlNode).toPlainObject(): entry.value.toPlainObject(),
+      };
+    }
+    if (node is YamlList) {
+      return node.nodes.map((node) => node.toPlainObject()).toList();
+    }
+    throw FormatException(
+      'Unsupported YAML node type encountered: ${node.runtimeType}',
+      this,
+    );
+  }
+}
+
+/// Merges two maps together, overriding any values in [base] with those
+/// with the same key in [overlay].
+void mergeMap(Map<Object?, Object?> base, Map<Object?, Object?> overlay) {
+  for (final entry in overlay.entries) {
+    final overlayValue = entry.value;
+    final baseValue = base[entry.key];
+    if (overlayValue is Map<Object?, Object?>) {
+      if (baseValue is Map<Object?, Object?>) {
+        mergeMap(baseValue, overlayValue);
+      } else {
+        base[entry.key] = overlayValue;
+      }
+    } else if (overlayValue is List<Object?>) {
+      if (baseValue is List<Object?>) {
+        baseValue.addAll(overlayValue);
+      } else {
+        base[entry.key] = overlayValue;
+      }
+    } else {
+      base[entry.key] = overlayValue;
+    }
+  }
+}
+
+/// Generate a link for display in a terminal.
+///
+/// Similar to `<a href="$url">$text</a>` in HTML.
+/// If ANSI escape codes are not supported, the link will be displayed as plain
+/// text.
+String link(Uri url, String text) {
+  if (ansiStylesDisabled) {
+    return '$text $url';
+  } else {
+    return '\x1B]8;;$url\x07$text\x1B]8;;\x07';
+  }
+}
+
+Future<Process> startCommandRaw(
+  List<String> command, {
+  String? workingDirectory,
+  Map<String, String> environment = const {},
+  bool includeParentEnvironment = true,
+  ProcessStartMode mode = ProcessStartMode.normal,
+}) {
+  final executable = currentPlatform.isWindows ? 'cmd.exe' : '/bin/sh';
+  workingDirectory ??= Directory.current.path;
+
+  return Process.start(
+    executable,
+    currentPlatform.isWindows
+        ? ['/C', '%${EnvironmentVariableKey.melosScript}%']
+        : ['-c', 'eval "\$${EnvironmentVariableKey.melosScript}"'],
+    workingDirectory: workingDirectory,
+    environment: {
+      ...environment,
+      ...ansiStylesEnvironment,
+      EnvironmentVariableKey.melosTerminalWidth: terminalWidth.toString(),
+      EnvironmentVariableKey.melosScript: command.join(' '),
+    },
+    includeParentEnvironment: includeParentEnvironment,
+    mode: mode,
+  );
+}
+
+/// The environment variables that make nested Melos commands style their
+/// output like this process, even though their output is captured.
+Map<String, String> get ansiStylesEnvironment => {
+  EnvironmentVariableKey.melosAnsiStyles: (!ansiStylesDisabled).toString(),
+};
+
+/// Applies the [EnvironmentVariableKey.melosAnsiStyles] environment variable,
+/// which has precedence over the detection of a terminal that supports ANSI
+/// escape codes.
+void applyAnsiStylesEnvironment() {
+  final value = bool.tryParse(
+    currentPlatform.environment[EnvironmentVariableKey.melosAnsiStyles] ?? '',
+  );
+  if (value != null) {
+    ansiStylesDisabled = !value;
+  }
+}
+
+/// The environment variables that make nested Melos commands as quiet as
+/// [logger].
+Map<String, String> quietEnvironment(MelosLogger logger) {
+  final isInherited = currentPlatform.environment.containsKey(
+    EnvironmentVariableKey.melosQuiet,
+  );
+  return {
+    if (logger.isQuiet || isInherited)
+      EnvironmentVariableKey.melosQuiet: logger.isQuiet.toString(),
+  };
+}
+
+/// The exit code that `dart test` and `flutter test` use when no tests ran,
+/// for example when no tests match the requested tags.
+const noTestsRanExitCode = 79;
+
+final _runningPids = <int>[];
+
+List<int> get runningPids => UnmodifiableListView(_runningPids);
+
+Future<int> startCommand(
+  List<String> command, {
+  required MelosLogger logger,
+  String? logPrefix,
+  Map<String, String> environment = const {},
+  String? workingDirectory,
+  bool onlyOutputOnError = false,
+  bool includeParentEnvironment = true,
+  String? group,
+  ProcessOutputCancelToken? cancelToken,
+  bool inheritStdio = false,
+}) async {
+  final scriptEnvironment = {
+    ...environment,
+    ...quietEnvironment(logger),
+    ...ansiStylesEnvironment,
+  };
+  final processedCommand = command
+      // Remove empty arguments.
+      .whereNot((argument) => argument.trim().isEmpty)
+      .map(_scriptArgumentFormatter(scriptEnvironment))
+      .toList();
+
+  final process = await startCommandRaw(
+    processedCommand,
+    workingDirectory: workingDirectory,
+    environment: scriptEnvironment,
+    includeParentEnvironment: includeParentEnvironment,
+    mode: inheritStdio
+        ? ProcessStartMode.inheritStdio
+        : ProcessStartMode.normal,
+  );
+
+  _runningPids.add(process.pid);
+
+  if (inheritStdio) {
+    // When stdio is inherited, the child writes directly to our terminal —
+    // its stdout/stderr streams are not available on the [Process] object,
+    // and there is nothing for melos to subscribe to. Just wait for it to
+    // finish.
+    final exitCode = await process.exitCode;
+    _runningPids.remove(process.pid);
+    return exitCode;
+  }
+
+  var stdoutStream = process.stdout;
+  var stderrStream = process.stderr;
+
+  if (logPrefix != null && logPrefix.isNotEmpty) {
+    final pluginPrefixTransformer =
+        StreamTransformer<String, String>.fromHandlers(
+          handleData: (data, sink) {
+            const lineSplitter = LineSplitter();
+            var lines = lineSplitter.convert(data);
+            lines = lines
+                .map(
+                  (line) => '$logPrefix$line${line.contains('\n') ? '' : '\n'}',
+                )
+                .toList();
+            sink.add(lines.join());
+          },
+        );
+
+    stdoutStream = process.stdout
+        .transform<String>(utf8.decoder)
+        .transform<String>(pluginPrefixTransformer)
+        .transform<List<int>>(utf8.encoder);
+
+    stderrStream = process.stderr
+        .transform<String>(utf8.decoder)
+        .transform<String>(pluginPrefixTransformer)
+        .transform<List<int>>(utf8.encoder);
+  }
+
+  final processStdout = <int>[];
+  final processStderr = <int>[];
+  final processStdoutCompleter = Completer<void>();
+  final processStderrCompleter = Completer<void>();
+
+  stdoutStream.listen(
+    (event) {
+      if (cancelToken?.isCancelled ?? false) return;
+      processStdout.addAll(event);
+      if (!onlyOutputOnError) {
+        logger.logWithoutNewLine(
+          utf8.decode(event, allowMalformed: true),
+          group: group,
+        );
+      }
+    },
+    onDone: processStdoutCompleter.complete,
+  );
+  stderrStream.listen(
+    (event) {
+      if (cancelToken?.isCancelled ?? false) return;
+      processStderr.addAll(event);
+      if (!onlyOutputOnError) {
+        logger.error(utf8.decode(event, allowMalformed: true), group: group);
+      }
+    },
+    onDone: processStderrCompleter.complete,
+  );
+
+  await processStdoutCompleter.future;
+  await processStderrCompleter.future;
+  final exitCode = await process.exitCode;
+
+  _runningPids.remove(process.pid);
+
+  if (onlyOutputOnError && exitCode > 0) {
+    logger.log(
+      utf8.decode(processStdout, allowMalformed: true),
+      group: group,
+    );
+    logger.error(
+      utf8.decode(processStderr, allowMalformed: true),
+      group: group,
+    );
+  }
+
+  return exitCode;
+}
+
+String Function(String) _scriptArgumentFormatter(
+  Map<String, String> environment,
+) {
+  return (argument) {
+    // Attempt to make line continuations Windows & Linux compatible.
+    if (argument.trim() == r'\') {
+      return currentPlatform.isWindows
+          ? argument.replaceAll(r'\', '^')
+          : argument;
+    }
+    if (argument.trim() == '^') {
+      return currentPlatform.isWindows
+          ? argument
+          : argument.replaceAll('^', r'\');
+    }
+
+    return resolveEnvironmentVariableReferences(
+      argument,
+      environment: environment,
+    );
+  };
+}
+
+/// Resolves references to variables that Melos knows about (the script's `env:`
+/// block and the injected `MELOS_*` variables) so that scripts work regardless
+/// of the platform shell.
+///
+/// Melos injects these values into the child process environment. POSIX shells
+/// (`sh`) expand `$FOO` and `${FOO}` themselves, which keeps quoting and
+/// escaping behaving the way the shell normally would (single quotes suppress
+/// expansion, values are treated as data rather than being re-parsed), so on
+/// those platforms [input] is returned unchanged and the shell does the work.
+///
+/// On Windows the command is handed to `cmd.exe` through an intermediate
+/// environment variable, which cmd only expands once, so an inner `%FOO%`
+/// reference is never expanded. The value is therefore substituted directly for
+/// the `$FOO`, `${FOO}` and `%FOO%` reference syntaxes. Only whole-identifier
+/// references are substituted, so `$FOOBAR` is never substituted using `FOO`.
+///
+/// Variables inherited from the parent process environment are resolved too, so
+/// that a value defined by an outer script's `env:` block (and thus present in
+/// the environment of a nested `melos run`) is expanded even when the nested
+/// script does not redeclare it. The script's own [environment] takes
+/// precedence over inherited values of the same name.
+String resolveEnvironmentVariableReferences(
+  String input, {
+  required Map<String, String> environment,
+}) {
+  // POSIX shells expand `$FOO` and `${FOO}` themselves, preserving the usual
+  // quoting and escaping semantics.
+  if (!currentPlatform.isWindows) {
+    return input;
+  }
+
+  var result = input;
+  final resolvedEnvironment = {
+    ...currentPlatform.environment,
+    ...environment,
+  };
+  resolvedEnvironment.forEach((key, value) {
+    // `${FOO}` and `%FOO%`, then `$FOO` (but not `$FOOBAR` when only `FOO` is
+    // known).
+    result = result
+        .replaceAll('\${$key}', value)
+        .replaceAll('%$key%', value)
+        .replaceAllMapped(RegExp('\\\$$key(?![A-Za-z0-9_])'), (_) => value);
+  });
+
+  return result;
+}
+
+bool isPubSubcommand({required MelosWorkspace workspace}) {
+  try {
+    return Process.runSync(
+          workspace.sdkTool('pub'),
+          ['--version'],
+          runInShell: true,
+        ).exitCode !=
+        0;
+  } on ProcessException {
+    return true;
+  }
+}
+
+/// Given a workspace and package, this assembles the correct command to run pub
+/// / dart pub / flutter pub.
+///
+/// Takes into account a potential sdk path being provided. If no sdk path is
+/// provided then it will assume to use the pub command available in
+/// [EnvironmentVariableKey.path].
+List<String> pubCommandExecArgs({
+  required bool useFlutter,
+  required MelosWorkspace workspace,
+}) {
+  return [
+    if (useFlutter)
+      workspace.sdkTool('flutter')
+    else if (isPubSubcommand(workspace: workspace))
+      workspace.sdkTool('dart'),
+    'pub',
+  ];
+}
+
+extension StreamUtils<T> on Stream<T> {
+  /// Runs [convert] for each event in this stream and emits the result, while
+  /// ensuring that no more events than specified by [parallelism] are being
+  /// processed at any given time.
+  ///
+  /// If [parallelism] is `null`, [Platform.numberOfProcessors] is used.
+  Stream<R> parallel<R>(
+    Future<R> Function(T) convert, {
+    int? parallelism,
+  }) async* {
+    final pending = <Future<R>>[];
+    final done = <Future<R>>[];
+
+    await for (final value in this) {
+      late final Future<R> future;
+      future = Future(() async {
+        try {
+          return await convert(value);
+        } finally {
+          pending.remove(future);
+          done.add(future);
+        }
+      });
+      pending.add(future);
+
+      if (pending.length < (parallelism ?? Platform.numberOfProcessors)) {
+        continue;
+      }
+
+      await Future.any(pending);
+
+      for (final future in done) {
+        yield await future;
+      }
+      done.clear();
+    }
+
+    for (final result in await Future.wait(pending)) {
+      yield result;
+    }
+  }
+}
+
+extension Utf8StreamUtils on Stream<List<int>> {
+  /// Fully consumes this stream and returns the decoded string, while also
+  /// starting to call [log] after [timeout] has elapsed for the previously
+  /// decoded lines and all subsequent lines.
+  Future<String> toStringAndLogAfterTimeout({
+    required Duration timeout,
+    required void Function(String) log,
+  }) async {
+    final bufferedLines = <String>[];
+    final stopwatch = Stopwatch()..start();
+    return transform(utf8.decoder)
+        .transform(const LineSplitter())
+        .map((line) {
+          if (stopwatch.elapsed >= timeout) {
+            if (bufferedLines.isNotEmpty) {
+              bufferedLines.forEach(log);
+              bufferedLines.clear();
+            }
+            log(line);
+          } else {
+            bufferedLines.add(line);
+          }
+
+          return line;
+        })
+        .join('\n');
+  }
+}
+
+// Encodes a [value] as a JSON string with indentation.
+String prettyEncodeJson(Object? value) =>
+    const JsonEncoder.withIndent('  ').convert(value);
+
+extension OptionalArgResults on ArgResults {
+  Object? optional(String name) => wasParsed(name) ? this[name] : null;
+}
+
+String removeTrailingSlash(String url) {
+  return url.endsWith('/') ? url.substring(0, url.length - 1) : url;
+}

@@ -1,0 +1,698 @@
+/*
+ * Copyright (C) from 2022 The Play Framework Contributors <https://github.com/playframework>, 2011-2021 Lightbend Inc. <https://www.lightbend.com>
+ */
+
+package play.core.server.common
+
+import java.nio.charset.CharacterCodingException
+import java.nio.charset.CodingErrorAction
+import java.nio.charset.StandardCharsets
+import java.nio.ByteBuffer
+import java.nio.CharBuffer
+
+import scala.concurrent.duration._
+
+import org.apache.pekko.stream._
+import org.apache.pekko.stream.scaladsl._
+import org.apache.pekko.stream.stage._
+import org.apache.pekko.util.ByteString
+import org.apache.pekko.NotUsed
+import play.api.http.websocket._
+import play.api.Logger
+
+object WebSocketFlowHandler {
+
+  /**
+   * Implements the WebSocket protocol, including correctly handling the closing of the WebSocket, as well as
+   * other control frames like ping/pong.
+   */
+  @deprecated("Please specify the keep-alive mode (ping or pong) and max-idle time", "2.8.19")
+  def webSocketProtocol(
+      bufferLimit: Int
+  ): BidiFlow[RawMessage, Message, Message, Message, NotUsed] =
+    webSocketProtocol(bufferLimit, "ping", Duration.Inf, 3.seconds)
+
+  /**
+   * Implements the WebSocket protocol, including correctly handling the closing of the WebSocket, as well as
+   * other control frames like ping/pong.
+   */
+  def webSocketProtocol(
+      bufferLimit: Int,
+      wsKeepAliveMode: String,
+      wsKeepAliveMaxIdle: Duration
+  ): BidiFlow[RawMessage, Message, Message, Message, NotUsed] =
+    webSocketProtocol(bufferLimit, wsKeepAliveMode, wsKeepAliveMaxIdle, 3.seconds)
+
+  /**
+   * Implements the WebSocket protocol, including correctly handling the closing of the WebSocket, as well as
+   * other control frames like ping/pong.
+   */
+  def webSocketProtocol(
+      bufferLimit: Int,
+      wsKeepAliveMode: String,
+      wsKeepAliveMaxIdle: Duration,
+      wsCloseTimeout: FiniteDuration
+  ): BidiFlow[RawMessage, Message, Message, Message, NotUsed] =
+    webSocketProtocol(bufferLimit, wsKeepAliveMode, wsKeepAliveMaxIdle, wsCloseTimeout, None)
+
+  def webSocketProtocol(
+      bufferLimit: Int,
+      wsKeepAliveMode: String,
+      wsKeepAliveMaxIdle: Duration,
+      wsCloseTimeout: FiniteDuration,
+      gracefulShutdown: Option[(CloseMessage => Unit) => (() => Unit)]
+  ): BidiFlow[RawMessage, Message, Message, Message, NotUsed] = {
+
+    /** The layer that transparently injects (if enabled) keepAlive Ping or Pong messages when client is idle */
+    val periodicKeepAlive: BidiFlow[RawMessage, RawMessage, Message, Message, NotUsed] = wsKeepAliveMaxIdle match {
+      case maxIdle: FiniteDuration =>
+        val mkRawMsg = wsKeepAliveMode match {
+          case "ping" =>
+            () =>
+              RawMessage(MessageType.Ping, ByteString.empty, true, true) // sending Ping should result in a Pong back
+          case "pong" =>
+            () =>
+              RawMessage(MessageType.Pong, ByteString.empty, true, true) // sending Pong means we do not expect a reply
+          case other =>
+            throw new IllegalArgumentException(
+              s"Unsupported websocket periodic-keep-alive-mode. " +
+                s"Found: [$other] however only [ping] and [pong] are supported"
+            )
+        }
+        BidiFlow.fromFlows(
+          Flow[RawMessage].keepAlive(maxIdle, mkRawMsg),
+          Flow[Message]
+        )
+      case _ =>
+        BidiFlow.identity
+    }
+
+    val messageHandling = BidiFlow.fromGraph(new GraphStage[BidiShape[RawMessage, Message, Message, Message]] {
+      // The stream of incoming messages from the websocket connection
+      val remoteIn = Inlet[RawMessage]("WebSocketFlowHandler.remote.in")
+      // The stream of websocket messages going out to the websocket connection
+      val remoteOut = Outlet[Message]("WebSocketFlowHandler.remote.out")
+
+      // The stream of websocket messages being produced by the application
+      val appIn = Inlet[Message]("WebSocketFlowHandler.app.in")
+      // The stream of websocket messages going to the application
+      val appOut = Outlet[Message]("WebSocketFlowHandler.app.out")
+
+      override def shape: BidiShape[RawMessage, Message, Message, Message] =
+        new BidiShape(remoteIn, appOut, appIn, remoteOut)
+
+      override def createLogic(inheritedAttributes: Attributes): GraphStageLogic = new TimerGraphStageLogic(shape) {
+        var state: State           = Open
+        var pingToSend: Message    = null
+        var pongToSend: Message    = null
+        var messageToSend: Message = null
+        var closeForwardedToApp    = false
+        var locallyInitiatedClose  = false
+        var shutdownRegistration   = Option.empty[() => Unit]
+
+        var currentPartialMessage: RawMessage = null
+
+        val textDecoder = StandardCharsets.UTF_8
+          .newDecoder()
+          .onMalformedInput(CodingErrorAction.REPORT)
+          .onUnmappableCharacter(CodingErrorAction.REPORT)
+
+        // For remoteIn, pull only when appOut has demand, except when appOut is closed and awaiting a close
+        // acknowledgment. This guarantees appOut is available whenever a remote message needs to be pushed to it.
+        // The one-element application-side buffer below supplies demand for one application-visible message
+        // independently of the application, allowing a peer control message to be processed while the application
+        // is applying backpressure. Once that slot is occupied, further frames wait until the application pulls.
+
+        // For remoteOut, we have a few buffers: a server or client initiated close buffer, a server message, a Pong,
+        // and a keep-alive Ping. While a Pong is pending, remoteIn is backpressured until remoteOut accepts it. This
+        // preserves the response to each peer Ping while keeping the buffer bounded to one Pong.
+
+        // There can only ever be one server message to send, since we only ever pull if there's none to send.
+
+        // A client initiated close message can overtake all other messages, if the client wants to close, we just send
+        // it back and it misses anything that we had buffered.
+        // Server messages are then treated with the next highest priority, they will be sent even if the state is
+        // server initiated close.  Note that no additional server messages can be received once the state has gone into
+        // server initiated close, since this is either triggered by the appIn closing, or, when appOut cancels, we
+        // cancel appIn. So server messages cannot starve server initiated close from being sent.
+        // Pong messages follow server messages, and keep-alive Ping messages have the lowest priority.
+
+        def pullRemoteInIfReady(): Unit = {
+          val canPull = state != Open || (isAvailable(appOut) && pongToSend == null)
+          if (canPull && !isClosed(remoteIn) && !hasBeenPulled(remoteIn)) {
+            pull(remoteIn)
+          }
+        }
+
+        def serverInitiatedClose(close: CloseMessage) = {
+          val closeToSend = toValidCloseFrame(close)
+
+          // Cancel appIn, because we must not send any more messages once we initiate a close.
+          cancel(appIn)
+
+          if (state == Open || state.isInstanceOf[ServerInitiatingClose]) {
+            if (isAvailable(remoteOut)) {
+              state = ServerInitiatedClose
+              push(remoteOut, closeToSend)
+              scheduleOnce(CloseHandshakeTimeout, wsCloseTimeout)
+              // If appOut is closed, then we may need to do our own pull so that we can get the ack
+              if (isClosed(appOut)) {
+                pullRemoteInIfReady()
+              }
+            } else {
+              state = ServerInitiatingClose(closeToSend)
+            }
+          } else {
+            // Initiating close when we've already sent a close message means we must have encountered an error in
+            // processing the handshake, just complete.
+            completeStage()
+          }
+        }
+
+        def rejectPeerClose(close: CloseMessage): Unit = {
+          // A malformed peer Close is already the peer's contribution to closing the connection. Send at most one
+          // protocol-error Close, and do not wait for another acknowledgement.
+          if (state != Open || isClosed(remoteOut)) {
+            completeStage()
+          } else {
+            cancel(appIn)
+            if (!isClosed(appOut)) {
+              complete(appOut)
+            }
+            cancel(remoteIn)
+            emit(remoteOut, toValidCloseFrame(close), () => completeStage())
+          }
+        }
+
+        def toMessage(messageType: MessageType.Type, data: ByteString): Message = {
+          messageType match {
+            case MessageType.Text =>
+              try {
+                TextMessage(textDecoder.reset().decode(data.asByteBuffer).toString)
+              } catch {
+                case _: CharacterCodingException =>
+                  serverInitiatedClose(
+                    CloseMessage(CloseCodes.InconsistentData, "Text message contained invalid UTF-8")
+                  )
+                  null
+              }
+            case MessageType.Binary => BinaryMessage(data)
+            case MessageType.Ping   => PingMessage(data)
+            case MessageType.Pong   => PongMessage(data)
+            case MessageType.Close  =>
+              parsePeerCloseMessage(data) match {
+                case Right(close) => close
+                case Left(error)  =>
+                  rejectPeerClose(error)
+                  null
+              }
+          }
+        }
+
+        def isControlMessage(messageType: MessageType.Type): Boolean = {
+          messageType == MessageType.Ping ||
+          messageType == MessageType.Pong ||
+          messageType == MessageType.Close
+        }
+
+        def consumeMessage(): Message = {
+          val read = grab(remoteIn)
+
+          read.messageType match {
+            case MessageType.CloseWithReservedBits =>
+              rejectPeerClose(
+                CloseMessage(CloseCodes.ProtocolError, "WebSocket frame contained unexpected reserved bits")
+              )
+              null
+            case MessageType.ReservedBits =>
+              serverInitiatedClose(
+                CloseMessage(CloseCodes.ProtocolError, "WebSocket frame contained unexpected reserved bits")
+              )
+              null
+            case MessageType.Close if !read.isFinal =>
+              rejectPeerClose(CloseMessage(CloseCodes.ProtocolError, "Control frames must not be fragmented"))
+              null
+            case messageType if isControlMessage(messageType) && !read.isFinal =>
+              serverInitiatedClose(CloseMessage(CloseCodes.ProtocolError, "Control frames must not be fragmented"))
+              null
+            case MessageType.Close if read.data.size > 125 =>
+              rejectPeerClose(
+                CloseMessage(CloseCodes.ProtocolError, "Control frame payload must not exceed 125 bytes")
+              )
+              null
+            case messageType if isControlMessage(messageType) && read.data.size > 125 =>
+              serverInitiatedClose(
+                CloseMessage(CloseCodes.ProtocolError, "Control frame payload must not exceed 125 bytes")
+              )
+              null
+            case MessageType.Ping if read.directAnswer =>
+              // Ping the client (Part of idle handling)
+              if (state == Open) {
+                if (isAvailable(remoteOut)) {
+                  // Send immediately
+                  push(remoteOut, PingMessage(ByteString.empty))
+                } else {
+                  // Store to send later
+                  pingToSend = PingMessage(ByteString.empty)
+                }
+              }
+              null
+            case MessageType.Pong if read.directAnswer =>
+              // Pong the client (Part of idle handling)
+              if (state == Open) {
+                if (isAvailable(remoteOut)) {
+                  // Send immediately
+                  push(remoteOut, PongMessage(ByteString.empty))
+                } else {
+                  // Store to send later
+                  pongToSend = PongMessage(ByteString.empty)
+                }
+              }
+              null
+            case MessageType.Ping | MessageType.Pong | MessageType.Close =>
+              toMessage(read.messageType, read.data)
+            case MessageType.Continuation if currentPartialMessage == null =>
+              serverInitiatedClose(CloseMessage(CloseCodes.ProtocolError, "Unexpected continuation frame"))
+              null
+            case MessageType.Continuation if currentPartialMessage.data.size + read.data.size > bufferLimit =>
+              serverInitiatedClose(CloseMessage(CloseCodes.TooBig, "Message was too big"))
+              null
+            case MessageType.Continuation if read.isFinal =>
+              val message = toMessage(currentPartialMessage.messageType, currentPartialMessage.data ++ read.data)
+              currentPartialMessage = null
+              message
+            case MessageType.Continuation =>
+              currentPartialMessage =
+                RawMessage(currentPartialMessage.messageType, currentPartialMessage.data ++ read.data, false)
+              null
+            case _ if currentPartialMessage != null =>
+              serverInitiatedClose(
+                CloseMessage(
+                  CloseCodes.ProtocolError,
+                  "Received non continuation frame when previous message wasn't finished"
+                )
+              )
+              null
+            case _ if read.isFinal =>
+              toMessage(read.messageType, read.data)
+            case start =>
+              currentPartialMessage = read
+              null
+          }
+        }
+
+        def completeAfterForwardingCloseToApp(close: CloseMessage): Unit = {
+          if (!isClosed(appOut)) {
+            closeForwardedToApp = true
+            emit(appOut, close, () => completeStage())
+          } else {
+            completeStage()
+          }
+        }
+
+        def completeRemoteInputAbnormally(): Unit = {
+          if (!closeForwardedToApp && !locallyInitiatedClose) {
+            completeAfterForwardingCloseToApp(
+              CloseMessage(CloseCodes.ConnectionAbort, "Connection closed abnormally")
+            )
+          } else {
+            completeStage()
+          }
+        }
+
+        private val shutdownCallback = getAsyncCallback[CloseMessage] { close =>
+          if (state == Open) {
+            locallyInitiatedClose = true
+            serverInitiatedClose(close)
+          }
+        }
+
+        override def preStart(): Unit = {
+          shutdownRegistration = gracefulShutdown.map(register => register(shutdownCallback.invoke))
+          super.preStart()
+        }
+
+        override def postStop(): Unit = {
+          shutdownRegistration.foreach(_())
+          super.postStop()
+        }
+
+        setHandler(
+          appOut,
+          new OutHandler {
+            override def onPull(): Unit = {
+              // A pending Pong must reach the peer before another inbound message can be accepted.
+              pullRemoteInIfReady()
+            }
+
+            override def onDownstreamFinish(cause: Throwable): Unit = {
+              if (state == Open) {
+                locallyInitiatedClose = true
+                serverInitiatedClose(CloseMessage(Some(CloseCodes.Regular)))
+              }
+            }
+          }
+        )
+
+        setHandler(
+          remoteIn,
+          new InHandler {
+            override def onUpstreamFinish(): Unit = {
+              completeRemoteInputAbnormally()
+            }
+
+            override def onUpstreamFailure(ex: Throwable): Unit = {
+              ex match {
+                case _: BackendHandledProtocolViolation =>
+                  completeStage()
+                case _ =>
+                  if (state == Open) {
+                    // Don't log the whole exception to avoid overwhelming the logs if failures occur often.
+                    logger.warn(s"WebSocket communication problem: ${ex.getMessage}")
+                  } else {
+                    logger.debug("WebSocket communication problem after the WebSocket was closed", ex)
+                  }
+                  completeRemoteInputAbnormally()
+              }
+            }
+
+            override def onPush() = {
+              val message = consumeMessage()
+
+              if (message != null) {
+                state match {
+                  case ClientInitiatedClose(_) =>
+                    // Client illegally sent a message after sending a close, just terminate
+                    completeStage()
+                  case ServerInitiatedClose | ServerInitiatingClose(_) =>
+                    // Server has initiated the close, if this is a close ack from the client, close the connection,
+                    // otherwise, forward it down to the appIn if it's still listening
+                    message match {
+                      case close: CloseMessage =>
+                        completeStage()
+                      case other =>
+                        if (!isClosed(appOut)) {
+                          push(appOut, other)
+                        } else {
+                          // appIn is closed, we're ignoring the message and it's not going to pull, so we need to pull
+                          pullRemoteInIfReady()
+                        }
+                    }
+                  case Open =>
+                    message match {
+                      case ping @ PingMessage(data) =>
+                        // Return to client
+                        val pong = PongMessage(data)
+                        if (isAvailable(remoteOut)) {
+                          // Send immediately
+                          push(remoteOut, pong)
+                        } else {
+                          // Store to send later
+                          pongToSend = pong
+                        }
+                        // Forward down to app after recording the Pong so synchronous demand cannot pull another Ping.
+                        push(appOut, ping)
+
+                      case close: CloseMessage =>
+                        // Forward down to app
+                        push(appOut, close)
+                        closeForwardedToApp = true
+                        // And complete both app out and app in
+                        complete(appOut)
+                        cancel(appIn)
+
+                        // This is a client initiated close, so send back
+                        if (isAvailable(remoteOut)) {
+                          // We can send the close frame
+                          push(remoteOut, toValidCloseFrame(close))
+                          // And complete both remote out and remote in
+                          complete(remoteOut)
+                          cancel(remoteIn)
+                        } else {
+                          // Store so we can send later
+                          state = ClientInitiatedClose(close)
+                        }
+
+                      case other =>
+                        // Forward down to app
+                        push(appOut, other)
+                    }
+                }
+              } else {
+                pullRemoteInIfReady()
+              }
+            }
+          }
+        )
+
+        setHandler(
+          appIn,
+          new InHandler {
+            override def onPush() = {
+              if (state == Open) {
+                grab(appIn) match {
+                  case close: CloseMessage =>
+                    locallyInitiatedClose = true
+                    serverInitiatedClose(close)
+                    cancel(appIn)
+                  case other =>
+                    if (isAvailable(remoteOut)) {
+                      push(remoteOut, other)
+                    } else {
+                      messageToSend = other
+                    }
+                }
+              } else {
+                // We're closed, ignore
+              }
+            }
+
+            override def onUpstreamFinish() = {
+              if (state == Open) {
+                locallyInitiatedClose = true
+                serverInitiatedClose(CloseMessage(Some(CloseCodes.Regular)))
+              }
+            }
+
+            override def onUpstreamFailure(ex: Throwable) = {
+              if (state == Open) {
+                locallyInitiatedClose = true
+                ex match {
+                  case WebSocketCloseException(close) =>
+                    serverInitiatedClose(close)
+                  case _ =>
+                    serverInitiatedClose(CloseMessage(Some(CloseCodes.UnexpectedCondition)))
+                    logger.error("WebSocket flow threw exception", ex)
+                }
+              } else {
+                logger.debug("WebSocket flow threw exception after the WebSocket was closed", ex)
+              }
+            }
+          }
+        )
+
+        setHandler(
+          remoteOut,
+          new OutHandler {
+            override def onPull() = {
+              state match {
+                case ClientInitiatedClose(close) =>
+                  // Acknowledge the client close, and then complete
+                  push(remoteOut, toValidCloseFrame(close))
+                  completeStage()
+                case ServerInitiatingClose(close) =>
+                  // If there is a buffered message, send that first
+                  if (messageToSend != null) {
+                    push(remoteOut, messageToSend)
+                    messageToSend = null
+                  } else {
+                    serverInitiatedClose(close)
+                  }
+                case ServerInitiatedClose =>
+                // Ignore, we've sent a close message, we're not allowed to send anything else
+                case Open =>
+                  if (messageToSend != null) {
+                    // We have a message stored up that we didn't manage to send before, send it
+                    push(remoteOut, messageToSend)
+                    messageToSend = null
+                  } else if (pongToSend != null) {
+                    // We have a pong to send
+                    val pong = pongToSend
+                    pongToSend = null
+                    push(remoteOut, pong)
+                    pullRemoteInIfReady()
+                  } else if (pingToSend != null) {
+                    // We have a ping to send
+                    push(remoteOut, pingToSend)
+                    pingToSend = null
+                  } else {
+                    // Nothing to send, pull from app if not already pulled
+                    if (!hasBeenPulled(appIn)) {
+                      pull(appIn)
+                    }
+                  }
+              }
+            }
+          }
+        )
+
+        protected override def onTimer(timerKey: Any): Unit = {
+          if (timerKey == CloseHandshakeTimeout && state == ServerInitiatedClose) {
+            completeStage()
+          }
+        }
+      }
+    })
+    val applicationInputBuffer = BidiFlow.fromFlows(
+      Flow[Message].buffer(1, OverflowStrategy.backpressure),
+      Flow[Message]
+    )
+
+    periodicKeepAlive.atop(messageHandling).atop(applicationInputBuffer)
+  }
+
+  private sealed trait State
+  private case object Open                                        extends State
+  private case class ServerInitiatingClose(message: CloseMessage) extends State
+  private case object ServerInitiatedClose                        extends State
+  private case class ClientInitiatedClose(message: CloseMessage)  extends State
+  private case object CloseHandshakeTimeout
+
+  private val logger = Logger("play.core.server.common.WebSocketFlowHandler")
+
+  // Low level API for raw, possibly fragmented messages
+  case class RawMessage(
+      messageType: MessageType.Type,
+      data: ByteString,
+      isFinal: Boolean,
+      directAnswer: Boolean = false
+  )
+  object MessageType extends Enumeration {
+    type Type = Value
+    val Ping, Pong, Text, Binary, Continuation, Close, ReservedBits, CloseWithReservedBits = Value
+  }
+
+  private[server] final class BackendHandledProtocolViolation(cause: Throwable) extends RuntimeException(cause)
+
+  private def parsePeerCloseMessage(data: ByteString): Either[CloseMessage, CloseMessage] = {
+    def invalid(statusCode: Int, reason: String) =
+      Left(CloseMessage(Some(statusCode), s"Peer sent illegal close frame ($reason)."))
+
+    if (data.length >= 2) {
+      val code = ((data(0) & 0xff) << 8) | (data(1) & 0xff)
+      invalidCloseStatusCodeReason(code) match {
+        case Some(reason) =>
+          invalid(CloseCodes.ProtocolError, reason)
+        case None =>
+          decodeUtf8(data.drop(2)) match {
+            case Right(reason) => Right(CloseMessage(Some(code), reason))
+            case Left(reason)  => invalid(CloseCodes.InconsistentData, reason)
+          }
+      }
+    } else if (data.length == 1) {
+      invalid(CloseCodes.ProtocolError, "close code must be length 2 but was 1")
+    } else {
+      Right(CloseMessage(CloseCodes.NoStatus))
+    }
+  }
+
+  def parseCloseMessage(data: ByteString): CloseMessage =
+    parsePeerCloseMessage(data).fold(identity, identity)
+
+  private def toValidCloseFrame(close: CloseMessage): CloseMessage = {
+    close.statusCode match {
+      case Some(CloseCodes.NoStatus) if close.reason.isEmpty =>
+        CloseMessage(None)
+      case Some(code) =>
+        invalidCloseStatusCodeReason(code).foreach { reason =>
+          logger.warn(s"Application sent WebSocket close frame with invalid status code $code: $reason")
+        }
+        CloseMessage(Some(code), toValidCloseReason(close.reason))
+      case None if close.reason.isEmpty =>
+        close
+      case None =>
+        logger.warn("Application sent WebSocket close frame with a reason but no status code; dropping close reason")
+        CloseMessage(None)
+    }
+  }
+
+  private def invalidCloseStatusCodeReason(code: Int): Option[String] = {
+    code match {
+      case CloseCodes.NoStatus =>
+        Some("close code 1005 must not be sent")
+      case CloseCodes.ConnectionAbort =>
+        Some("close code 1006 must not be sent")
+      case CloseCodes.TLSHandshakeFailure =>
+        Some("close code 1015 must not be sent")
+      case 1004 =>
+        Some("close code 1004 is reserved")
+      case code if code < 1000 || code >= 5000 =>
+        Some(s"close code must be between 1000 and 4999 but was $code")
+      case code if code >= 1016 && code <= 2999 =>
+        Some(s"close code $code is reserved")
+      case _ =>
+        None
+    }
+  }
+
+  private def toValidCloseReason(reason: String): String = {
+    encodeUtf8(reason) match {
+      case Left(reason) =>
+        logger.warn(s"Application sent WebSocket close frame with invalid close reason: $reason; dropping close reason")
+        ""
+      case Right(bytes) if bytes.remaining() > 123 =>
+        logger.warn(
+          s"Application sent WebSocket close reason longer than 123 UTF-8 bytes (${bytes.remaining()} bytes); truncating close reason"
+        )
+        truncateUtf8(reason, 123)
+      case Right(_) =>
+        reason
+    }
+  }
+
+  private def truncateUtf8(value: String, maxBytes: Int): String = {
+    val builder = new StringBuilder
+    var index   = 0
+    var bytes   = 0
+
+    while (index < value.length) {
+      val codePoint = value.codePointAt(index)
+      val chars     = new String(Character.toChars(codePoint))
+      val charBytes = chars.getBytes(StandardCharsets.UTF_8).length
+      if (bytes + charBytes > maxBytes) {
+        return builder.toString
+      }
+      builder.append(chars)
+      bytes += charBytes
+      index += Character.charCount(codePoint)
+    }
+
+    builder.toString
+  }
+
+  private def encodeUtf8(value: String): Either[String, ByteBuffer] = {
+    val encoder = StandardCharsets.UTF_8
+      .newEncoder()
+      .onMalformedInput(CodingErrorAction.REPORT)
+      .onUnmappableCharacter(CodingErrorAction.REPORT)
+
+    try {
+      Right(encoder.encode(CharBuffer.wrap(value)))
+    } catch {
+      case _: CharacterCodingException => Left("close reason must be valid UTF-8")
+    }
+  }
+
+  private def decodeUtf8(value: ByteString): Either[String, String] = {
+    val decoder = StandardCharsets.UTF_8
+      .newDecoder()
+      .onMalformedInput(CodingErrorAction.REPORT)
+      .onUnmappableCharacter(CodingErrorAction.REPORT)
+
+    try {
+      Right(decoder.decode(value.asByteBuffer).toString)
+    } catch {
+      case _: CharacterCodingException => Left("close reason must be valid UTF-8")
+    }
+  }
+}

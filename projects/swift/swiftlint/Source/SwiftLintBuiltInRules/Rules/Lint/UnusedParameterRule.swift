@@ -1,0 +1,251 @@
+import SwiftLintCore
+import SwiftSyntax
+
+@SwiftSyntaxRule(correctable: true, optIn: true)
+struct UnusedParameterRule: Rule {
+    var configuration = UnusedParameterConfiguration()
+
+    private static let allowUnderscorePrefixedNames = ["allow_underscore_prefixed_names": true]
+
+    static let description = RuleDescription(
+        identifier: "unused_parameter",
+        name: "Unused Parameter",
+        description: """
+            Other than unused local variable declarations, unused function/initializer/subscript parameters are not \
+            marked by the Swift compiler. Since unused parameters are code smells, they should either be removed \
+            or replaced/shadowed by a wildcard '_' to indicate that they are being deliberately disregarded.
+            """,
+        kind: .lint,
+        // swiftlint:disable all
+        nonTriggeringExamples: [
+            #example {
+                func f(a: Int) {
+                    _ = a
+                }
+            },
+            #example {
+                func f(case: Int) {
+                    _ = `case`
+                }
+            },
+            #example {
+                func f(a _: Int) {}
+            },
+            #example {
+                func f(_: Int) {}
+            },
+            #example {
+                func f(a: Int, b c: String) {
+                    func g() {
+                        _ = a
+                        _ = c
+                    }
+                }
+            },
+            #example {
+                func f(a: Int, c: Int) -> Int {
+                    struct S {
+                        let b = 1
+                        func f(a: Int, b: Int = 2) -> Int { a + b }
+                    }
+                    return a + c
+                }
+            },
+            #example {
+                func f(a: Int?) {
+                    if let a {}
+                }
+            },
+            #example {
+                func f(a: Int) -> Int {
+                    let a = a
+                    return a
+                }
+            },
+            #example {
+                func f(`operator`: Int) -> Int { `operator` }
+            },
+            #example(configuration: allowUnderscorePrefixedNames) {
+                func f(_a: Int) {}
+            },
+            """
+            List($history) { $_historyItem in
+                Foo()
+            }
+            """.asExample(configuration: allowUnderscorePrefixedNames),
+            """
+            List($history) { $historyItem in
+                Foo(url: historyItem.url)
+            }
+            """.asExample(),
+            """
+            List($history) { $historyItem in
+                Foo(binding: $historyItem)
+            }
+            """.asExample(excludeFromDocumentation: true),
+            """
+            List($history) { $_ in
+                Foo()
+            }
+            """.asExample(excludeFromDocumentation: true)
+        ],
+        triggeringExamples: [
+            #example {
+                func f(/*>*/a: Int) {}
+            },
+            #example {
+                func f(/*>*/_a: Int) {}
+            },
+            #example {
+                func f(/*>*/a: Int, b /*>*/c: String) {}
+            },
+            #example {
+                func f(/*>*/a: Int, b /*>*/c: String) {
+                    func g(a: Int, /*>*/b: Double) {
+                        _ = a
+                    }
+                }
+            },
+            #example {
+                struct S {
+                    let a: Int
+
+                    init(a: Int, /*>*/b: Int) {
+                        func f(/*>*/a: Int, b: Int) -> Int { b }
+                        self.a = f(a: a, b: 0)
+                    }
+                }
+            },
+            #example {
+                struct S {
+                    subscript(a: Int, /*>*/b: Int) -> Int {
+                        func f(/*>*/a: Int, b: Int) -> Int { b }
+                        return f(a: a, b: 0)
+                    }
+                }
+            },
+            #example {
+                func f(/*>*/a: Int, /*>*/b: Int, c: Int) -> Int {
+                    struct S {
+                        let b = 1
+                        func f(a: Int, /*>*/c: Int = 2) -> Int { a + b }
+                    }
+                    return S().f(a: c)
+                }
+            },
+            #example {
+                func f(/*>*/a: Int, c: String) -> Int {
+                    let a = 1
+                    return a + Int(c)!
+                }
+            },
+            """
+            List($history) { ↓$historyItem in
+                Foo()
+            }
+            """.asExample(),
+        ],
+        corrections: [
+            #example {
+                func f(/*>*/a: Int) {}
+            }: #example {
+                func f(a _: Int) {}
+            },
+            #example {
+                func f(a /*>*/b: Int) {}
+            }: #example {
+                func f(a _: Int) {}
+            },
+            #example {
+                func f(_ /*>*/a: Int) {}
+            }: #example {
+                func f(_: Int) {}
+            },
+            """
+            List($history) { $historyItem in
+                Foo()
+            }
+            """.asExample(): """
+            List($history) { $_ in
+                Foo()
+            }
+            """.asExample()
+        ]
+        //swiftlint:enable all
+    )
+}
+
+// MARK: Visitor
+
+private extension UnusedParameterRule {
+    final class Visitor: DeclaredIdentifiersTrackingVisitor<ConfigurationType> {
+        private var referencedDeclarations = Set<IdentifierDeclaration>()
+
+        override var skippableDeclarations: [any DeclSyntaxProtocol.Type] { [ProtocolDeclSyntax.self] }
+
+        // MARK: Violation checking
+
+        override func visitPost(_ node: CodeBlockItemListSyntax) {
+            let declarations = scope.peek() ?? []
+            for declaration in declarations.reversed() where !referencedDeclarations.contains(declaration) {
+                guard case let .parameter(name) = declaration,
+                      let previousToken = name.previousToken(viewMode: .sourceAccurate) else {
+                    continue
+                }
+                if configuration.allowUnderscorePrefixedNames, name.text.hasPrefix("_") || name.text.hasPrefix("$_") {
+                    continue
+                }
+                let startPosReplacement =
+                    if previousToken.tokenKind == .wildcard {
+                        (previousToken.positionAfterSkippingLeadingTrivia, "_")
+                    } else if case .identifier = previousToken.tokenKind {
+                        (name.positionAfterSkippingLeadingTrivia, "_")
+                    } else if name.text.hasPrefix("$") {
+                        (name.positionAfterSkippingLeadingTrivia, "$_")
+                    } else {
+                        (name.positionAfterSkippingLeadingTrivia, name.text + " _")
+                    }
+                violations.append(.init(
+                    position: name.positionAfterSkippingLeadingTrivia,
+                    reason: "Parameter '\(name.text)' is unused; consider removing or replacing it with '_'",
+                    severity: configuration.severity,
+                    correction: .init(
+                        start: startPosReplacement.0,
+                        end: name.endPositionBeforeTrailingTrivia,
+                        replacement: startPosReplacement.1
+                    )
+                ))
+            }
+            super.visitPost(node)
+        }
+
+        // MARK: Reference collection
+
+        override func visitPost(_ node: DeclReferenceExprSyntax) {
+            if node.keyPathInParent != \MemberAccessExprSyntax.declName {
+                addReference(node.baseName.text)
+            }
+        }
+
+        override func visitPost(_ node: OptionalBindingConditionSyntax) {
+            if node.initializer == nil, let id = node.pattern.as(IdentifierPatternSyntax.self)?.identifier.text {
+                addReference(id)
+            }
+        }
+
+        // MARK: Private methods
+
+        private func addReference(_ id: String) {
+            for declarations in scope.reversed() {
+                if declarations.onlyElement == .lookupBoundary {
+                    return
+                }
+                for declaration in declarations.reversed() where declaration.declares(id: id) {
+                    if referencedDeclarations.insert(declaration).inserted {
+                        return
+                    }
+                }
+            }
+        }
+    }
+}

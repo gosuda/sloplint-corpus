@@ -1,0 +1,388 @@
+/*
+ * Copyright 2019 http4s.org
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.http4s.ember.server.internal
+
+import cats.ApplicativeThrow
+import cats.MonadThrow
+import cats.data.NonEmptyList
+import cats.effect.Concurrent
+import cats.effect.Ref
+import cats.effect.Temporal
+import cats.effect.std.Mutex
+import cats.syntax.all._
+import fs2.Chunk
+import fs2.Pipe
+import fs2.Pull
+import fs2.Stream
+import fs2.concurrent.SignallingRef
+import fs2.io.net._
+import org.http4s._
+import org.http4s.crypto.Hash
+import org.http4s.crypto.HashAlgorithm
+import org.http4s.ember.core.Read
+import org.http4s.ember.core.Util.timeoutMaybe
+import org.http4s.headers._
+import org.http4s.syntax.all._
+import org.http4s.websocket.FrameTranscoder
+import org.http4s.websocket.FrameTranscoder.TranscodeError
+import org.http4s.websocket.FrameTranscoder.TranscodeErrorReason
+import org.http4s.websocket.Rfc6455
+import org.http4s.websocket.WebSocketCombinedPipe
+import org.http4s.websocket.WebSocketContext
+import org.http4s.websocket.WebSocketFrame
+import org.http4s.websocket.WebSocketFrame.CloseStatusCode
+import org.http4s.websocket.WebSocketFrameDefragmenter
+import org.http4s.websocket.WebSocketSeparatePipe
+import org.typelevel.ci._
+import org.typelevel.log4cats.Logger
+import scodec.bits.ByteVector
+
+import java.io.IOException
+import java.nio.ByteBuffer
+import scala.collection.mutable.ArrayBuffer
+import scala.concurrent.TimeoutException
+import scala.concurrent.duration.Duration
+
+private[internal] class WebSocketHelpers(maxFrameSize: Int) {
+  import WebSocketHelpers._
+
+  private[this] val supportedWebSocketVersion = 13L
+
+  private[this] val upgradeCi = ci"upgrade"
+  private[this] val webSocketProtocol = Protocol(ci"websocket", None)
+  private[this] val connectionUpgrade = Connection(NonEmptyList.of(upgradeCi))
+  private[this] val upgradeWebSocket = Upgrade(webSocketProtocol)
+
+  // TODO followup: use websocketcontext responses for error modes
+  def upgrade[F[_]](
+      socket: Socket[F],
+      req: Request[F],
+      ctx: WebSocketContext[F],
+      buffer: Array[Byte],
+      receiveBufferSize: Int,
+      idleTimeout: Duration,
+      onWriteFailure: (Option[Request[F]], Response[F], Throwable) => F[Unit],
+      errorHandler: Throwable => F[Response[F]],
+      logger: Logger[F],
+  )(implicit F: Temporal[F]): F[Unit] = {
+    val wsResponse = clientHandshake(req) match {
+      case Right(key) =>
+        serverHandshake(key)
+          .map { hashBytes =>
+            val secWebSocketAccept = new `Sec-WebSocket-Accept`(hashBytes)
+            val headers =
+              ctx.headers ++ Headers(connectionUpgrade, upgradeWebSocket, secWebSocketAccept)
+            Response[F](Status.SwitchingProtocols)
+              .withHeaders(headers)
+          }
+          .handleErrorWith(errorHandler)
+      case Left(error) =>
+        Response[F](error.status).withEntity(error.message).pure[F]
+    }
+
+    val handler = for {
+      response <- wsResponse
+      _ <- ServerHelpers.send(socket)(Some(req), response, idleTimeout, onWriteFailure)
+      _ <-
+        if (response.status == Status.SwitchingProtocols)
+          runConnection(socket, ctx, buffer, receiveBufferSize, idleTimeout)
+        else F.unit
+    } yield ()
+
+    handler.handleErrorWith {
+      case e @ BrokenPipeError() =>
+        logger.trace(e)("WebSocket connection abruptly terminated by client")
+      case e @ EndOfStreamError() =>
+        logger.trace(e)("WebSocket connection abruptly terminated by client")
+      case e => logger.error(e)("WebSocket connection terminated with exception")
+    }
+  }
+
+  // Max frame size plus the largest header (2 + 8 extended length + 4 mask key),
+  // capped below Int.MaxValue since JVMs reserve a few header words for arrays.
+  private[this] val maxFrameLength = math.min(maxFrameSize.toLong + 14, Int.MaxValue - 8L)
+
+  private[this] val nonClientTranscoder =
+    new FrameTranscoder(isClient = false, maxFrameSize = maxFrameSize)
+
+  private def runConnection[F[_]](
+      socket: Socket[F],
+      ctx: WebSocketContext[F],
+      buffer: Array[Byte],
+      receiveBufferSize: Int,
+      idleTimeout: Duration,
+  )(implicit F: Temporal[F]): F[Unit] =
+    Mutex[F].flatMap { mut =>
+      val read: Read[F] = timeoutMaybe(socket.read(receiveBufferSize), idleTimeout)
+
+      // Writes without locking, so concurrent calls may result in interleaving of frame chunks
+      // and race on `close`. Use `mut` to guard the state.
+      def writeFrameUnsafe(frame: WebSocketFrame): F[Unit] =
+        frameToBytes(frame).traverse_(c => timeoutMaybe(socket.write(c), idleTimeout))
+
+      val incoming = Stream.chunk(Chunk.array(buffer)) ++ readStream(read)
+
+      SignallingRef[F, Close](Open).flatMap { close =>
+        def writeClosingFrame(frame: WebSocketFrame): F[Unit] =
+          mut.lock.surround {
+            close.get.flatMap {
+              case Open =>
+                close.set(EndpointClosed).flatMap(_ => writeFrameUnsafe(frame))
+              case _ => F.unit
+            }
+          }
+
+        def writeOutgoing(frame: WebSocketFrame): F[Unit] = frame match {
+          case fr: WebSocketFrame.Close =>
+            writeClosingFrame(fr)
+          case _ =>
+            mut.lock.surround {
+              close.get.flatMap {
+                case Open => writeFrameUnsafe(frame)
+                case _ => F.unit
+              }
+            }
+        }
+
+        def sendClosingFrame(statusCode: CloseStatusCode = CloseStatusCode.Normal): F[Unit] =
+          writeClosingFrame(WebSocketFrame.Close(statusCode))
+
+        val (stream, onClose) = ctx.webSocket match {
+          case WebSocketCombinedPipe(receiveSend, onClose) =>
+            val reader = incoming
+              .through(decodeFrames[F])
+              .evalMapFilter(handleIncomingFrame[F](writeFrameUnsafe, close, mut))
+              .through(receiveSend)
+            val stream =
+              reader.foreach(writeOutgoing) ++ Stream.exec(sendClosingFrame())
+
+            stream -> onClose
+
+          case WebSocketSeparatePipe(send, receive, onClose) =>
+            val writer: Stream[F, Nothing] =
+              send.foreach(writeOutgoing) ++ Stream.exec(sendClosingFrame())
+            val reader = incoming
+              .through(decodeFrames[F])
+              .evalMapFilter(handleIncomingFrame[F](writeFrameUnsafe, close, mut))
+              .through(receive)
+
+            reader.concurrently(writer) -> onClose
+        }
+
+        def onError(err: Throwable): F[Unit] = {
+          val closeCode = err match {
+            case transcode: TranscodeError =>
+              transcode.reason match {
+                case Some(TranscodeErrorReason.MaxFrameSizeExceeded) => Some(CloseStatusCode.TooBig)
+                case _ => Some(CloseStatusCode.ProtocolError)
+              }
+            case _: WebSocketFrameDefragmenter.MessageTooLong |
+                _: WebSocketFrameDefragmenter.TooManyFragments =>
+              Some(CloseStatusCode.TooBig)
+            case _: ProtocolException => Some(CloseStatusCode.ProtocolError)
+            case EndOfStreamError() | _: IOException | _: TimeoutException =>
+              None // connection is likely gone
+            case _ => Some(CloseStatusCode.UnexpectedCondition)
+          }
+
+          closeCode.traverse_(sendClosingFrame).attempt.void
+        }
+
+        stream
+          .handleErrorWith(e => Stream.exec(onError(e)) ++ Stream.raiseError[F](e))
+          .interruptWhen(close.map(_ == BothClosed))
+          .onFinalize(onClose)
+          .compile
+          .drain
+      }
+    }
+
+  private def handleIncomingFrame[F[_]](
+      writeFrame: WebSocketFrame => F[Unit],
+      closeState: Ref[F, Close],
+      mut: Mutex[F],
+  )(
+      frame: WebSocketFrame
+  )(implicit F: Concurrent[F]): F[Option[WebSocketFrame]] =
+    frame match {
+      case ping @ WebSocketFrame.Ping(data) =>
+        // As per RFC 6455 §5.5.2, an endpoint that receives a Ping after a Close
+        // from the peer is no longer required to respond to that Ping. Moreover,
+        // once the closing handshake has completed, the connection is being closed.
+        mut.lock.surround {
+          closeState.get.flatMap {
+            case EndpointClosed | Open =>
+              writeFrame(WebSocketFrame.Pong(data)).as(ping.some)
+            case _ =>
+              F.pure(None)
+          }
+        }
+
+      case WebSocketFrame.Close(_) =>
+        mut.lock
+          .surround {
+            closeState.get.flatMap {
+              case Open =>
+                // Peer closed first, so we answer and then handshake is complete.
+                for {
+                  frame <- F.pure(WebSocketFrame.Close(CloseStatusCode.Normal))
+                  _ <- writeFrame(frame)
+                  _ <- closeState.set(BothClosed)
+                } yield ()
+
+              case EndpointClosed =>
+                // We closed first and the peer has now answered, so the handshake is complete.
+                closeState.set(BothClosed)
+
+              case _ => F.unit
+            }
+          }
+          .as(None)
+      case x => F.pure(Some(x))
+    }
+
+  private def frameToBytes(frame: WebSocketFrame): Chunk[Chunk[Byte]] =
+    Chunk.array(nonClientTranscoder.frameToBuffer(frame)).map { buffer =>
+      // TODO followup: improve the buffering here
+      val bytes = new Array[Byte](buffer.remaining())
+      buffer.get(bytes)
+      Chunk.array(bytes)
+    }
+
+  private[internal] def decodeFrames[F[_]](implicit
+      F: ApplicativeThrow[F]
+  ): Pipe[F, Byte, WebSocketFrame] =
+    stream => {
+      def go(rest: Stream[F, Byte], acc: Array[Byte], filled: Int): Pull[F, WebSocketFrame, Unit] =
+        rest.pull.uncons.flatMap {
+          case Some((chunk, next)) =>
+            ApplicativeThrow[Pull[F, WebSocketFrame, *]]
+              .catchNonFatal { // `bufferToFrame` might throw
+                val size = Math.addExact(filled, chunk.size)
+                val buffer =
+                  if (size <= acc.length) acc
+                  else {
+                    // Double the buffer for amortized linear copying, capped at the
+                    // largest possible frame, but never smaller than what we need now.
+                    val newCapacity =
+                      math.max(size.toLong, math.min(acc.length * 2L, maxFrameLength)).toInt
+                    java.util.Arrays.copyOf(acc, newCapacity)
+                  }
+                chunk.copyToArray(buffer, filled)
+                // A single chunk might contain multiple frames
+                // but `bufferToFrame` decodes at most one, so we
+                // call it repeatedly until all frames in the buffer are decoded.
+                val frames = ArrayBuffer.empty[WebSocketFrame]
+                var byteBuffer = ByteBuffer.wrap(buffer, 0, size)
+                var frame = nonClientTranscoder.bufferToFrame(byteBuffer)
+                while (frame != null) {
+                  frames += frame
+                  // We need to slice b/c `bufferToFrame` does absolute reads.
+                  byteBuffer = byteBuffer.slice()
+                  frame = nonClientTranscoder.bufferToFrame(byteBuffer)
+                }
+                if (frames.nonEmpty) {
+                  val remaining = new Array[Byte](byteBuffer.remaining())
+                  byteBuffer.get(remaining)
+                  (Some(Chunk.array(frames.toArray)), remaining, remaining.length)
+                } else {
+                  (None, buffer, size)
+                }
+              }
+              .flatMap {
+                case (Some(frames), remaining, remainingSize) =>
+                  Pull.output(frames) >> go(next, remaining, remainingSize)
+                case (None, buffer, bufferedSize) =>
+                  go(next, buffer, bufferedSize)
+              }
+          case None =>
+            // TODO followup: sometimes the peer closes connection before stream can interrupt itself
+            Pull.raiseError(EndOfStreamError())
+        }
+
+      go(stream, Array.emptyByteArray, 0).void.stream
+    }
+
+  private def clientHandshake[F[_]](req: Request[F]): Either[ClientHandshakeError, String] = {
+    val connection = req.headers.get[Connection] match {
+      case Some(header) if header.hasUpgrade => Either.unit
+      case _ => Left(UpgradeRequired)
+    }
+
+    val upgrade = req.headers.get[Upgrade] match {
+      case Some(header) if header.values.contains_(webSocketProtocol) => Either.unit
+      case _ => Left(UpgradeRequired)
+    }
+
+    val version = req.headers.get[`Sec-WebSocket-Version`] match {
+      case Some(header) if header.version == supportedWebSocketVersion => Either.unit
+      case Some(header) => Left(UnsupportedVersion(supportedWebSocketVersion, header.version))
+      case None => Left(VersionNotFound)
+    }
+
+    val key = req.headers.get[`Sec-WebSocket-Key`] match {
+      case Some(header) => Right(header.value)
+      case None => Left(KeyNotFound)
+    }
+
+    (connection, upgrade, version, key).mapN { case (_, _, _, key) => key }
+  }
+
+  private[this] val magic = ByteVector.view(Rfc6455.handshakeMagicBytes)
+
+  private def serverHandshake[F[_]](value: String)(implicit F: MonadThrow[F]): F[ByteVector] = for {
+    value <- ByteVector.encodeAscii(value).liftTo[F]
+    digest <- Hash[F].digest(HashAlgorithm.SHA1, value ++ magic)
+  } yield digest
+
+  private def readStream[F[_]](read: Read[F]): Stream[F, Byte] =
+    Stream.eval(read).flatMap {
+      case Some(bytes) =>
+        Stream.chunk(bytes) ++ readStream(read)
+      case None => Stream.empty
+    }
+}
+
+object WebSocketHelpers {
+  sealed abstract class Close
+  case object Open extends Close
+  case object PeerClosed extends Close
+  case object EndpointClosed extends Close
+  case object BothClosed extends Close
+
+  sealed abstract class ClientHandshakeError(val status: Status, val message: String)
+  case object VersionNotFound
+      extends ClientHandshakeError(Status.BadRequest, "Sec-WebSocket-Version header not present.")
+  final case class UnsupportedVersion(supported: Long, requested: Long)
+      extends ClientHandshakeError(
+        Status.UpgradeRequired,
+        s"This server only supports WebSocket version $supported.",
+      )
+  case object UpgradeRequired
+      extends ClientHandshakeError(
+        Status.UpgradeRequired,
+        "Upgrade required for WebSocket communication.",
+      )
+  case object KeyNotFound
+      extends ClientHandshakeError(Status.BadRequest, "Sec-WebSocket-Key header not present.")
+
+  final case class EndOfStreamError() extends Exception("Reached End Of Stream")
+
+  object BrokenPipeError {
+    def unapply(err: IOException): Boolean = err.getMessage == "Broken pipe"
+  }
+}

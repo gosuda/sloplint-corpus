@@ -1,0 +1,17 @@
+import SwiftCompilerPlugin
+import SwiftDiagnostics
+import SwiftSyntax
+import SwiftSyntaxMacros
+
+@main
+struct SwiftLintCoreMacros: CompilerPlugin {
+    let providingMacros: [any Macro.Type] = [
+        AutoConfigParser.self,
+        AcceptableByConfigurationElement.self,
+        Corrections.self,
+        DisabledWithoutSourceKit.self,
+        Example.self,
+        Examples.self,
+        SwiftSyntaxRule.self,
+    ]
+}

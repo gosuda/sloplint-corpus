@@ -1,0 +1,34 @@
+// dart format off
+
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:material_ui/material_ui.dart';
+
+final provider = Provider((_) => 'some value');
+
+class YourWidgetYouWantToTest extends StatelessWidget {
+  const YourWidgetYouWantToTest({super.key});
+
+  @override
+  Widget build(BuildContext context) => const Placeholder();
+}
+
+/* SNIPPET START */
+void main() {
+  testWidgets('Some description', (tester) async {
+    await tester.pumpWidget(
+      const ProviderScope(child: YourWidgetYouWantToTest()),
+    );
+
+    final container = tester.container();
+
+    // {@template useProvider}
+    // TODO interact with your providers
+    // {@endtemplate}
+    expect(
+      container.read(provider),
+      'some value',
+    );
+  });
+}
+/* SNIPPET END */
