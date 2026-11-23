@@ -458,6 +458,27 @@ class TestHeaders(unittest.TestCase):
         self.assertTrue(any("BSD-3-Clause" in e and "public allowlist" in e
                             for e in errors), errors)
 
+    def test_bsd_reference_headers_fail_public_without_spdx(self):
+        headers = {
+            "src/style.rs": ("// Copyright 2014 The Flutter Authors. All rights reserved.\n"
+                             "// Use of this source code is governed by a BSD-style license that can be\n"
+                             "// found in the LICENSE file.\n"),
+            "src/ported.rs": "// Ported from go, which is licensed under a BSD-3 license.\n",
+            "src/derived.rs": ("//! Parts of that code was ported from the BSD-licensed nat.go file\n"
+                               "//! in the Go language.\n"),
+        }
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        files = {rel: text + "pub fn f() {}\n" for rel, text in headers.items()}
+        files["src/freebsd.rs"] = "// Available on FreeBSD 13.2+ and NetBSD-8.\npub fn g() {}\n"
+        projdir = add_synthetic_project(root, files=files)
+        errors = []
+        corpus.check_headers(projdir, "rust", {"MIT"}, True, errors, "project demo")
+        for rel in headers:
+            self.assertTrue(any(rel in e and "BSD" in e and "public allowlist" in e
+                                for e in errors), (rel, errors))
+        self.assertFalse(any("src/freebsd.rs" in e for e in errors), errors)
+
     def test_isc_header_fails_public_without_spdx(self):
         root = make_repo()
         self.addCleanup(shutil.rmtree, root, True)

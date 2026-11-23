@@ -100,6 +100,9 @@ NON_ALLOWLIST_HEADER_PHRASES = (
     ("redistribution and use in source and binary forms", "BSD"),
     ("licensed under the bsd", "BSD"),
     ("bsd license", "BSD"),
+    ("bsd-style license", "BSD"),
+    ("bsd-licensed", "BSD"),
+    ("bsd-3 license", "BSD-3-Clause"),
     ("isc license", "ISC"),
     ("and/or distribute this software for any purpose", "ISC"),
 )
