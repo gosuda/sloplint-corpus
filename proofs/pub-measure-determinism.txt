@@ -1,0 +1,3 @@
+byte-identical except wall fields: True
+wall_ms run1: 79
+wall_ms run2: 104

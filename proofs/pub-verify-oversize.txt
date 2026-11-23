@@ -1,0 +1,5 @@
+=== P6: file above the 1 MiB cap, expected FAIL ===
+FAIL project syn-rust: src/big.rs is 1048577 bytes, above the 1048576 per-file cap
+FAIL project syn-rust: tree_hash mismatch: manifest sha256:8c51e7b0ead8f57be7b75d439268df5833b50f9b961b485baf2100a10c193dbb, computed sha256:e73e07ee27ccc2d5c6347da810e2f2bb6f1fe0e74dc52d507edead80916c7b4f
+verify: 2 failure(s)
+exit=1

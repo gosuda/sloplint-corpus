@@ -1,0 +1,4 @@
+=== stats ===
+python       projects=1 copied=1 pinned=0 files=3 bytes=125
+rust         projects=1 copied=1 pinned=0 files=3 bytes=161
+exit=0

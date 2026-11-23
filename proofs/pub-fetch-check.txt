@@ -1,0 +1,10 @@
+=== fetch --check on clean tree ===
+PASS fetch --check project syn-rust
+PASS fetch --check project syn-python
+PASS fetch
+exit=0
+=== fetch --check on tampered tree ===
+PASS fetch --check project syn-rust
+FAIL project syn-python: tree_hash mismatch
+fetch: 1 failure(s)
+exit=1

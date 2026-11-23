@@ -1,0 +1,5 @@
+=== P2: planted GPL-3.0 LICENSE plus GPL header file, expected FAIL ===
+FAIL project syn-rust: license file says GPL-3.0-only which is not in declared spdx
+FAIL project syn-rust: src/gpl_part.rs header carries copyleft license text
+verify: 2 failure(s)
+exit=1

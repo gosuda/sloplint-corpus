@@ -1,0 +1,5 @@
+=== P4: project with LICENSE removed, hash recomputed, expected FAIL ===
+license removed, hash updated
+FAIL project syn-rust: copied entry has no LICENSE or COPYING file
+verify: 1 failure(s)
+exit=1

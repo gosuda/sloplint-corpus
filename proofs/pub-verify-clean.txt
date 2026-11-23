@@ -1,0 +1,3 @@
+=== clean tree, expected PASS ===
+PASS verify: 2 project(s), mode public
+exit=0
