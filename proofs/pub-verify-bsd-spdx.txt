@@ -1,0 +1,6 @@
+=== P3: project with non-allowlisted SPDX (BSD-3-Clause) ===
+planted BSD entry
+FAIL project syn-rust: spdx BSD-3-Clause is not on the public allowlist (MIT, Apache-2.0)
+FAIL project syn-rust: license file says BSD-3-Clause which is not on the public allowlist
+verify: 2 failure(s)
+exit=1

@@ -1,0 +1,46 @@
+name: nightly
+
+on:
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install askalono 0.5.0
+        run: cargo install askalono-cli --version 0.5.0 --locked
+      - name: Install sloplint
+        run: cargo install --git https://github.com/gosuda/sloplint --locked
+      - name: Verify committed trees
+        run: python3 tools/corpus/corpus fetch --check
+      - name: Measure every language with projects
+        run: |
+          python3 - <<'EOF'
+          import json
+          import subprocess
+          out = subprocess.run(
+              ["python3", "tools/corpus/corpus", "stats", "--format", "json"],
+              capture_output=True, text=True, check=True)
+          for lang, row in json.loads(out.stdout).items():
+              if row["copied"] > 0:
+                  subprocess.run(
+                      ["python3", "tools/corpus/corpus", "measure", lang],
+                      check=True)
+          EOF
+      - name: Show measurement reports
+        if: always()
+        run: |
+          shopt -s nullglob
+          for report in reports/*.json; do
+            echo "--- $report"
+            cat "$report"
+          done

@@ -1,0 +1,9 @@
+=== seeds python, first run ===
+PASS seeds python: 3 files, 125 bytes -> /dev/shm/CorpusTooling/proofs/seeds1
+exit=0
+=== seeds python, second run ===
+PASS seeds python: 3 files, 125 bytes -> /dev/shm/CorpusTooling/proofs/seeds2
+exit=0
+syn-python__pkg__mod.py
+syn-python__pkg__util.py
+syn-python__tests__test_basic.py

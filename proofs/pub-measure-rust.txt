@@ -1,0 +1,5 @@
+=== measure rust on clean synthetic tree ===
+WARN no budgets file at /dev/shm/CorpusTooling/proofs/pub-clean/budgets.toml
+measure: rust files=3 bytes=161 parse_errors=0 panics=0 wall_ms=79
+PASS measure rust -> /dev/shm/CorpusTooling/proofs/pub-clean/reports/rust.json
+exit=0

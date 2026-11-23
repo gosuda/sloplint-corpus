@@ -1,0 +1,4 @@
+=== P5: tampered file with stale hash, expected FAIL ===
+FAIL project syn-python: tree_hash mismatch: manifest sha256:550dacea3f52aacecce2412c2be204631e04f25cb32973604454847b09570725, computed sha256:ab7f9c76f56351b1249a2f2e78ea1ec46f8da013369119ec6d955ff1e4bd8ed9
+verify: 1 failure(s)
+exit=1
