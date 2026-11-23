@@ -1,0 +1,122 @@
+# Copyright 2021 The Bazel Authors. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""A resilient API layer wrapping compilation and other logic for Rust rules.
+
+This module is meant to be used by custom rules that need to compile Rust code
+and cannot simply rely on writing a macro that wraps `rust_library`. This module
+provides the lower-level interface to Rust providers, actions, and functions.
+Do not load this file directly; instead, load the top-level `defs.bzl` file,
+which exports the `rust_common` struct.
+
+In the Bazel lingo, `rust_common` gives the access to the Rust Sandwich API.
+"""
+
+load(":providers.bzl", "CrateGroupInfo", "CrateInfo", "DepInfo", "DepVariantInfo", "StdLibInfo", "TestCrateInfo")
+
+# This constant only represents the default value for attributes and macros
+# defined in `rules_rust`. Like any attribute public attribute, it can be
+# overwritten by the user on the rules they're defined on.
+#
+# Note: Code in `.github/workflows/crate_universe.yaml` looks for this line, if
+# you remove it or change its format, you will also need to update that code.
+DEFAULT_RUST_VERSION = "1.99.1"
+
+DEFAULT_NIGHTLY_ISO_DATE = "2026-10-15"
+
+def _create_crate_info(**kwargs):
+    """A constructor for a `CrateInfo` provider
+
+    This function should be used in place of directly creating a `CrateInfo`
+    provider to improve API stability.
+
+    Args:
+        **kwargs: An initial set of keyword arguments.
+
+    Returns:
+        CrateInfo: A provider
+    """
+    if not "wrapped_crate_type" in kwargs:
+        kwargs.update({"wrapped_crate_type": None})
+    if not "metadata" in kwargs:
+        kwargs.update({"metadata": None})
+    if not "metadata_supports_pipelining" in kwargs:
+        kwargs.update({"metadata_supports_pipelining": False})
+    if not "rustc_rmeta_output" in kwargs:
+        kwargs.update({"rustc_rmeta_output": None})
+    if not "rustc_output" in kwargs:
+        kwargs.update({"rustc_output": None})
+    if not "extra_named_deps" in kwargs:
+        kwargs.update({"extra_named_deps": depset([])})
+    if not "rustc_env_files" in kwargs:
+        kwargs.update({"rustc_env_files": []})
+    if not "data" in kwargs:
+        kwargs.update({"data": depset([])})
+    if not "root_path" in kwargs:
+        kwargs.update({"root_path": ""})
+    if not "owner" in kwargs:
+        kwargs.update({"owner": None})
+    if not "aliases" in kwargs:
+        kwargs.update({"aliases": {}})
+    if not "cfgs" in kwargs:
+        kwargs.update({"cfgs": []})
+    if not "compile_data" in kwargs:
+        kwargs.update({"compile_data": depset([])})
+    if not "compile_data_targets" in kwargs:
+        kwargs.update({"compile_data_targets": depset([])})
+    if not "deps" in kwargs:
+        kwargs.update({"deps": depset([])})
+    if not "edition" in kwargs:
+        kwargs.update({"edition": "2015"})
+    if not "is_test" in kwargs:
+        kwargs.update({"is_test": False})
+    if not "output" in kwargs:
+        kwargs.update({"output": None})
+    if not "proc_macro_deps" in kwargs:
+        kwargs.update({"proc_macro_deps": depset([])})
+    if not "root" in kwargs:
+        kwargs.update({"root": None})
+    if not "rustc_env" in kwargs:
+        kwargs.update({"rustc_env": {}})
+    if not "srcs" in kwargs:
+        kwargs.update({"srcs": depset([])})
+    if not "std_dylib" in kwargs:
+        kwargs.update({"std_dylib": None})
+    return CrateInfo(**kwargs)
+
+rust_common = struct(
+    create_crate_info = _create_crate_info,
+    crate_info = CrateInfo,
+    dep_info = DepInfo,
+    dep_variant_info = DepVariantInfo,
+    stdlib_info = StdLibInfo,
+    test_crate_info = TestCrateInfo,
+    crate_group_info = CrateGroupInfo,
+    default_version = DEFAULT_RUST_VERSION,
+    # The toolchain types `rules_rust` defines, for rules which resolve them:
+    # `toolchains = [config_common.toolchain_type(rust_common.cargo_toolchain_type, mandatory = False)]`
+    # and `ctx.toolchains[rust_common.cargo_toolchain_type]`.
+    toolchain_type = Label("//rust:toolchain_type"),
+    cargo_toolchain_type = Label("//cargo:toolchain_type"),
+    clippy_toolchain_type = Label("//rust/clippy:toolchain_type"),
+    rustdoc_toolchain_type = Label("//rust/rustdoc:toolchain_type"),
+    rust_analyzer_toolchain_type = Label("//rust/rust_analyzer:toolchain_type"),
+    rustfmt_toolchain_type = Label("//rust/rustfmt:toolchain_type"),
+)
+
+COMMON_PROVIDERS = [
+    CrateInfo,
+    DepInfo,
+    DefaultInfo,
+]

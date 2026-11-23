@@ -230,3 +230,77 @@ added_by = "CorpusPopC5"
 added_on = "2026-11-23"
 reason = "Godot bindings, FFI-heavy (selection slot: bindings)"
 notice_present_upstream = false
+
+[[project]]
+name = "bazel"
+language = "starlark"
+url = "https://github.com/bazelbuild/bazel"
+rev = "8af51fe6c682f63ac0aaa84130454b5ed28a5aee"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+exclude = ["third_party/**", "third_party/*/**", "third_party/*/*/**", "third_party/*/*/*/**", "third_party/*/*/*/*/**", "third_party/*/*/*/*/*/**"]
+tree_hash = "sha256:fd1d4f612e62ed790ba76d3c72414bae4eea684197ba1e378ce96fe765e6a0ce"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "build system interpreter host minus vendored third party (selection slot: build system)"
+notice_present_upstream = false
+
+[[project]]
+name = "rules-go"
+language = "starlark"
+url = "https://github.com/bazelbuild/rules_go"
+rev = "2a638a86dbb3c602b2915b8fec53947a64f96e08"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+exclude = ["third_party/**", "third_party/*/**", "third_party/*/*/**", "tests/bcr/**", "tests/legacy/examples/vendor/**", "tests/legacy/examples/vendor/*/**", "tests/legacy/examples/vendor/*/*/**"]
+tree_hash = "sha256:b8bd900edccf901d7f724ce31793bb1cf19fcfa7d399120b36af079fdac38c8e"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "Go rules incl BCR fixtures minus vendored dirs (selection slot: libraries)"
+notice_present_upstream = false
+
+[[project]]
+name = "bazel-skylib"
+language = "starlark"
+url = "https://github.com/bazelbuild/bazel-skylib"
+rev = "a920cdfe02154b916b493b4ffdd08087f0498fc7"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:b4cebcd408de77e514adcad9c3b810489e58ad5d5057ac5a849a6d01effd4116"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "canonical function library (selection slot: small programs)"
+notice_present_upstream = false
+
+[[project]]
+name = "rules-python"
+language = "starlark"
+url = "https://github.com/bazel-contrib/rules_python"
+rev = "d9c0896d27ccbc2497e865fdd85d372534a03b11"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+exclude = ["examples/wheel/**", "examples/wheel/*/**"]
+tree_hash = "sha256:2163d74baa18dbaa8d1097ab00077ce4c07b56ecd57caefb4ac7e5ae4a8e9083"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "Python rules with gazelle resolver minus wheel fixture (selection slot: libraries)"
+notice_present_upstream = false
+
+[[project]]
+name = "rules-rust"
+language = "starlark"
+url = "https://github.com/bazelbuild/rules_rust"
+rev = "5d99ff2e58d1a0c9387fc4945029df11144bc8a3"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+exclude = ["crate_universe/**", "crate_universe/*/**", "crate_universe/*/*/**", "crate_universe/*/*/*/**", "crate_universe/*/*/*/*/**", "crate_universe/*/*/*/*/*/**"]
+tree_hash = "sha256:3a45e9af19de5902326b27b9359e3b0ffa8d4d1cd4d335948ca164a945a803f5"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "Rust rules minus vendored crate BUILD files (selection slot: libraries)"
+notice_present_upstream = false
