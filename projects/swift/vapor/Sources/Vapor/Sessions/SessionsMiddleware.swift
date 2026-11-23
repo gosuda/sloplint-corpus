@@ -1,0 +1,89 @@
+import Synchronization
+
+/// Uses HTTP cookies to save and restore sessions for connecting clients.
+///
+/// If a cookie matching the configured cookie name is found on an incoming request,
+/// the value will be used as an identifier to find the associated `Session`.
+///
+/// If a session is used during a request (`Request.session()`), a cookie will be set
+/// on the outgoing response with the session's unique identifier. This cookie must be
+/// returned on the next request to restore the session.
+///
+///     app.middleware.use(app.sessionsMiddleware)
+///
+/// See ``SessionsConfiguration`` and ``Sessions`` for more information.
+public final class SessionsMiddleware: Middleware {
+    /// The cookie to work with
+    let configuration: SessionsConfiguration
+
+    /// Session store.
+    public let session: any SessionDriver
+
+    /// Creates a new ``SessionsMiddleware``.
+    ///
+    /// - parameters:
+    ///     - sessions: ``Sessions`` implementation to use for fetching and storing sessions.
+    ///     - configuration: ``SessionsConfiguration`` to use for naming and creating cookie values.
+    public init(
+        session: any SessionDriver,
+        configuration: SessionsConfiguration = .default()
+    ) {
+        self.session = session
+        self.configuration = configuration
+    }
+
+    public func respond(to request: Request, chainingTo next: any Responder) async throws -> Response {
+        // Signal middleware has been added.
+        request.sessionCache.storage.withLock { $0.middlewareFlag = true }
+
+        // Check for an existing session
+        if let cookieValue = request.cookies[self.configuration.cookieName] {
+            // A cookie value exists, get the session for it.
+            let id = SessionID(string: cookieValue.string)
+            if let data = try await self.session.readSession(id, for: request) {
+                // Session found, restore data and id.
+                request.sessionCache.storage.withLock { $0.session = .init(id: id, data: data) }
+            } else {
+                // Session id not found, create new session.
+                request.sessionCache.storage.withLock { $0.session = .init() }
+            }
+        }
+
+        let response = try await next.respond(to: request)
+        return try await self.addCookies(to: response, for: request)
+    }
+
+    /// Adds session cookie to response or clears if session was deleted.
+    private func addCookies(to response: Response, for request: Request) async throws -> Response {
+        var response = response
+        if let session = request.sessionCache.storage.withLock({ $0.session }), session.isValid {
+            // A session exists or has been created. we must
+            // set a cookie value on the response
+            let sessionID: SessionID
+            if let id = session.id {
+                // A cookie exists, just update this session.
+                sessionID = try await self.session.updateSession(id, to: session.data, for: request)
+            } else {
+                // No cookie, this is a new session.
+                sessionID = try await self.session.createSession(session.data, for: request)
+            }
+            response.cookies[self.configuration.cookieName] = self.configuration.cookieFactory(sessionID)
+        } else if let cookieValue = request.cookies[self.configuration.cookieName] {
+            // The request had a session cookie, but now there is no valid session.
+            // we need to perform cleanup.
+            let id = SessionID(string: cookieValue.string)
+            try await self.session.deleteSession(id, for: request)
+            response.cookies[self.configuration.cookieName] = .expired
+        }
+        return response
+    }
+}
+
+extension Application {
+    public var sessionsMiddleware: SessionsMiddleware {
+        .init(
+            session: self.sessionDriver,
+            configuration: self.sessionsConfiguration
+        )
+    }
+}

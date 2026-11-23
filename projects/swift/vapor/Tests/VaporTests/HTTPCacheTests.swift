@@ -1,0 +1,157 @@
+import HTTPTypes
+import Testing
+import Vapor
+
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
+import Foundation
+#endif
+
+@Suite("HTTP Cache Tests")
+class HTTPCacheTests {
+    @Test("Test No Store With Expires")
+    func testNoStoreWithExpires() {
+        let requested = Date()
+        var headers = HTTPFields()
+        headers[.expires] = "Sun, 06 Nov 1994 08:49:37 GMT"
+        headers[.cacheControl] = "no-store, max-age=12"
+
+        let response = ClientResponse(status: .ok, headers: headers)
+
+        #expect(response.headers.expirationDate(requestSentAt: requested) == nil)
+    }
+
+    @Test("Test No Store")
+    func testNoStore() {
+        let requested = Date()
+        var headers = HTTPFields()
+        headers[.cacheControl] = "no-store, max-age=12"
+        let response = ClientResponse(status: .ok, headers: headers)
+
+        #expect(response.headers.expirationDate(requestSentAt: requested) == nil)
+    }
+
+    @Test("Test Max Age")
+    func testMaxAge() {
+        let seconds = Int.random(in: 1...3_000_333)
+        let requested = Date()
+        var headers = HTTPFields()
+        headers[.cacheControl] = "max-age=\(seconds)"
+        let response = ClientResponse(status: .ok, headers: headers)
+
+        let required = requested.addingTimeInterval(TimeInterval(seconds))
+
+        #expect(response.headers.expirationDate(requestSentAt: requested) == required)
+    }
+
+    @Test("Test No Matching")
+    func testNoMatching() {
+        let requested = Date()
+        var headers = HTTPFields()
+        headers[.cacheControl] = "random garbage"
+        let response = ClientResponse(status: .ok, headers: headers)
+
+        #expect(response.headers.expirationDate(requestSentAt: requested) == nil)
+    }
+
+    @Test("Test Missing Header")
+    func testMissingHeader() {
+        let response = ClientResponse(status: .ok)
+        #expect(response.headers.expirationDate(requestSentAt: Date()) == nil)
+    }
+
+    @Test("Test Preferred Format")
+    func testPreferredFormat() {
+        let expires = "Sun, 06 Nov 1994 08:49:37 GMT"
+        let required = Date(timeIntervalSince1970: 784_111_777)
+        var headers = HTTPFields()
+        headers[.expires] = expires
+        let response = ClientResponse(status: .ok, headers: headers)
+
+        #expect(response.headers.expirationDate(requestSentAt: Date()) == required)
+    }
+
+    @Test("Test Obselete Format One")
+    func testObsoleteFormatOne() {
+        let expires = "Sunday, 06-Nov-94 08:49:37 GMT"
+        let required = Date(timeIntervalSince1970: 784_111_777)
+        var headers = HTTPFields()
+        headers[.expires] = expires
+        let response = ClientResponse(status: .ok, headers: headers)
+
+        #expect(response.headers.expirationDate(requestSentAt: Date()) == required)
+    }
+
+    @Test("Test Obselete Format Two")
+    func testObsoleteFormatTwo() {
+        let expires = "Sun Nov  6 08:49:37 1994"
+        let required = Date(timeIntervalSince1970: 784_111_777)
+        var headers = HTTPFields()
+        headers[.expires] = expires
+        let response = ClientResponse(status: .ok, headers: headers)
+
+        #expect(response.headers.expirationDate(requestSentAt: Date()) == required)
+    }
+
+    @Test("Test Max Age Overrides Expires")
+    func testMaxAgeOverridesExpires() {
+        let requested = Date()
+        let seconds = Int.random(in: 1...3_000_333)
+        let required = requested.addingTimeInterval(TimeInterval(seconds))
+
+        var headers = HTTPFields()
+        headers[.expires] = "Sun, 06 Nov 1994 08:49:37 GMT"
+        headers[.cacheControl] = "max-age=\(seconds)"
+
+        let response = ClientResponse(status: .ok, headers: headers)
+
+        #expect(response.headers.expirationDate(requestSentAt: requested) == required)
+    }
+
+    @Test("Test Cache Control Flags")
+    func testFlags() {
+        var headers = HTTPFields()
+        headers[.cacheControl] = "no-store, max-age=12"
+        let response = ClientResponse(status: .ok, headers: headers)
+
+        #expect(response.headers.cacheControl!.noStore == true)
+        #expect(response.headers.cacheControl!.immutable == false)
+        #expect(response.headers.cacheControl!.maxAge == 12)
+    }
+
+    @Test("Test Max Stale Number Without Value")
+    func textMaxStaleNoValue() {
+        var headers = HTTPFields()
+        headers[.cacheControl] = "max-stale"
+        let response = ClientResponse(status: .ok, headers: headers)
+
+        let cache = response.headers.cacheControl!
+
+        #expect(cache.maxStale != nil)
+        #expect(cache.maxStale?.seconds == nil)
+    }
+
+    @Test("Test Max Stale Number With Value")
+    func textMaxStaleWithValue() {
+        var headers = HTTPFields()
+        headers[.cacheControl] = "max-stale=12"
+        let response = ClientResponse(status: .ok, headers: headers)
+
+        let cache = response.headers.cacheControl!
+
+        #expect(cache.maxStale != nil)
+        #expect(cache.maxStale?.seconds != nil)
+        #expect(cache.maxStale?.seconds == 12)
+    }
+
+    @Test("Test Immutable")
+    func testImmutable() {
+        var headers = HTTPFields()
+        headers[.cacheControl] = "immutable"
+        let response = ClientResponse(status: .ok, headers: headers)
+
+        let cache = response.headers.cacheControl!
+        #expect(cache.immutable == true)
+    }
+}

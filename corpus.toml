@@ -2,3 +2,60 @@ schema_version = 1
 
 [corpus]
 mode = "public"
+
+[[project]]
+name = "alamofire"
+language = "swift"
+url = "https://github.com/Alamofire/Alamofire"
+rev = "dea4bab91767a971d6e112bc955c6a82295589b7"
+spdx = "MIT"
+storage = "copied"
+paths = ["*"]
+tree_hash = "sha256:7ac20dbb547f91118f53bff902134770e187a82cb1798b3385b817b29a112e63"
+added_by = "CorpusPopC4"
+added_on = "2026-11-23"
+reason = "networking library, mid-size, 2014-era origin"
+notice_present_upstream = false
+
+[[project]]
+name = "swift-composable-architecture"
+language = "swift"
+url = "https://github.com/pointfreeco/swift-composable-architecture"
+rev = "bf66bd83f3165fe4f5fdb9a6c99249276505723e"
+spdx = "MIT"
+storage = "copied"
+paths = ["*"]
+tree_hash = "sha256:65901bf270e19d9c449e093d1d0f0d79d5e44d26b4094b5bfbbc2bedd8b4c5f4"
+added_by = "CorpusPopC4"
+added_on = "2026-11-23"
+reason = "reducer architecture, macros and concurrency"
+notice_present_upstream = false
+
+[[project]]
+name = "swiftlint"
+language = "swift"
+url = "https://github.com/realm/SwiftLint"
+rev = "f934241dca9a80a68173043c647728bb54688f67"
+spdx = "MIT"
+storage = "copied"
+paths = ["*"]
+tree_hash = "sha256:6f594f5f9783c526eb5363197169dfa4e0f4159622275e7a17c2a57be4f8d2fd"
+added_by = "CorpusPopC4"
+added_on = "2026-11-23"
+reason = "tooling style, large file count"
+notice_present_upstream = false
+
+[[project]]
+name = "vapor"
+language = "swift"
+url = "https://github.com/vapor/vapor"
+rev = "e4a5b7050f5e9e5793be3ebdeb687eac92fd9965"
+spdx = "MIT"
+storage = "copied"
+paths = ["*"]
+exclude = ["Sources/Development/configure.swift"]
+tree_hash = "sha256:2bc138e0372750d340088e90c1fd725e02601cd4d3b958ba19765f86653a9aeb"
+added_by = "CorpusPopC4"
+added_on = "2026-11-23"
+reason = "server framework, new access-level imports; excludes dev sample with PEM-shaped placeholder tripping secret gate"
+notice_present_upstream = false

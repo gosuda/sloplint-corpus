@@ -1,0 +1,115 @@
+public import HTTPTypes
+
+#if canImport(FoundationEssentials)
+public import FoundationEssentials
+#else
+public import Foundation
+#endif
+
+public struct ClientRequest: Sendable {
+    /// The body of a request the client is about to send.
+    ///
+    /// The same type ``ClientResponse`` carries, and the same one a ``Response`` is built from: it
+    /// holds either bytes or a closure that produces them. A streaming body is written the same way
+    /// in either direction:
+    ///
+    ///     request.body = .init(string: "hello")
+    ///     request.body = .init(stream: { writer in
+    ///         for chunk in chunks { try await writer.write(chunk) }
+    ///     })
+    ///
+    /// Streaming is backpressured end to end: each `write` returns once the transport has taken the
+    /// bytes, so a fast producer suspends against a slow connection rather than buffering.
+    public typealias Body = Response.Body
+
+    public var method: HTTPRequest.Method
+    public var url: URI
+    public var headers: HTTPFields
+    public var body: Body
+    public var timeout: Duration
+    public var maxResponseBodySize: Int
+    private let contentConfiguration: ContentConfiguration
+
+    public init(
+        method: HTTPRequest.Method = .get,
+        url: URI = "/",
+        headers: HTTPFields = [:],
+        body: Body = .empty,
+        timeout: Duration? = nil,
+        maxResponseBodySize: Int = 10 * 1024 * 1024,  // Default to 10 MB
+        contentConfiguration: ContentConfiguration = .default()
+    ) {
+        self.method = method
+        self.url = url
+        self.headers = headers
+        self.body = body
+        self.timeout = timeout ?? .seconds(30)
+        self.contentConfiguration = contentConfiguration
+        self.maxResponseBodySize = maxResponseBodySize
+    }
+}
+
+extension ClientRequest {
+    private struct _URLQueryContainer: URLQueryContainer {
+        var url: URI
+        let contentConfiguration: ContentConfiguration
+
+        func decode<D>(_ decodable: D.Type, using decoder: any URLQueryDecoder) throws -> D
+        where D: Decodable {
+            return try decoder.decode(D.self, from: self.url)
+        }
+
+        mutating func encode(_ encodable: some Encodable, using encoder: any URLQueryEncoder) throws {
+            try encoder.encode(encodable, to: &self.url)
+        }
+    }
+
+    public var query: any URLQueryContainer {
+        get { _URLQueryContainer(url: self.url, contentConfiguration: self.contentConfiguration) }
+        set { self.url = (newValue as! _URLQueryContainer).url }
+    }
+
+    private struct _ContentContainer: ContentContainer {
+        var body: Data?
+        var headers: HTTPFields
+        let contentConfiguration: ContentConfiguration
+
+        var contentType: HTTPMediaType? {
+            return self.headers.contentType
+        }
+
+        mutating func encode(_ encodable: some Encodable, using encoder: any ContentEncoder) throws {
+            var body = Data()
+            try encoder.encode(encodable, to: &body, headers: &self.headers, userInfo: [:])
+            self.body = body
+        }
+
+        func decode<D>(_ decodable: D.Type, using decoder: any ContentDecoder) throws -> D where D: Decodable {
+            guard let body = self.body else {
+                throw Abort(.lengthRequired)
+            }
+            return try decoder.decode(D.self, from: body, headers: self.headers, userInfo: [:])
+        }
+
+        mutating func encode(_ content: some Content, using encoder: any ContentEncoder) throws {
+            var content = content
+            try content.beforeEncode()
+            var body = Data()
+            try encoder.encode(content, to: &body, headers: &self.headers, userInfo: [:])
+            self.body = body
+        }
+    }
+
+    public var content: any ContentContainer {
+        get {
+            // `data` is `nil` for a stream nothing has collected, which for a request being built
+            // means the caller supplied one; encoding replaces it either way.
+            return _ContentContainer(body: self.body.data, headers: self.headers, contentConfiguration: self.contentConfiguration)
+        }
+        set {
+            let container = (newValue as! _ContentContainer)
+            self.body = container.body.map { Body(data: $0) } ?? .empty
+            self.headers = container.headers
+        }
+    }
+}
