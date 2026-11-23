@@ -322,10 +322,11 @@ rev = "0cd28feed9cd0179b07fdb9d002f8c39063658e4"
 spdx = "Apache-2.0"
 storage = "copied"
 paths = ["*.dfy"]
-tree_hash = "sha256:aa5a4fa2a99ad6d370e3daf6aba0726d3c4482cc35ca3c1d56ace43339714acd"
+exclude = ["DafnyBench/dataset/ground_truth/Dafny-VMC_tmp_tmpzgqv0i1u_src_Math_Helper.dfy", "DafnyBench/dataset/ground_truth/libraries_tmp_tmp9gegwhqj_examples_MutableMap_MutableMapDafny.dfy", "DafnyBench/dataset/hints_removed/Dafny-VMC_tmp_tmpzgqv0i1u_src_Math_Helper_no_hints.dfy", "DafnyBench/dataset/hints_removed/libraries_tmp_tmp9gegwhqj_examples_MutableMap_MutableMapDafny_no_hints.dfy"]
+tree_hash = "sha256:231c50e5d23273b96a56e9110244ea2ecc9c4fa31ec6bf5178b270814a3e5907"
 added_by = "CorpusPopC6"
 added_on = "2026-11-23"
-reason = "large benchmark suite; machine-generated tmp names noted, dedupe at measure time"
+reason = "large benchmark suite; machine-generated tmp names noted, dedupe at measure time; 4 files carrying MIT headers excluded, declared spdx is Apache-2.0"
 notice_present_upstream = false
 
 [[project]]
