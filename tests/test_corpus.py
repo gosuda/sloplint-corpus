@@ -371,6 +371,52 @@ class TestHeaders(unittest.TestCase):
                              "project demo")
         self.assertTrue(any("outside the public allowlist" in e for e in errors), errors)
 
+    def test_racket_block_header_fails_public(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        projdir = add_synthetic_project(root, lang="racket", files={
+            "src/x.rkt": "#| SPDX-License-Identifier: GPL-3.0-only |#\n"})
+        self.assertEqual(corpus.header_spdx_ids(
+            "#| SPDX-License-Identifier: GPL-3.0-only |#\n"), {"GPL-3.0-only"})
+        errors = []
+        corpus.check_headers(projdir, "racket", {"MIT"}, True, errors,
+                             "project demo")
+        self.assertTrue(any("outside the public allowlist" in e for e in errors), errors)
+
+    def test_racket_allowed_header_passes_public(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        projdir = add_synthetic_project(root, lang="racket", files={
+            "src/x.rkt": "#| SPDX-License-Identifier: MIT |#\n"})
+        errors = []
+        corpus.check_headers(projdir, "racket", {"MIT"}, True, errors,
+                             "project demo")
+        self.assertEqual(errors, [])
+
+    def test_trailing_comment_text_still_reads_header(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        projdir = add_synthetic_project(root, files={
+            "src/lib.py": "# SPDX-License-Identifier: GPL-3.0-only # note\n"})
+        self.assertEqual(corpus.header_spdx_ids(
+            "# SPDX-License-Identifier: GPL-3.0-only # note\n"), {"GPL-3.0-only"})
+        errors = []
+        corpus.check_headers(projdir, "python", {"MIT"}, True, errors,
+                             "project demo")
+        self.assertTrue(any("outside the public allowlist" in e for e in errors), errors)
+
+    def test_php_closing_tag_still_reads_header(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        projdir = add_synthetic_project(root, lang="php", files={
+            "src/index.php": "<?php // SPDX-License-Identifier: GPL-3.0-only ?>\n"})
+        self.assertEqual(corpus.header_spdx_ids(
+            "<?php // SPDX-License-Identifier: GPL-3.0-only ?>\n"), {"GPL-3.0-only"})
+        errors = []
+        corpus.check_headers(projdir, "php", {"MIT"}, True, errors,
+                             "project demo")
+        self.assertTrue(any("outside the public allowlist" in e for e in errors), errors)
+
     def test_latin1_header_still_checked(self):
         root = make_repo()
         self.addCleanup(shutil.rmtree, root, True)
