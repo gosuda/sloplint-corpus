@@ -498,6 +498,12 @@ def cmd_verify(args):
         mode = manifest_mode(data)
         if mode not in ("public", "private"):
             errors.append("[corpus] mode must be public or private")
+        elif getattr(args, "expect_mode", None) and mode != args.expect_mode:
+            errors.append("manifest mode is %s, expected %s" % (mode, args.expect_mode))
+            for item in errors:
+                fail(item)
+            sys.stdout.write("verify: %d failure(s)\n" % len(errors))
+            return 1
         else:
             projects = data.get("project", [])
             if not isinstance(projects, list):
@@ -1149,6 +1155,8 @@ def build_parser():
                         help="Skip reachability checks (default; verify never uses the network).")
     verify.add_argument("--reuse", action="store_true",
                         help="Also run reuse lint on the repo root when the binary is present.")
+    verify.add_argument("--expect-mode", default=None, choices=("public", "private"),
+                        help="Fail when the manifest mode differs; the gate supplies this.")
     add = sub.add_parser("add", help="Record a project: fetch at a pinned rev, gate, copy.")
     add.add_argument("--root", default=".")
     add.add_argument("--manifest", default=None)

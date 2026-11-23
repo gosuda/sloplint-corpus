@@ -58,8 +58,9 @@ upstreams only.
 
 ## The gate
 
-Every pull request runs `corpus verify --offline`. It fails closed on:
+Every pull request runs `corpus verify --offline --expect-mode public`. It fails closed on:
 
+- a manifest whose mode is not `public`;
 - an SPDX expression outside the allowlist, or a `storage = "pinned"` entry;
 - a missing or unidentified project license (askalono 0.5.0, score below
   0.95, or a detected license outside the declared SPDX);

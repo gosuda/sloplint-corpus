@@ -249,6 +249,19 @@ class TestVerify(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stdout)
         self.assertIn("PASS verify", proc.stdout)
 
+    def test_expect_mode_mismatch_fails(self):
+        root = make_repo(mode="private")
+        self.addCleanup(shutil.rmtree, root, True)
+        proc = run_tool(root, "verify", "--offline", "--expect-mode", "public")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("manifest mode is private, expected public", proc.stdout)
+
+    def test_expect_mode_match_passes(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        proc = run_tool(root, "verify", "--offline", "--expect-mode", "public")
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+
     def test_non_allowlisted_spdx_fails_public(self):
         root = make_repo()
         self.addCleanup(shutil.rmtree, root, True)
