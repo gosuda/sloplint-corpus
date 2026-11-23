@@ -963,9 +963,12 @@ def cmd_measure(args):
             panics += 1
             continue
         for item in doc.get("findings", []):
+            raw_path = item.get("path", "")
+            pname = project.get("name", "?")
+            item["path"] = "%s/%s" % (pname, raw_path) if raw_path else pname
             findings.append(item)
             if item.get("rule") == "meta/parse-error":
-                parse_error_files.add(item.get("path", ""))
+                parse_error_files.add(item["path"])
         for key, value in doc.get("rules", {}).items():
             rules_fired[key] = value
     findings.sort(key=lambda f: (str(f.get("path", "")), int(f.get("line", 0)),

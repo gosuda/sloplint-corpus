@@ -466,6 +466,23 @@ class TestMeasureSeeds(unittest.TestCase):
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("max_parse_error_per_file", proc.stdout)
 
+    def test_measure_qualifies_paths_by_project(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        add_synthetic_project(root, lang="rust", name="aaa")
+        add_synthetic_project(root, lang="rust", name="bbb")
+        fake = os.path.join(root, "fake-sloplint")
+        write(fake, FAKE_SLOPLINT.encode())
+        os.chmod(fake, os.stat(fake).st_mode | stat.S_IEXEC)
+        proc = run_tool(root, "measure", "rust", "--sloplint", fake)
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        with open(os.path.join(root, "reports", "rust.json"), encoding="utf-8") as fh:
+            report = json.load(fh)
+        self.assertEqual(report["parse_error_files"],
+                         ["aaa/src/broken.rs", "bbb/src/broken.rs"])
+        self.assertTrue(all(f["file"].startswith(("aaa/", "bbb/"))
+                            for f in report["fp_samples"]))
+
     def test_seeds_deterministic(self):
         root = make_repo()
         self.addCleanup(shutil.rmtree, root, True)
