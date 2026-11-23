@@ -168,10 +168,11 @@ rev = "90ad4e870c72aa76db35ecc7e46f0b027ffe175a"
 spdx = "MIT"
 storage = "copied"
 paths = ["**"]
-tree_hash = "sha256:acffb0159cc3b87949ff3b5d2e36cfb71df66f456ec4d1341ff10063665d0e62"
+exclude = ["packages/svelte/src/compiler/utils/fuzzymatch.js"]
+tree_hash = "sha256:dbe9da640caf32e85449048f38874d16dbd16f02411a86a44f2072bf69c4bd23"
 added_by = "CorpusPopC1"
 added_on = "2026-11-23"
-reason = "compiler-driven UI framework, library"
+reason = "compiler-driven UI framework, library (excludes fuzzymatch.js: BSD-licensed fuzzyset.js derivation)"
 notice_present_upstream = false
 
 [[project]]
