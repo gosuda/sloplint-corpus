@@ -199,6 +199,26 @@ class TestHeaders(unittest.TestCase):
         corpus.check_headers(projdir, "rust", {"MIT"}, False, errors, "project demo")
         self.assertTrue(any("outside declared spdx" in e for e in errors), errors)
 
+    def test_latin1_header_still_checked(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        projdir = add_synthetic_project(root, files={
+            "src/lib.py": ("# SPDX-License-Identifier: GPL-3.0-only\n"
+                           "# caf\xe9 comment\n").encode("latin-1")})
+        errors = []
+        corpus.check_headers(projdir, "python", {"MIT"}, True, errors, "project demo")
+        self.assertTrue(any("outside the public allowlist" in e for e in errors), errors)
+
+    def test_split_multibyte_does_not_skip_headers(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        header = b"// SPDX-License-Identifier: GPL-3.0-only\n"
+        pad = b"x" * (65536 - len(header) - 1) + "\u20ac".encode("utf-8")
+        projdir = add_synthetic_project(root, files={"src/lib.rs": header + pad + b"\n"})
+        errors = []
+        corpus.check_headers(projdir, "rust", {"MIT"}, True, errors, "project demo")
+        self.assertTrue(any("outside the public allowlist" in e for e in errors), errors)
+
     def test_secrets_found(self):
         key = b"aws_key = AKIA" + b"IOSFODNN7EXAMPLE\n"
         hits = corpus.scan_secrets(key)

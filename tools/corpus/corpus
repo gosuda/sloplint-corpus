@@ -317,10 +317,7 @@ def check_headers(projdir, language, declared_ids, public, errors, tag):
         except OSError as exc:
             errors.append("%s: cannot read %s: %s" % (tag, rel, exc))
             continue
-        try:
-            text = raw.decode("utf-8", errors="strict")
-        except UnicodeDecodeError:
-            continue
+        text = raw.decode("utf-8", errors="replace")
         ids = header_spdx_ids(text)
         if public:
             bad_expr = next((match.group(1) for match in SPDX_HEADER_RE.finditer(text)
