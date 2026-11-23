@@ -1,0 +1,131 @@
+/*
+ * Copyright 2014-2025 JetBrains s.r.o and contributors. Use of this source code is governed by the Apache 2.0 license.
+ */
+
+package io.ktor.server.cio.backend
+
+import io.ktor.network.selector.*
+import io.ktor.network.sockets.*
+import io.ktor.server.cio.*
+import io.ktor.server.engine.*
+import io.ktor.server.engine.internal.*
+import io.ktor.util.logging.*
+import io.ktor.utils.io.*
+import kotlinx.coroutines.*
+import kotlinx.io.IOException
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
+
+private val LOGGER = KtorSimpleLogger("io.ktor.server.cio.HttpServer")
+private const val ACCEPT_DELAY_RETRY = 100
+
+/**
+ * Start an http server with [settings] invoking [handler] for every request
+ *
+ * [Report a problem](https://ktor.io/feedback/?fqname=io.ktor.server.cio.backend.httpServer)
+ */
+public fun CoroutineScope.httpServer(
+    settings: HttpServerSettings,
+    handler: HttpRequestHandler
+): HttpServer = launchServer(
+    settings.host,
+    settings.connectionIdleTimeoutSeconds.seconds,
+    handler,
+) { selector: SelectorManager ->
+    aSocket(selector).tcp().bind(settings.host, settings.port) {
+        reuseAddress = settings.reuseAddress
+    }
+}
+
+@OptIn(InternalAPI::class)
+internal fun CoroutineScope.launchServer(
+    serverName: String,
+    connectionIdleTimeout: Duration,
+    handler: HttpRequestHandler,
+    createServerSocket: suspend (SelectorManager) -> ServerSocket
+): HttpServer {
+    val socket = CompletableDeferred<ServerSocket>()
+
+    val serverLatch: CompletableJob = Job()
+
+    val serverJob = launch(
+        context = CoroutineName("server-root-$serverName"),
+        start = CoroutineStart.UNDISPATCHED
+    ) {
+        serverLatch.join()
+    }
+    val serverScope = CoroutineScope(coroutineContext + serverJob)
+    val selector = SelectorManager(coroutineContext)
+    val rootConnectionJob = SupervisorJob(serverJob)
+
+    val acceptJob = serverScope.launch(CoroutineName("accept-$serverName")) {
+        createServerSocket(selector).use { server ->
+            socket.complete(server)
+
+            val exceptionHandler = coroutineContext[CoroutineExceptionHandler]
+                ?: DefaultUncaughtExceptionHandler(LOGGER)
+
+            val connectionScope = CoroutineScope(
+                coroutineContext +
+                    rootConnectionJob +
+                    exceptionHandler +
+                    CoroutineName("request")
+            )
+
+            try {
+                while (true) {
+                    val client: Socket = try {
+                        server.accept()
+                    } catch (cause: IOException) {
+                        // Platforms report a closed server socket differently (e.g. "Selectable closed" on Native)
+                        if (server.isClosed) {
+                            LOGGER.trace("Server socket closed", cause)
+                            coroutineContext.cancel()
+                            break
+                        }
+                        LOGGER.trace(cause) { "Failed to accept connection; retry in $ACCEPT_DELAY_RETRY ms" }
+                        delay(ACCEPT_DELAY_RETRY.milliseconds)
+                        continue
+                    }
+
+                    val connection = ServerIncomingConnection(
+                        client.openReadChannel(),
+                        client.openWriteChannel(),
+                        client.remoteAddress.toNetworkAddress(),
+                        client.localAddress.toNetworkAddress()
+                    )
+
+                    val clientJob = connectionScope.startServerConnectionPipeline(
+                        connection,
+                        connectionIdleTimeout,
+                        handler
+                    )
+
+                    clientJob.invokeOnCompletion {
+                        client.close()
+                    }
+                }
+            } catch (closed: ClosedChannelException) {
+                LOGGER.trace("Server socket closed", closed)
+                coroutineContext.cancel()
+            } finally {
+                server.close()
+                rootConnectionJob.complete()
+                rootConnectionJob.join()
+                server.awaitClosed()
+            }
+        }
+    }
+
+    acceptJob.invokeOnCompletion { cause ->
+        cause?.let { socket.completeExceptionally(it) }
+        serverLatch.complete()
+    }
+
+    serverJob.invokeOnCompletion {
+        selector.close()
+    }
+
+    return HttpServer(serverJob, acceptJob, socket)
+}

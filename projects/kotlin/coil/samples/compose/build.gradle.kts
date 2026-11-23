@@ -1,0 +1,97 @@
+import coil3.applyCoilHierarchyTemplate
+import coil3.composeDesktopCurrentOsDependency
+import coil3.configureWebBinaries
+import coil3.multiplatformAndroidLibrary
+import org.jetbrains.compose.desktop.application.dsl.TargetFormat
+import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
+
+plugins {
+    id("com.android.kotlin.multiplatform.library")
+    id("kotlin-multiplatform")
+    id("org.jetbrains.compose")
+    id("org.jetbrains.kotlin.plugin.compose")
+}
+
+multiplatformAndroidLibrary(name = "sample.compose") {
+    androidResources {
+        enable = true
+    }
+}
+
+compose {
+    desktop {
+        application {
+            mainClass = "sample.compose.MainKt"
+            nativeDistributions {
+                targetFormats(
+                    TargetFormat.Deb,
+                    TargetFormat.Dmg,
+                    TargetFormat.Msi,
+                )
+                packageName = "sample.compose"
+                packageVersion = "1.0.0"
+            }
+        }
+    }
+}
+
+kotlin {
+    applyCoilHierarchyTemplate()
+
+    jvm()
+
+    js {
+        outputModuleName = "coilSample"
+        browser {
+            commonWebpackConfig {
+                outputFileName = "coilSample.js"
+            }
+        }
+        configureWebBinaries()
+    }
+
+    @OptIn(ExperimentalWasmDsl::class)
+    wasmJs {
+        outputModuleName = "coilSample"
+        browser {
+            commonWebpackConfig {
+                outputFileName = "coilSample.js"
+            }
+        }
+        configureWebBinaries()
+    }
+
+    arrayOf(
+        iosArm64(),
+        iosSimulatorArm64(),
+    ).forEach { target ->
+        target.binaries.framework {
+            baseName = "ComposeApp"
+            isStatic = true
+            binaryOption("bundleId", "coil3")
+        }
+    }
+
+    sourceSets {
+        commonMain {
+            dependencies {
+                implementation(projects.coilCompose)
+                implementation(projects.samples.shared)
+                implementation(libs.compose.components.resources)
+                implementation(libs.compose.material3)
+                implementation(libs.compose.material.icons.extended)
+            }
+        }
+        androidMain {
+            dependencies {
+                implementation(libs.androidx.activity.compose)
+                implementation(libs.androidx.lifecycle.viewmodel.compose)
+            }
+        }
+        jvmMain {
+            dependencies {
+                implementation(composeDesktopCurrentOsDependency())
+            }
+        }
+    }
+}

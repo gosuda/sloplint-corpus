@@ -1,0 +1,169 @@
+package org.jetbrains.exposed.v1.core.statements
+
+import org.jetbrains.exposed.v1.core.Column
+import org.jetbrains.exposed.v1.core.EntityIDColumnType
+import org.jetbrains.exposed.v1.core.Expression
+import org.jetbrains.exposed.v1.core.InternalApi
+import org.jetbrains.exposed.v1.core.QueryBuilder
+import org.jetbrains.exposed.v1.core.ResultRow
+import org.jetbrains.exposed.v1.core.Table
+import org.jetbrains.exposed.v1.core.isAutoInc
+import org.jetbrains.exposed.v1.core.transactions.currentTransaction
+
+/** An exception thrown when the provided data cannot be validated or processed to prepare a batch statement. */
+class BatchDataInconsistentException(message: String) : Exception(message)
+
+/**
+ * Stands in for the value of [column] in a row that leaves the column to its database-side default.
+ *
+ * Such a default is only known to the database, so it can only be rendered into the SQL of the statement and never
+ * bound as a parameter. Being an [Expression] is what says that: the statement renders it like any other expression
+ * value, and the inserted rows reported back to the caller leave out the columns whose value was an expression,
+ * instead of mistaking this stand-in for a value of the row.
+ */
+private class DatabaseDefault(private val column: Column<*>) : Expression<Any?>() {
+    @OptIn(InternalApi::class)
+    override fun toQueryBuilder(queryBuilder: QueryBuilder) {
+        queryBuilder.append(
+            currentTransaction()
+                .db.dialect.dataTypeProvider
+                .processForDefaultValue(column.dbDefaultValue!!)
+        )
+    }
+
+    override fun toString(): String = "DEFAULT"
+}
+
+/**
+ * Represents the SQL statement that batch inserts new rows into a table.
+ *
+ * @param shouldReturnGeneratedValues Specifies whether newly generated values (for example, auto-incremented IDs)
+ * should be returned. See [Batch Insert](https://github.com/JetBrains/Exposed/wiki/DSL#batch-insert) for more details.
+ */
+open class BatchInsertStatement(
+    table: Table,
+    ignore: Boolean = false,
+    val shouldReturnGeneratedValues: Boolean = true
+) : InsertStatement<List<ResultRow>>(table, ignore) {
+    /** @suppress */
+    @InternalApi
+    val data = ArrayList<MutableMap<Column<*>, Any?>>()
+
+    private fun Column<*>.isDefaultable() = columnType.nullable || defaultValueFun != null || isDatabaseGenerated
+
+    /**
+     * Whether [prepareSQL] renders the values of every batched row into the statement, instead of preparing a single
+     * statement that the driver binds and executes once per row.
+     *
+     * Only a statement that gives each row its own values clause can leave a column to its database-side default in
+     * some rows while setting it in others, because such a default can only be rendered as SQL and never bound as a
+     * parameter. The default `false` is the safe answer for any implementation that does not render the rows itself.
+     */
+    internal open val rendersEveryRowInSQL: Boolean get() = false
+
+    override operator fun <S> set(column: Column<S>, value: S) {
+        @OptIn(InternalApi::class)
+        if (data.size > 1 && column !in data[data.size - 2] && !column.isDefaultable()) {
+            val fullIdentity = currentTransaction().fullIdentity(column)
+            throw BatchDataInconsistentException("Can't set $value for $fullIdentity because previous insertion can't be defaulted for that column.")
+        }
+        super.set(column, value)
+    }
+
+    /**
+     * Adds the most recent batch to the current list of insert statements.
+     *
+     * This function uses the mapping of columns scheduled for change with their new values, which is
+     * provided by the implementing `BatchInsertStatement` instance.
+     */
+    fun addBatch() {
+        @OptIn(InternalApi::class)
+        if (data.isNotEmpty()) {
+            validateLastBatch()
+            data[data.size - 1] = LinkedHashMap(values)
+            allColumnsInDataSet.addAll(values.keys)
+            values.clear()
+            hasBatchedValues = true
+        }
+        @OptIn(InternalApi::class)
+        data.add(values)
+        arguments = null
+    }
+
+    @OptIn(InternalApi::class)
+    fun removeLastBatch() {
+        data.removeAt(data.size - 1)
+        allColumnsInDataSet.clear()
+        data.flatMapTo(allColumnsInDataSet) { it.keys }
+        values.clear()
+        data.lastOrNull()?.let(values::putAll)
+        arguments = null
+        hasBatchedValues = data.isNotEmpty()
+    }
+
+    /** @suppress */
+    @InternalApi
+    open fun validateLastBatch() {
+        val tr = currentTransaction()
+        val cantBeDefaulted = (allColumnsInDataSet - values.keys).filterNot { it.isDefaultable() }
+        if (cantBeDefaulted.isNotEmpty()) {
+            val columnList = cantBeDefaulted.joinToString { tr.fullIdentity(it) }
+            throw BatchDataInconsistentException(
+                "Can't add a new batch because columns: $columnList don't have client default values. DB defaults are not supported in batch inserts"
+            )
+        }
+        val requiredInTargets = (targets.flatMap { it.columns } - values.keys).filter {
+            !it.isDefaultable() && !it.columnType.isAutoInc && it.dbDefaultValue == null && it.columnType !is EntityIDColumnType<*>
+        }
+        if (requiredInTargets.any()) {
+            val columnList = requiredInTargets.joinToString { tr.fullIdentity(it) }
+            throw BatchDataInconsistentException(
+                "Can't add a new batch because columns: $columnList don't have default values. DB defaults are not supported in batch inserts"
+            )
+        }
+    }
+
+    private val allColumnsInDataSet = mutableSetOf<Column<*>>()
+
+    @OptIn(InternalApi::class)
+    private fun allColumnsInDataSet() = allColumnsInDataSet +
+        (data.lastOrNull()?.keys ?: throw BatchDataInconsistentException("No data provided for inserting into ${table.tableName}"))
+
+    /**
+     * Cached argument rows for all currently registered batches.
+     *
+     * `null` indicates that the arguments have not yet been materialized, or that the cache has been invalidated after
+     * the statement was modified. Reading this property materializes the arguments from the current batch data.
+     */
+    override var arguments: List<List<Pair<Column<*>, Any?>>>? = null
+        get() = field ?: run {
+            val columnsToInsert = (allColumnsInDataSet() + clientDefaultColumns()).toSet()
+            @OptIn(InternalApi::class)
+            data
+                .map { valuesAndClientDefaults(it) as MutableMap }
+                .map { values ->
+                    columnsToInsert.map { column ->
+                        column to when {
+                            values.contains(column) -> values[column]
+                            column.defaultValueFun != null -> column.defaultValueFun!!()
+                            column.dbDefaultValue != null && rendersEveryRowInSQL -> DatabaseDefault(column)
+                            column.dbDefaultValue != null || column.isDatabaseGenerated -> {
+                                val fullIdentity = currentTransaction().fullIdentity(column)
+                                throw BatchDataInconsistentException(
+                                    "Can't insert a batch in which only some of the rows set $fullIdentity, because the " +
+                                        "default value of that column is only known to the database. Either set it in " +
+                                        "every row or in none of them."
+                                )
+                            }
+                            else -> {
+                                require(column.columnType.nullable) {
+                                    "The value for the column ${column.name} was not provided. " +
+                                        "The value for non-nullable column without defaults must be specified."
+                                }
+                                null
+                            }
+                        }
+                    }
+                }.apply { field = this }
+        }
+}

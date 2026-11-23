@@ -62,3 +62,119 @@ added_by = "CorpusPopC2"
 added_on = "2026-11-23"
 reason = "medium testing (proxies plus subclass mocking), mature"
 notice_present_upstream = false
+
+
+[[project]]
+name = "ktor"
+language = "kotlin"
+url = "https://github.com/ktorio/ktor"
+rev = "170870cf9452f5f79f8327716609fa427c132641"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+exclude = ["**/SSESessionParserTest.kt"]
+tree_hash = "sha256:a9fd886208663329cea85918db85f936f7c8b3dd1f2f2a97eeb81bb20282ff14"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "large server framework (coroutines plus DSL routing), current"
+notice_present_upstream = false
+
+[[project]]
+name = "compose-multiplatform"
+language = "kotlin"
+url = "https://github.com/JetBrains/compose-multiplatform"
+rev = "dea6a8682985a734ed83ce2d9225d13875f1c82e"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+exclude = ["third_party/**", "third_party/*/**", "third_party/*/*/**", "third_party/*/*/*/**", "third_party/*/*/*/*/**", "third_party/*/*/*/*/*/**", "third_party/*/*/*/*/*/*/**", "third_party/*/*/*/*/*/*/*/**", "third_party/*/*/*/*/*/*/*/*/**", "third_party/*/*/*/*/*/*/*/*/*/**", "third_party/*/*/*/*/*/*/*/*/*/*/**", "third_party/*/*/*/*/*/*/*/*/*/*/*/**", "third_party/*/*/*/*/*/*/*/*/*/*/*/*/**", "third_party/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "third_party/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "third_party/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "third_party/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "license/**", "license/*/**", "license/*/*/**", "license/*/*/*/**", "license/*/*/*/*/**", "license/*/*/*/*/*/**", "license/*/*/*/*/*/*/**", "license/*/*/*/*/*/*/*/**", "license/*/*/*/*/*/*/*/*/**", "license/*/*/*/*/*/*/*/*/*/**", "license/*/*/*/*/*/*/*/*/*/*/**", "license/*/*/*/*/*/*/*/*/*/*/*/**", "license/*/*/*/*/*/*/*/*/*/*/*/*/**", "license/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "license/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "license/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "license/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "licenses/**", "licenses/*/**", "licenses/*/*/**", "licenses/*/*/*/**", "licenses/*/*/*/*/**", "licenses/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**"]
+tree_hash = "sha256:932c5d5484bb9b215c07556f186df54a7c0f4a73727848b6bfaff6ab9eab7ffe"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "large UI multiplatform (expect/actual plus examples), current"
+notice_present_upstream = false
+
+[[project]]
+name = "sqldelight"
+language = "kotlin"
+url = "https://github.com/sqldelight/sqldelight"
+rev = "74b446bc5bd960f238f681372aba0960714f810b"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:47a56fe9a1926c79d02bd98398fdf11a09e3a5a0489b287d8dde7c8722ef312b"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "small persistence (SQL codegen plus dialects), current"
+notice_present_upstream = false
+
+[[project]]
+name = "koin"
+language = "kotlin"
+url = "https://github.com/InsertKoinIO/koin"
+rev = "d486a5e8748f90db43f939e227083f2bd2c47c12"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:a5af4c539f11d523bbb51b9c5a17cca1d516a262692af8a6129e4b9e99992105"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "small DI (DSL modules), current"
+notice_present_upstream = false
+
+[[project]]
+name = "mockk"
+language = "kotlin"
+url = "https://github.com/mockk/mockk"
+rev = "f7941da1e078349ad865d13354a22b23c50731d7"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+exclude = ["external/**", "external/*/**", "external/*/*/**", "external/*/*/*/**", "external/*/*/*/*/**", "external/*/*/*/*/*/**", "external/*/*/*/*/*/*/**", "external/*/*/*/*/*/*/*/**", "external/*/*/*/*/*/*/*/*/**", "external/*/*/*/*/*/*/*/*/*/**", "external/*/*/*/*/*/*/*/*/*/*/**", "external/*/*/*/*/*/*/*/*/*/*/*/**", "external/*/*/*/*/*/*/*/*/*/*/*/*/**", "external/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "external/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "external/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "external/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**"]
+tree_hash = "sha256:8349510d5eb455c000b73e458de6dfc91c007a19c1c037ef83e5c335a03fd89d"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "small testing (coroutines plus agents), current"
+notice_present_upstream = false
+
+[[project]]
+name = "exposed"
+language = "kotlin"
+url = "https://github.com/JetBrains/Exposed"
+rev = "82de21cc42b15413fa98111ebf25c63592b0951a"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:7ec5526ac168251349920dfc15a3adff792ead2357a93a294570065dc786e937"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "medium SQL DSL (expression types plus transactions), current"
+notice_present_upstream = false
+
+[[project]]
+name = "coil"
+language = "kotlin"
+url = "https://github.com/coil-kt/coil"
+rev = "14d99b18c4491fd6eccdc54454f3c079a90e3c10"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:9e4ba149aead0926654c38fcb823d0e6e3532707a79632b749d06aa9b74df275"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "small image loading (coroutines plus interceptors), current"
+notice_present_upstream = false
+
+[[project]]
+name = "chucker"
+language = "kotlin"
+url = "https://github.com/ChuckerTeam/chucker"
+rev = "6edb7999a647d4225b5eb9aa18d2bf3e745d7774"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:b6809bfb12eb9a28e898fffdb62cddae9808bc95878be479327caa5f7f939aec"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "small tooling app (interceptors plus storage), newest (2026)"
+notice_present_upstream = false

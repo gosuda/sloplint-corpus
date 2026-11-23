@@ -1,0 +1,116 @@
+@file:OptIn(ExperimentalKotlinGradlePluginApi::class)
+
+package coil3
+
+import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
+import org.jetbrains.kotlin.gradle.dsl.KotlinMultiplatformExtension
+import org.jetbrains.kotlin.gradle.plugin.KotlinHierarchyBuilder
+import org.jetbrains.kotlin.gradle.plugin.KotlinHierarchyTemplate
+import org.jetbrains.kotlin.gradle.plugin.KotlinSourceSetTree
+
+private val hierarchyTemplate = KotlinHierarchyTemplate {
+    withSourceSetTree(
+        KotlinSourceSetTree.main,
+        KotlinSourceSetTree.test,
+    )
+
+    common {
+        withCompilations { true }
+
+        groupNonAndroid()
+        groupJsCommon()
+        groupNonJsCommon()
+        groupJvmCommon()
+        groupNonJvmCommon()
+        groupNative()
+        groupNonNative()
+        groupNonApple()
+    }
+}
+
+private fun KotlinHierarchyBuilder.groupNonAndroid() {
+    group("nonAndroid") {
+        withJvm()
+        groupJsCommon()
+        groupNative()
+    }
+}
+
+private fun KotlinHierarchyBuilder.groupJsCommon() {
+    group("jsCommon") {
+        withJs()
+        withWasmJs()
+    }
+}
+
+private fun KotlinHierarchyBuilder.groupNonJsCommon() {
+    group("nonJsCommon") {
+        groupJvmCommon()
+        groupNative()
+    }
+}
+
+private fun KotlinHierarchyBuilder.groupJvmCommon() {
+    group("jvmCommon") {
+        // Use withCompilations predicate to match Android targets from both
+        // the old plugin (androidTarget()) and the new plugin (com.android.kotlin.multiplatform.library)
+        withCompilations { compilation ->
+            compilation.target.platformType.name == "androidJvm" ||
+                compilation.target.platformType.name == "jvm"
+        }
+    }
+}
+
+private fun KotlinHierarchyBuilder.groupNonJvmCommon() {
+    group("nonJvmCommon") {
+        groupJsCommon()
+        groupNative()
+    }
+}
+
+private fun KotlinHierarchyBuilder.groupNative() {
+    group("native") {
+        withNative()
+
+        groupApple()
+        groupLinux()
+    }
+}
+
+private fun KotlinHierarchyBuilder.groupApple() {
+    group("apple") {
+        withApple()
+
+        group("ios") {
+            withIos()
+        }
+
+        group("macos") {
+            withMacos()
+        }
+    }
+}
+
+private fun KotlinHierarchyBuilder.groupLinux() {
+    group("linux") {
+        withLinux()
+    }
+}
+
+private fun KotlinHierarchyBuilder.groupNonApple() {
+    group("nonApple") {
+        groupNonNative()
+        groupLinux()
+    }
+}
+
+private fun KotlinHierarchyBuilder.groupNonNative() {
+    group("nonNative") {
+        groupJsCommon()
+        groupJvmCommon()
+    }
+}
+
+fun KotlinMultiplatformExtension.applyCoilHierarchyTemplate() {
+    applyHierarchyTemplate(hierarchyTemplate)
+}

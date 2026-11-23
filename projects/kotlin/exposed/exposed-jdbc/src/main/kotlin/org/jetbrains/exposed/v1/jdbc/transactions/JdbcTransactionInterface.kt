@@ -1,0 +1,63 @@
+package org.jetbrains.exposed.v1.jdbc.transactions
+
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
+import org.jetbrains.exposed.v1.core.transactions.TransactionInterface
+import org.jetbrains.exposed.v1.jdbc.Database
+import org.jetbrains.exposed.v1.jdbc.JdbcTransaction
+import org.jetbrains.exposed.v1.jdbc.statements.api.ExposedConnection
+
+/** Represents a unit block of work that is performed on a database using a JDBC driver. */
+interface JdbcTransactionInterface : TransactionInterface {
+    override val db: Database
+
+    override val outerTransaction: JdbcTransaction?
+
+    /** The transaction isolation level of the transaction, which may differ from the set database level. */
+    val transactionIsolation: Int
+
+    /** The database connection used by the transaction. */
+    val connection: ExposedConnection<*>
+
+    /** Saves all changes since the last commit or rollback operation. */
+    fun commit()
+
+    /** Reverts all changes since the last commit or rollback operation, or to the last set savepoint, if applicable. */
+    fun rollback()
+
+    /** Closes the transaction and releases any savepoints. */
+    fun close()
+}
+
+/**
+ * The [JdbcTransactionManager] instance that is associated with this [Database].
+ *
+ * @throws IllegalStateException if no transaction manager is registered for the given database.
+ */
+val Database.transactionManager: JdbcTransactionManager
+    get() = TransactionManager.managerFor(this)
+
+@Suppress("TooGenericExceptionCaught")
+internal fun JdbcTransactionInterface.rollbackLoggingException(log: (Exception) -> Unit) {
+    try {
+        rollback()
+    } catch (e: Exception) {
+        log(e)
+    }
+}
+
+@Suppress("TooGenericExceptionCaught")
+internal suspend fun JdbcTransactionInterface.rollbackSuspendLoggingException(log: (Exception) -> Unit) {
+    withContext(NonCancellable) {
+        this@rollbackSuspendLoggingException.rollbackLoggingException(log)
+    }
+}
+
+@Suppress("TooGenericExceptionCaught")
+internal inline fun JdbcTransactionInterface.closeLoggingException(log: (Exception) -> Unit) {
+    try {
+        close()
+    } catch (e: Exception) {
+        log(e)
+    }
+}

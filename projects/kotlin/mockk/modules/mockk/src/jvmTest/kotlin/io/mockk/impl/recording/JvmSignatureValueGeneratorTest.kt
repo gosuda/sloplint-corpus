@@ -1,0 +1,245 @@
+package io.mockk.impl.recording
+
+import io.mockk.InternalPlatformDsl.toStr
+import io.mockk.impl.InternalPlatform
+import io.mockk.impl.instantiation.AbstractInstantiator
+import io.mockk.impl.instantiation.AnyValueGenerator
+import io.mockk.impl.instantiation.CommonInstanceFactoryRegistry
+import io.mockk.impl.instantiation.JvmInstantiator
+import io.mockk.impl.recording.JvmSignatureValueGenerator.Companion.MAX_NANOS_IN_MILLIS
+import io.mockk.proxy.MockKAgentLogger
+import io.mockk.proxy.jvm.ObjenesisInstantiator
+import net.bytebuddy.ByteBuddy
+import java.util.Random
+import kotlin.reflect.KClass
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNotSame
+import kotlin.test.assertTrue
+import kotlin.test.fail
+import kotlin.time.Duration
+import kotlin.time.DurationUnit
+import kotlin.time.toDuration
+
+@JvmInline
+value class NullableInnerValueClass(
+    val value: String?,
+)
+
+sealed interface SealedValueClassId
+
+@JvmInline
+value class SealedLongId(
+    val value: Long,
+) : SealedValueClassId
+
+class JvmSignatureValueGeneratorTest {
+    private val generator = JvmSignatureValueGenerator(Random(42))
+
+    private val mockInstantiator =
+        object : AbstractInstantiator(CommonInstanceFactoryRegistry()) {
+            override fun <T : Any> instantiate(cls: KClass<T>): T = fail("Should not instantiate")
+        }
+
+    private val mockAnyValueGenerator =
+        object : AnyValueGenerator() {
+            override fun anyValue(
+                cls: KClass<*>,
+                isNullable: Boolean,
+                orInstantiateVia: () -> Any?,
+            ): Any? = fail("Should not generate any value")
+        }
+
+    /** The production instantiator chain, to exercise the generic instantiation path end to end. */
+    private val realInstantiator =
+        JvmInstantiator(
+            ObjenesisInstantiator(
+                object : MockKAgentLogger {
+                    override fun debug(msg: String) {}
+
+                    override fun trace(msg: String) {}
+
+                    override fun trace(
+                        ex: Throwable,
+                        msg: String,
+                    ) {}
+
+                    override fun warn(msg: String) {}
+
+                    override fun warn(
+                        ex: Throwable,
+                        msg: String,
+                    ) {}
+                },
+                ByteBuddy(),
+            ),
+            CommonInstanceFactoryRegistry(),
+        )
+
+    @Test
+    fun `generated Long values avoid denormalized range`() {
+        repeat(TEST_ITERATIONS) {
+            val longValue =
+                generator.signatureValue(
+                    Long::class,
+                    { mockAnyValueGenerator },
+                    mockInstantiator,
+                )
+
+            assertTrue(
+                longValue !in -MAX_NANOS_IN_MILLIS..MAX_NANOS_IN_MILLIS,
+                "Generated Long value $longValue is in denormalized range",
+            )
+        }
+    }
+
+    @Test
+    fun `Duration creation with generated Long values does not throw AssertionError`() {
+        repeat(TEST_ITERATIONS) {
+            val longValue =
+                generator.signatureValue(
+                    Long::class,
+                    { mockAnyValueGenerator },
+                    mockInstantiator,
+                )
+
+            try {
+                longValue.toDuration(DurationUnit.MILLISECONDS)
+            } catch (e: AssertionError) {
+                fail("Duration creation with $longValue threw AssertionError: ${e.message}")
+            }
+        }
+    }
+
+    @Test
+    fun `Duration value class creation succeeds`() {
+        repeat(TEST_ITERATIONS) {
+            val duration =
+                generator.signatureValue(
+                    Duration::class,
+                    { mockAnyValueGenerator },
+                    mockInstantiator,
+                )
+
+            assertNotNull(duration, "Duration should be created successfully")
+        }
+    }
+
+    // https://github.com/mockk/mockk/issues/1568
+    @Test
+    fun `generated Long values are even`() {
+        repeat(TEST_ITERATIONS) {
+            val longValue =
+                generator.signatureValue(
+                    Long::class,
+                    { mockAnyValueGenerator },
+                    mockInstantiator,
+                )
+
+            assertEquals(0L, longValue and 1L, "Generated Long value $longValue is odd")
+        }
+    }
+
+    // https://github.com/mockk/mockk/issues/1568
+    @Test
+    fun `Duration value class creation succeeds for a seed that used to draw a denormalized raw value`() {
+        // Before the fix, Random(800456) drew 4634342380277: odd, so read as 2317171190138 ms (denormalized)
+        val duration =
+            JvmSignatureValueGenerator(Random(800456)).signatureValue(
+                Duration::class,
+                { mockAnyValueGenerator },
+                mockInstantiator,
+            )
+
+        assertNotNull(duration, "Duration should be created successfully")
+    }
+
+    // https://github.com/mockk/mockk/issues/1263
+    @Test
+    fun `Class signature values are distinct`() {
+        val values =
+            List(TEST_ITERATIONS) {
+                generator.signatureValue(
+                    Class::class,
+                    { mockAnyValueGenerator },
+                    mockInstantiator,
+                )
+            }
+
+        assertEquals(255, values.toSet().size)
+        values.windowed(2).forEach { (previous, next) ->
+            assertNotSame(previous, next, "Consecutive Class signature values must differ")
+        }
+    }
+
+    // https://github.com/mockk/mockk/issues/1605
+    @Test
+    fun `KClass signature values are distinct`() {
+        val values =
+            List(TEST_ITERATIONS) {
+                generator.signatureValue(
+                    KClass::class,
+                    { mockAnyValueGenerator },
+                    mockInstantiator,
+                )
+            }
+
+        assertTrue(values.all { it is KClass<*> }, "KClass signature value should be a KClass")
+        assertEquals(TEST_ITERATIONS, values.map { InternalPlatform.packRef(it) }.toSet().size)
+    }
+
+    // https://github.com/mockk/mockk/issues/1605
+    @Test
+    fun `KClass signature values survive eager invocation formatting`() {
+        repeat(TEST_ITERATIONS) {
+            val value =
+                generator.signatureValue(
+                    KClass::class,
+                    { AnyValueGenerator() },
+                    realInstantiator,
+                )
+
+            // This is the CallRoundBuilder -> Invocation.toString() -> toStr() path that
+            // eagerly formats every recorded call, regardless of trace logging.
+            val formatted = value.toStr()
+
+            assertFalse(
+                formatted.startsWith("<error"),
+                "Eager formatting of a KClass signature value fell back to the error string: $formatted",
+            )
+            assertEquals("Any", formatted)
+        }
+    }
+
+    // https://github.com/mockk/mockk/issues/1264
+    @Test
+    fun `sealed interface signature values with value class subtype are distinct`() {
+        val values =
+            List(TEST_ITERATIONS) {
+                generator.signatureValue(
+                    SealedValueClassId::class,
+                    { mockAnyValueGenerator },
+                    mockInstantiator,
+                )
+            }
+
+        assertTrue(values.all { it is SealedLongId }, "Sealed value class subtype should be constructed")
+        assertEquals(TEST_ITERATIONS, values.map { InternalPlatform.packRef(it) }.toSet().size)
+    }
+
+    // https://github.com/mockk/mockk/issues/1326
+    @Test
+    fun `packRef for value class with null inner value returns non-null`() {
+        val instance = NullableInnerValueClass(null)
+        assertNotNull(
+            InternalPlatform.packRef(instance),
+            "packRef for value class with null inner value must not return null",
+        )
+    }
+
+    companion object {
+        private const val TEST_ITERATIONS = 1000
+    }
+}

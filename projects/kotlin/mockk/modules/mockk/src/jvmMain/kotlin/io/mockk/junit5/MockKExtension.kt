@@ -1,0 +1,319 @@
+package io.mockk.junit5
+
+import io.mockk.MockKAnnotations
+import io.mockk.MockKException
+import io.mockk.checkUnnecessaryStub
+import io.mockk.clearAllMocks
+import io.mockk.clearAllStubsFromMemory
+import io.mockk.confirmVerified
+import io.mockk.impl.annotations.AdditionalInterface
+import io.mockk.impl.annotations.InjectMockKs
+import io.mockk.impl.annotations.MockK
+import io.mockk.impl.annotations.RelaxedMockK
+import io.mockk.impl.annotations.SpyK
+import io.mockk.mockkClass
+import io.mockk.spyk
+import io.mockk.unmockkAll
+import org.junit.jupiter.api.TestInstance
+import org.junit.jupiter.api.extension.AfterAllCallback
+import org.junit.jupiter.api.extension.AfterEachCallback
+import org.junit.jupiter.api.extension.BeforeAllCallback
+import org.junit.jupiter.api.extension.ExtensionContext
+import org.junit.jupiter.api.extension.ParameterContext
+import org.junit.jupiter.api.extension.ParameterResolver
+import org.junit.jupiter.api.extension.TestInstancePostProcessor
+import java.lang.annotation.Inherited
+import java.lang.reflect.AnnotatedElement
+import java.lang.reflect.InvocationTargetException
+import java.lang.reflect.Parameter
+import kotlin.reflect.KClass
+import kotlin.reflect.jvm.javaConstructor
+
+/**
+ * MockK JUnit5 extension.
+ *
+ * Parameters can use [MockK] and [RelaxedMockK].
+ * Class properties can use [MockK], [RelaxedMockK] and [SpyK].
+ *
+ * [unmockkAll] will be called after each test function execution if the test lifecycle is set to
+ * [TestInstance.Lifecycle.PER_METHOD] (JUnit 5 default), or after all test functions in the test class have been
+ * executed if the test lifecycle is set to [TestInstance.Lifecycle.PER_CLASS].
+ * [unmockkAll] will not be called if the [KeepMocks] annotation is present or if the `mockk.junit.extension.keepmocks`
+ * Gradle property is set to `true`.
+ *
+ * With the [ReleaseMocks] annotation or the `mockk.junit.extension.releaseMocks` property set to `true`,
+ * [clearAllStubsFromMemory] is called at the same point for the mocks created on the test thread, so they can be
+ * garbage collected. Released mocks can no longer be used, so mocks shared across tests need [KeepMocks] instead.
+ *
+ * Usage: declare `@ExtendWith(MockKExtension::class)` on a test class.
+ *
+ * Alternatively `–Djunit.extensions.autodetection.enabled=true` may be placed on a command line.
+ */
+class MockKExtension :
+    TestInstancePostProcessor,
+    ParameterResolver,
+    BeforeAllCallback,
+    AfterEachCallback,
+    AfterAllCallback {
+    private val cache = mutableMapOf<KClass<out Any>, Any>()
+
+    override fun supportsParameter(
+        parameterContext: ParameterContext,
+        extensionContext: ExtensionContext,
+    ): Boolean = getMockKAnnotation(parameterContext) != null
+
+    override fun resolveParameter(
+        parameterContext: ParameterContext,
+        extensionContext: ExtensionContext,
+    ): Any? {
+        val parameter = parameterContext.parameter
+        val type = parameter.type.kotlin
+        val annotation = getMockKAnnotation(parameterContext) ?: return null
+        val name = getMockName(parameterContext.parameter, annotation)
+
+        return when (annotation) {
+            is InjectMockKs -> tryConstructClass(type)
+            is SpyK ->
+                spyk(
+                    tryConstructClass(type),
+                    name,
+                    *moreInterfaces(parameterContext),
+                    recordPrivateCalls = annotation.recordPrivateCalls,
+                )
+
+            is MockK, is RelaxedMockK -> {
+                mockkClass(
+                    type,
+                    name,
+                    (annotation as? MockK)?.relaxed ?: true,
+                    *moreInterfaces(parameterContext),
+                    relaxUnitFun = (annotation as? MockK)?.relaxUnitFun ?: false,
+                )
+            }
+
+            else -> null
+        }?.also { cache[type] = it }
+    }
+
+    private fun tryConstructClass(type: KClass<out Any>): Any =
+        try {
+            val ctor = type.constructors.first()
+            val args =
+                ctor.javaConstructor
+                    ?.parameters
+                    ?.map { cache[it.type.kotlin] }
+                    ?.toTypedArray()
+                    ?: emptyArray()
+            ctor.call(*args)
+        } catch (ex: InvocationTargetException) {
+            // Current JUnit5 implementation resolves test constructor parameters one-by-one in order of declaration.
+            // This means that any parameter can only access preceding arguments and only those can be used to
+            // construct non-mock class instance. Breaking this order will cause NPE at test class initialization.
+            // Same limitation also applies to spies as their use original class implementation under hood.
+            throw MockKException(
+                "Unable to instantiate class ${type.simpleName}. " +
+                    "Please ensure that all dependencies needed by class are defined before it in test class constructor. " +
+                    "Already registered mocks: ${cache.values}",
+                ex,
+            )
+        }
+
+    private fun getMockKAnnotation(parameter: ParameterContext): Any? =
+        sequenceOf(MockK::class, RelaxedMockK::class, SpyK::class, InjectMockKs::class)
+            .map { parameter.findAnnotation(it.java) }
+            .firstOrNull { it.isPresent }
+            ?.get()
+
+    private fun getMockName(
+        parameter: Parameter,
+        annotation: Any,
+    ): String? =
+        when {
+            annotation is MockK -> annotation.name
+            annotation is RelaxedMockK -> annotation.name
+            annotation is SpyK -> annotation.name
+            parameter.isNamePresent -> parameter.name
+            else -> null
+        }
+
+    private fun moreInterfaces(parameter: ParameterContext) =
+        parameter
+            .findAnnotation(AdditionalInterface::class.java)
+            .map { it.type }
+            .map { arrayOf(it) }
+            .orElseGet { emptyArray() }
+
+    override fun postProcessTestInstance(
+        testInstance: Any,
+        context: ExtensionContext,
+    ) {
+        MockKAnnotations.init(testInstance, useDependencyOrder = context.useDependencyOrder)
+    }
+
+    override fun beforeAll(context: ExtensionContext) {
+        // confirmVerified() checks every mock, so calls recorded before this class started
+        // (e.g. by a test class not using this extension) must not count. Solves Issue #1493.
+        // A PER_CLASS enclosing class checks its calls in its own afterAll, so they must not be cleared here.
+        if (context.confirmVerification && !context.requireParallelTesting && !context.hasPerClassEnclosingClass) {
+            clearAllMocks(answers = false, childMocks = false)
+        }
+    }
+
+    override fun afterEach(context: ExtensionContext) {
+        if (context.isTestInstanceLifecyclePerMethod) {
+            finish(context)
+        }
+    }
+
+    override fun afterAll(context: ExtensionContext) {
+        if (!context.isTestInstanceLifecyclePerMethod) {
+            finish(context)
+        }
+    }
+
+    private fun finish(context: ExtensionContext) {
+        if (!context.keepMocks && !context.requireParallelTesting) {
+            unmockkAll()
+        }
+
+        try {
+            if (context.confirmVerification) {
+                confirmVerified()
+            }
+
+            if (context.checkUnnecessaryStub) {
+                checkUnnecessaryStub()
+            }
+        } finally {
+            // Clear all mocks after missed verifications or unnecessary stubs. Solves Issue #963.
+            if (!context.keepMocks && !context.requireParallelTesting) {
+                clearAllMocks()
+                // A PER_CLASS enclosing instance and its mocks outlive this test; its own afterAll releases them.
+                if (context.releaseMocks && !context.hasPerClassEnclosingClass) {
+                    clearAllStubsFromMemory(currentThreadOnly = true)
+                }
+            }
+        }
+    }
+
+    private val ExtensionContext.isTestInstanceLifecyclePerMethod: Boolean
+        get() = testInstanceLifecycle.map { it == TestInstance.Lifecycle.PER_METHOD }.orElse(true)
+
+    /**
+     * True if this context is inside a `@Nested` class whose enclosing class (at any level) is PER_CLASS. That
+     * enclosing instance outlives this context, so cleanup of its mocks waits for the enclosing class's afterAll,
+     * the same as for the tests of a PER_CLASS class.
+     */
+    private val ExtensionContext.hasPerClassEnclosingClass: Boolean
+        get() =
+            generateSequence(this) { it.parent.orElse(null) }
+                // Class contexts only: skips test method contexts, and the template context of e.g. a @RepeatedTest.
+                .filter { it.testClass.isPresent && it.testMethod.isEmpty }
+                .drop(1) // This context's own class
+                .any { it.testInstanceLifecycle.orElse(null) == TestInstance.Lifecycle.PER_CLASS }
+
+    private val ExtensionContext.keepMocks: Boolean
+        get() =
+            isEnabled(KeepMocks::class.java, KEEP_MOCKS_PROPERTY) ||
+                testMethod.map { it.hasAnnotationRecursive(KeepMocks::class.java) }.orElse(false)
+
+    private val ExtensionContext.releaseMocks: Boolean
+        get() = isEnabled(ReleaseMocks::class.java, RELEASE_MOCKS_PROPERTY)
+
+    private val ExtensionContext.confirmVerification: Boolean
+        get() = isEnabled(ConfirmVerification::class.java, CONFIRM_VERIFICATION_PROPERTY)
+
+    private val ExtensionContext.checkUnnecessaryStub: Boolean
+        get() = isEnabled(CheckUnnecessaryStub::class.java, CHECK_UNNECESSARY_STUB_PROPERTY)
+
+    private val ExtensionContext.requireParallelTesting: Boolean
+        get() = isEnabled(RequireParallelTesting::class.java, REQUIRE_PARALLEL_TESTING)
+
+    private val ExtensionContext.useDependencyOrder: Boolean
+        get() = isEnabled(UseDependencyOrder::class.java, USE_DEPENDENCY_ORDER_PROPERTY)
+
+    /**
+     * True if the test class, or any class it is `@Nested` in, has [annotation], or if [property] is `true`.
+     */
+    private fun ExtensionContext.isEnabled(
+        annotation: Class<out Annotation>,
+        property: String,
+    ): Boolean =
+        testClassAndEnclosingTestClasses().any { it.hasAnnotationRecursive(annotation) } ||
+            getConfigurationParameter(property).map { it.toBoolean() }.orElse(false)
+
+    /**
+     * The test class of this context and of every parent context. For a test in a `@Nested` class this is the
+     * nested class followed by each enclosing class. [Class.getEnclosingClass] is not used, because a static nested
+     * class runs as a standalone test class and must not pick up its outer class's annotations.
+     */
+    private fun ExtensionContext.testClassAndEnclosingTestClasses(): Sequence<Class<*>> =
+        generateSequence(this) { it.parent.orElse(null) }
+            .mapNotNull { it.testClass.orElse(null) }
+            .distinct()
+
+    /***
+     * Prevent calling [unmockkAll] after each test execution
+     */
+    @Inherited
+    @Retention(AnnotationRetention.RUNTIME)
+    @Target(AnnotationTarget.CLASS, AnnotationTarget.FUNCTION)
+    annotation class KeepMocks
+
+    /***
+     * Release the mocks created on the test thread from memory where [clearAllMocks] is called; they cannot be used
+     * afterwards. [KeepMocks] and [RequireParallelTesting] disable it.
+     */
+    @Inherited
+    @Retention(AnnotationRetention.RUNTIME)
+    @Target(AnnotationTarget.CLASS)
+    annotation class ReleaseMocks
+
+    @Inherited
+    @Retention(AnnotationRetention.RUNTIME)
+    @Target(AnnotationTarget.CLASS)
+    annotation class ConfirmVerification
+
+    @Inherited
+    @Retention(AnnotationRetention.RUNTIME)
+    @Target(AnnotationTarget.CLASS)
+    annotation class CheckUnnecessaryStub
+
+    /***
+     * Require parallel testing by disabling the clearAllMocks call after each test execution; it is not thread-safe.
+     */
+    @Inherited
+    @Retention(AnnotationRetention.RUNTIME)
+    @Target(AnnotationTarget.CLASS)
+    annotation class RequireParallelTesting
+
+    @Inherited
+    @Retention(AnnotationRetention.RUNTIME)
+    @Target(AnnotationTarget.CLASS)
+    annotation class UseDependencyOrder
+
+    companion object {
+        const val KEEP_MOCKS_PROPERTY = "mockk.junit.extension.keepmocks"
+        const val RELEASE_MOCKS_PROPERTY = "mockk.junit.extension.releaseMocks"
+        const val CONFIRM_VERIFICATION_PROPERTY = "mockk.junit.extension.confirmverification"
+        const val CHECK_UNNECESSARY_STUB_PROPERTY = "mockk.junit.extension.checkUnnecessaryStub"
+        const val REQUIRE_PARALLEL_TESTING = "mockk.junit.extension.requireParallelTesting"
+        const val USE_DEPENDENCY_ORDER_PROPERTY = "mockk.junit.extension.useDependencyOrder"
+    }
+}
+
+internal fun <A : Annotation> AnnotatedElement.hasAnnotationRecursive(
+    target: Class<A>,
+    visited: MutableSet<Class<out Annotation>> = mutableSetOf(),
+): Boolean {
+    for (annotation in annotations) {
+        val annotationType = annotation.annotationClass.java
+
+        if (annotationType in visited) continue
+        visited.add(annotationType)
+
+        if (target.isInstance(annotation)) return true
+        if (annotationType.hasAnnotationRecursive(target, visited)) return true
+    }
+    return false
+}
