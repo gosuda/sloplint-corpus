@@ -336,6 +336,19 @@ class TestVerify(unittest.TestCase):
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("pinned entry must have no files", proc.stdout)
 
+    def test_pinned_without_subset_or_hash_fails(self):
+        root = make_repo(mode="private")
+        self.addCleanup(shutil.rmtree, root, True)
+        with open(os.path.join(root, "corpus.toml"), "a") as fh:
+            fh.write('\n[[project]]\nname = "pin"\nlanguage = "python"\n'
+                     'url = "https://example.com/x"\nrev = "%s"\n'
+                     'spdx = "NOASSERTION"\nstorage = "pinned"\n'
+                     'reason = "x"\n' % ("a" * 40))
+        proc = run_tool(root, "verify", "--offline")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("pinned entry needs a non-empty paths subset", proc.stdout)
+        self.assertIn("pinned entry needs tree_hash sha256:<64 hex>", proc.stdout)
+
     def test_public_spdx_in_private_fails(self):
         root = make_repo(mode="private")
         self.addCleanup(shutil.rmtree, root, True)

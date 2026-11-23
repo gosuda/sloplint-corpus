@@ -430,6 +430,14 @@ def verify_project(root, project, mode, errors):
                           (tag, language, name))
         if "NOASSERTION" not in declared and not declared:
             errors.append("%s: pinned entry needs a recorded spdx" % tag)
+        paths = project.get("paths", [])
+        if (not isinstance(paths, list) or not paths
+                or not all(isinstance(p, str) and p for p in paths)):
+            errors.append("%s: pinned entry needs a non-empty paths subset" % tag)
+        tree_hash = project.get("tree_hash", "")
+        if (not isinstance(tree_hash, str)
+                or not re.fullmatch(r"sha256:[0-9a-f]{64}", tree_hash)):
+            errors.append("%s: pinned entry needs tree_hash sha256:<64 hex>" % tag)
         return 0
     if not os.path.isdir(projdir):
         errors.append("%s: copied entry is missing projects/%s/%s" % (tag, language, name))
