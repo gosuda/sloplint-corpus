@@ -856,6 +856,19 @@ class TestMeasureSeeds(unittest.TestCase):
         self.assertEqual(len(names), 1, names)
         self.assertLessEqual(len(names[0].encode("utf-8")), 200)
 
+    def test_seeds_bound_multibyte_names(self):
+        long_a = "あ" * 120 + "a.py"
+        long_b = "あ" * 120 + "b.py"
+        first = corpus.seed_name("demo", "src/" + long_a)
+        second = corpus.seed_name("demo", "src/" + long_b)
+        self.assertLessEqual(len(first.encode("utf-8")), 200)
+        self.assertLessEqual(len(second.encode("utf-8")), 200)
+        self.assertEqual(first, corpus.seed_name("demo", "src/" + long_a))
+        self.assertNotEqual(first, second)
+        short = corpus.seed_name("demo", "src/a.py")
+        want = "demo__a.py__" + hashlib.sha256("demo/src/a.py".encode("utf-8")).hexdigest()[:16]
+        self.assertEqual(short, want)
+
     def test_seeds_rerun_matches_report(self):
         root = make_repo()
         self.addCleanup(shutil.rmtree, root, True)

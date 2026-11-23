@@ -1180,8 +1180,10 @@ def seed_name(pname, rel):
     pathhash = hashlib.sha256(("%s/%s" % (pname, rel)).encode(
         "utf-8", "surrogateescape")).hexdigest()[:16]
     stem = "%s__%s" % (pname, os.path.basename(rel))
-    if len((stem + "__" + pathhash).encode("utf-8", "surrogateescape")) > 200:
-        stem = stem[:160]
+    suffix = "__" + pathhash
+    if len((stem + suffix).encode("utf-8", "surrogateescape")) > 200:
+        budget = 200 - len(suffix.encode("utf-8", "surrogateescape"))
+        stem = stem.encode("utf-8", "surrogateescape")[:budget].decode("utf-8", "ignore")
     return "%s__%s" % (stem, pathhash)
 
 
