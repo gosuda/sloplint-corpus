@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 try:
@@ -708,13 +709,13 @@ def cmd_add(args):
     if mode == "public" and not public_spdx_ok(args.spdx):
         fail("spdx %s is not on the public allowlist" % args.spdx)
         return 1
-    cache = os.path.join(root, ".cache", "tmp", "add-" + args.name)
-    if os.path.exists(cache):
-        shutil.rmtree(cache)
-    os.makedirs(os.path.dirname(cache), exist_ok=True)
+    scratch_parent = os.path.join(root, ".cache", "tmp")
+    os.makedirs(scratch_parent, exist_ok=True)
+    cache = tempfile.mkdtemp(prefix="add-" + args.name + "-", dir=scratch_parent)
     proc = subprocess.run(["git", "clone", "--quiet", url, cache],
                           capture_output=True, text=True, timeout=600)
     if proc.returncode != 0:
+        shutil.rmtree(cache, ignore_errors=True)
         fail("git clone failed: %s" % (proc.stderr.strip().splitlines() or ["unknown"])[0])
         return 1
     proc = subprocess.run(["git", "-C", cache, "checkout", "--quiet", args.rev],
