@@ -242,6 +242,10 @@ class TestGlobs(unittest.TestCase):
         self.assertFalse(corpus.match_subset("src/test/fixture.rs", ["src/test[!_]*.rs"]))
         self.assertFalse(corpus.match_subset("src/a/b.rs", ["src/a[xy]b.rs"]))
 
+    def test_reversed_range_is_a_clean_error(self):
+        self.assertIsNotNone(corpus.check_subset(["src/test[9-0].rs"]))
+        self.assertIsNone(corpus.check_subset(["src/test[0-9].rs", "src/**"]))
+
     def test_dot_slash_prefix(self):
         self.assertTrue(corpus.match_subset("src/lib.rs", ["./src/*.rs"]))
         self.assertTrue(corpus.match_subset("src/net/tcp.rs", ["./src/**"]))
@@ -783,6 +787,24 @@ class TestAddLocal(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn("PASS add: pinned docref-demo", proc.stdout)
         self.assertEqual(run_tool(root, "verify", "--offline").returncode, 0)
+
+    @unittest.skipUnless(HAS_GIT, "needs git")
+    def test_add_reversed_range_fails_before_clone(self):
+        upstream, rev = make_local_git_repo(MIT_TEXT)
+        self.addCleanup(shutil.rmtree, upstream, True)
+        root = make_repo(mode="private")
+        self.addCleanup(shutil.rmtree, root, True)
+        proc = run_tool(root, "add", "--url", upstream, "--rev", rev,
+                        "--lang", "rust", "--spdx", "NOASSERTION",
+                        "--name", "badrange", "--storage", "pinned",
+                        "--paths", "src/test[9-0].rs", "--reason", "bad range")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("bad path pattern", proc.stdout)
+        scratch = os.path.join(root, ".cache", "tmp")
+        leftovers = sorted(os.listdir(scratch)) if os.path.isdir(scratch) else []
+        self.assertEqual(leftovers, [])
+        manifest = open(os.path.join(root, "corpus.toml")).read()
+        self.assertNotIn("badrange", manifest)
 
     @unittest.skipUnless(HAS_GIT, "needs git")
     def test_add_duplicate_name_rejected_before_clone(self):

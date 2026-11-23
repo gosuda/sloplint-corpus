@@ -702,6 +702,17 @@ def _glob_to_regex(pattern):
     return "".join(out)
 
 
+def check_subset(patterns):
+    for pattern in patterns:
+        while pattern.startswith("./"):
+            pattern = pattern[2:]
+        try:
+            re.compile(_glob_to_regex(pattern))
+        except re.error as exc:
+            return "bad path pattern %r: %s" % (pattern, exc)
+    return None
+
+
 def match_subset(relpath, patterns):
     for pattern in patterns:
         while pattern.startswith("./"):
@@ -847,6 +858,12 @@ def cmd_add(args):
         return 1
     scratch_parent = os.path.join(root, ".cache", "tmp")
     os.makedirs(scratch_parent, exist_ok=True)
+    patterns = [p.strip() for p in args.paths.split(",") if p.strip()]
+    excludes = [p.strip() for p in (args.exclude or "").split(",") if p.strip()]
+    problem = check_subset(patterns + excludes)
+    if problem is not None:
+        fail(problem)
+        return 1
     cache = tempfile.mkdtemp(prefix="add-" + args.name + "-", dir=scratch_parent)
     proc = subprocess.run(["git", "clone", "--quiet", url, cache],
                           capture_output=True, text=True, timeout=600)
@@ -860,8 +877,6 @@ def cmd_add(args):
         shutil.rmtree(cache, ignore_errors=True)
         fail("rev %s not found upstream" % args.rev)
         return 1
-    patterns = [p.strip() for p in args.paths.split(",") if p.strip()]
-    excludes = [p.strip() for p in (args.exclude or "").split(",") if p.strip()]
     selected = []
     for dirpath, dirnames, filenames in os.walk(cache):
         if ".git" in dirnames:
@@ -1029,6 +1044,14 @@ def cmd_fetch(args):
                     continue
                 sys.stdout.write("PASS fetch --check %s\n" % tag)
                 continue
+            stored = project.get("paths", [])
+            stored_excludes = project.get("exclude", [])
+            if isinstance(stored, list) and isinstance(stored_excludes, list):
+                problem = check_subset(stored + stored_excludes)
+                if problem is not None:
+                    fail("%s: %s" % (tag, problem))
+                    failures += 1
+                    continue
             tmp = os.path.join(root, ".cache", "tmp", "fetch-" + name)
             if os.path.exists(tmp):
                 shutil.rmtree(tmp)
