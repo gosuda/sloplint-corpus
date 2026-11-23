@@ -388,6 +388,31 @@ class TestAddLocal(unittest.TestCase):
         check = run_tool(root, "fetch", "--check", "--allow-unlicensed")
         self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
 
+    @unittest.skipUnless(HAS_GIT, "needs git")
+    def test_add_quoted_reason_keeps_manifest_parsable(self):
+        upstream, rev = make_local_git_repo(MIT_TEXT)
+        self.addCleanup(shutil.rmtree, upstream, True)
+        root = make_repo(mode="private")
+        self.addCleanup(shutil.rmtree, root, True)
+        reason = 'Tests the "fast path" parser \\ nightly\nsecond line'
+        proc = run_tool(root, "add", "--url", upstream, "--rev", rev,
+                        "--lang", "rust", "--spdx", "NOASSERTION",
+                        "--name", "quote-demo", "--storage", "pinned",
+                        "--paths", "src/**", "--reason", reason)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        import tomllib
+        with open(os.path.join(root, "corpus.toml"), "rb") as fh:
+            data = tomllib.load(fh)
+        self.assertEqual(data["project"][0]["reason"], reason)
+        self.assertEqual(run_tool(root, "verify", "--offline").returncode, 0)
+
+    def test_toml_basic_escapes_round_trip(self):
+        import tomllib
+        for raw in ['plain', 'a"b', "back\\slash", "new\nline", "tab\there",
+                    "ctrl\x01x", "uni\x7fh", "snow\xe2\x9d\x83"]:
+            doc = 'v = "%s"\n' % corpus._toml_basic(raw)
+            self.assertEqual(tomllib.loads(doc)["v"], raw)
+
 
 FAKE_SLOPLINT = """#!/bin/sh
 cat <<'EOF'

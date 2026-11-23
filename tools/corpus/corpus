@@ -568,30 +568,65 @@ def match_subset(relpath, patterns):
     return False
 
 
+def _toml_basic(value):
+    out = []
+    for char in value:
+        code = ord(char)
+        if char == "\\":
+            out.append("\\\\")
+        elif char == '"':
+            out.append('\\"')
+        elif char == "\b":
+            out.append("\\b")
+        elif char == "\t":
+            out.append("\\t")
+        elif char == "\n":
+            out.append("\\n")
+        elif char == "\f":
+            out.append("\\f")
+        elif char == "\r":
+            out.append("\\r")
+        elif code < 0x20 or code == 0x7F:
+            out.append("\\u%04X" % code)
+        else:
+            out.append(char)
+    return "".join(out)
+
+
 def record_entry(root, args, url, patterns, excludes, storage, tree_hash, stamp, notice_flag):
+    quote = lambda value: '"%s"' % _toml_basic(value)
     entry = ("\n[[project]]\n"
-             "name = \"%s\"\n"
-             "language = \"%s\"\n"
-             "url = \"%s\"\n"
-             "rev = \"%s\"\n"
-             "spdx = \"%s\"\n"
-             "storage = \"%s\"\n"
+             "name = %s\n"
+             "language = %s\n"
+             "url = %s\n"
+             "rev = %s\n"
+             "spdx = %s\n"
+             "storage = %s\n"
              "paths = [%s]\n" % (
-                 args.name, args.lang, url, args.rev, args.spdx, storage,
-                 ", ".join('"%s"' % p for p in patterns)))
+                 quote(args.name), quote(args.lang), quote(url), quote(args.rev),
+                 quote(args.spdx), quote(storage),
+                 ", ".join(quote(p) for p in patterns)))
     if excludes:
-        entry += "exclude = [%s]\n" % ", ".join('"%s"' % p for p in excludes)
-    entry += ("tree_hash = \"%s\"\n"
-              "added_by = \"%s\"\n"
-              "added_on = \"%s\"\n"
-              "reason = \"%s\"\n"
+        entry += "exclude = [%s]\n" % ", ".join(quote(p) for p in excludes)
+    entry += ("tree_hash = %s\n"
+              "added_by = %s\n"
+              "added_on = %s\n"
+              "reason = %s\n"
               "notice_present_upstream = %s\n" % (
-                  tree_hash, args.added_by or "unknown", stamp, args.reason,
-                  "true" if notice_flag else "false"))
+                  quote(tree_hash), quote(args.added_by or "unknown"), quote(stamp),
+                  quote(args.reason), "true" if notice_flag else "false"))
     manifest_path = find_manifest(root, args.manifest)
+    with open(manifest_path, "r", encoding="utf-8") as fh:
+        current = fh.read()
+    try:
+        tomllib.loads(current + entry)
+    except Exception as exc:
+        fail("refusing to write an unparsable manifest entry: %s" % exc)
+        return 1
     with open(manifest_path, "a", encoding="utf-8") as fh:
         fh.write(entry)
-    verify_args = argparse.Namespace(root=root, manifest=args.manifest, reuse=False)
+    verify_args = argparse.Namespace(root=root, manifest=args.manifest, reuse=False,
+                                    expect_mode=None)
     if cmd_verify(verify_args) != 0:
         fail("added tree does not pass verify; entry kept for inspection")
         return 1
