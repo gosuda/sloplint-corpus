@@ -1071,7 +1071,7 @@ def cmd_fetch(args):
                      "re-run with --allow-unlicensed for a logged local copy" % tag)
                 failures += 1
                 continue
-            if custom and not args.allow_unlicensed:
+            if custom and not args.allow_unlicensed and not args.check:
                 fail("%s: pinned entry declares custom license %s; refusing without "
                      "explicit consent; re-run with --allow-unlicensed for a logged "
                      "local copy" % (tag, custom[0]))

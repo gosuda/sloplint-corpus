@@ -1018,6 +1018,27 @@ class TestAddLocal(unittest.TestCase):
         self.assertTrue(os.path.isfile(
             os.path.join(root, ".cache", "tree", "python", "prop", "src", "lib.rs")))
 
+    @unittest.skipUnless(HAS_GIT, "needs git")
+    def test_fetch_check_needs_no_consent_for_custom(self):
+        upstream, rev = make_local_git_repo(MIT_TEXT)
+        self.addCleanup(shutil.rmtree, upstream, True)
+        root = make_repo(mode="private")
+        self.addCleanup(shutil.rmtree, root, True)
+        proc = run_tool(root, "add", "--url", upstream, "--rev", rev,
+                        "--lang", "python",
+                        "--spdx", "LicenseRef-Proprietary",
+                        "--name", "propcheck", "--storage", "pinned",
+                        "--paths", "src/**", "--reason", "proprietary fixture")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        missing = run_tool(root, "fetch", "--check")
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn("not materialized", missing.stdout)
+        consent = run_tool(root, "fetch", "--lang", "python", "--allow-unlicensed")
+        self.assertEqual(consent.returncode, 0, consent.stdout + consent.stderr)
+        check = run_tool(root, "fetch", "--check")
+        self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
+        self.assertIn("PASS fetch --check", check.stdout)
+
     @unittest.skipUnless(HAS_GIT and HAS_ASKALONO, "needs git and askalono")
     def test_add_copies_every_root_license_file(self):
         upstream = tempfile.mkdtemp(prefix="corpus-upstream-")
