@@ -3,6 +3,221 @@ schema_version = 1
 [corpus]
 mode = "public"
 
+[[project]]
+name = "alamofire"
+language = "swift"
+url = "https://github.com/Alamofire/Alamofire"
+rev = "dea4bab91767a971d6e112bc955c6a82295589b7"
+spdx = "MIT"
+storage = "copied"
+paths = ["*"]
+tree_hash = "sha256:7ac20dbb547f91118f53bff902134770e187a82cb1798b3385b817b29a112e63"
+added_by = "CorpusPopC4"
+added_on = "2026-11-23"
+reason = "networking library, mid-size, 2014-era origin"
+notice_present_upstream = false
+
+[[project]]
+name = "swift-composable-architecture"
+language = "swift"
+url = "https://github.com/pointfreeco/swift-composable-architecture"
+rev = "bf66bd83f3165fe4f5fdb9a6c99249276505723e"
+spdx = "MIT"
+storage = "copied"
+paths = ["*"]
+tree_hash = "sha256:65901bf270e19d9c449e093d1d0f0d79d5e44d26b4094b5bfbbc2bedd8b4c5f4"
+added_by = "CorpusPopC4"
+added_on = "2026-11-23"
+reason = "reducer architecture, macros and concurrency"
+notice_present_upstream = false
+
+[[project]]
+name = "swiftlint"
+language = "swift"
+url = "https://github.com/realm/SwiftLint"
+rev = "f934241dca9a80a68173043c647728bb54688f67"
+spdx = "MIT"
+storage = "copied"
+paths = ["*"]
+tree_hash = "sha256:6f594f5f9783c526eb5363197169dfa4e0f4159622275e7a17c2a57be4f8d2fd"
+added_by = "CorpusPopC4"
+added_on = "2026-11-23"
+reason = "tooling style, large file count"
+notice_present_upstream = false
+
+[[project]]
+name = "vapor"
+language = "swift"
+url = "https://github.com/vapor/vapor"
+rev = "e4a5b7050f5e9e5793be3ebdeb687eac92fd9965"
+spdx = "MIT"
+storage = "copied"
+paths = ["*"]
+exclude = ["Sources/Development/configure.swift", "Tests/VaporTests/RequestTests.swift"]
+tree_hash = "sha256:6a77b5b64cac0ddef8dab23310eb67cc3a6198a75a460a292c1816ba4bb752c7"
+added_by = "CorpusPopC4"
+added_on = "2026-11-23"
+reason = "server framework, new access-level imports; excludes dev sample with PEM-shaped placeholder and RequestTests.swift whose Apache-2.0 header is outside declared MIT"
+notice_present_upstream = false
+
+[[project]]
+name = "play"
+language = "scala"
+url = "https://github.com/playframework/playframework"
+rev = "5bf793bdcf36a4a26024ee595f7e69a3dcf3c92f"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["*"]
+tree_hash = "sha256:f58e92f0a4463c2a5f801c70ea8dc2940beac109c052064cee6def35c696f495"
+added_by = "CorpusPopC4"
+added_on = "2026-11-23"
+reason = "web framework, large module spread"
+notice_present_upstream = false
+
+[[project]]
+name = "http4s"
+language = "scala"
+url = "https://github.com/http4s/http4s"
+rev = "884d563854b68f70f2d7a9684727792cb4d17517"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["*"]
+tree_hash = "sha256:6dbffdd88137ea8f80c3a5ba046dc37c1d8081a9aece5b634f3172919201bfec"
+added_by = "CorpusPopC4"
+added_on = "2026-11-23"
+reason = "HTTP stack on series/0.23 branch"
+notice_present_upstream = true
+
+[[project]]
+name = "scala"
+language = "scala"
+url = "https://github.com/scala/scala"
+rev = "632df4153c21bf0513f5735967fb1220185ab78a"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["src/**", "src/*/**", "src/*/*/**", "src/*/*/*/**", "src/*/*/*/*/**", "src/*/*/*/*/*/**", "src/*/*/*/*/*/*/**", "src/*/*/*/*/*/*/*/**", "src/*/*/*/*/*/*/*/*/**", "src/*/*/*/*/*/*/*/*/*/**"]
+exclude = ["test/**", "test/*/**", "test/*/*/**", "test/*/*/*/**", "test/*/*/*/*/**", "test/*/*/*/*/*/**", "test/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/*/**", "project/**", "project/*/**", "project/*/*/**", "project/*/*/*/**", "project/*/*/*/*/**", "src/scalap/scala/tools/scalap/scalax/rules/Memoisable.scala", "src/scalap/scala/tools/scalap/scalax/rules/Result.scala", "src/scalap/scala/tools/scalap/scalax/rules/Rule.scala", "src/scalap/scala/tools/scalap/scalax/rules/Rules.scala", "src/scalap/scala/tools/scalap/scalax/rules/SeqRule.scala"]
+tree_hash = "sha256:72b370f3379d4dc85308e00d7f3cacd4cf9308697d97c4f0b64babf042002683"
+added_by = "CorpusPopC4"
+added_on = "2026-11-23"
+reason = "Scala 2 compiler and standard library, implicits and macros; src/ subset minus test/project trees and five BSD-licensed scalax rules files outside the public allowlist"
+notice_present_upstream = true
+
+[[project]]
+name = "scala3"
+language = "scala"
+url = "https://github.com/scala/scala3"
+rev = "ff8f3950da9d83b44df246ad32d5882c259a28bb"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["compiler/**", "compiler/*/**", "compiler/*/*/**", "compiler/*/*/*/**", "compiler/*/*/*/*/**", "compiler/*/*/*/*/*/**", "compiler/*/*/*/*/*/*/**", "compiler/*/*/*/*/*/*/*/**"]
+exclude = ["testsuite/compiler/**"]
+tree_hash = "sha256:2be2262689676e35680fad46b6b883c4882bce6feb045b87f65c9bfe71825157"
+added_by = "CorpusPopC4"
+added_on = "2026-11-23"
+reason = "Scala 3 compiler, indentation syntax and givens; compiler/ subset"
+notice_present_upstream = true
+
+[[project]]
+name = "bloc"
+language = "dart"
+url = "https://github.com/felangel/bloc"
+rev = "2f77437b8a051dc3dbeff51dd534432c78f02cf5"
+spdx = "MIT"
+storage = "copied"
+paths = ["*"]
+tree_hash = "sha256:ffdb904165f2ee730679a1278a9eca359151b01fe7eef362b406596cc6303771"
+added_by = "CorpusPopC4"
+added_on = "2026-11-23"
+reason = "state management with codegen"
+notice_present_upstream = false
+
+[[project]]
+name = "melos"
+language = "dart"
+url = "https://github.com/invertase/melos"
+rev = "d11594c9c6fdf08bc9891abedb12b0453ad35832"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["*"]
+tree_hash = "sha256:036469729390767cac5d865c2204272b5e373f72331e4fd205d075c755c185e5"
+added_by = "CorpusPopC4"
+added_on = "2026-11-23"
+reason = "monorepo tooling, CLI style"
+notice_present_upstream = false
+
+[[project]]
+name = "riverpod"
+language = "dart"
+url = "https://github.com/rrousselGit/riverpod"
+rev = "a16873f97a1eefd07e14506cb96fcd350c9e62e8"
+spdx = "MIT"
+storage = "copied"
+paths = ["*"]
+tree_hash = "sha256:9ded0a74ae26c721e9c4420eb15cf32cf9343dbb390e4313b37984a95538dd2b"
+added_by = "CorpusPopC4"
+added_on = "2026-11-23"
+reason = "provider framework, large package set"
+notice_present_upstream = false
+
+[[project]]
+name = "very-good-analysis"
+language = "dart"
+url = "https://github.com/VeryGoodOpenSource/very_good_analysis"
+rev = "4b1c1f67c91c6220b92716ca959efdbeee492d5c"
+spdx = "MIT"
+storage = "copied"
+paths = ["*"]
+tree_hash = "sha256:5ae31a4d8ae0e2181962f4a95a60592d29348f2ca359e5c198c9bb14a4aa12fe"
+added_by = "CorpusPopC4"
+added_on = "2026-11-23"
+reason = "lint-config package, analyzer stress"
+notice_present_upstream = false
+
+[[project]]
+name = "zig"
+language = "zig"
+url = "https://github.com/ziglang/zig"
+rev = "738d2be9d6b6ef3ff3559130c05159ef53336224"
+spdx = "MIT"
+storage = "copied"
+paths = ["build.zig", "lib/std/**", "lib/std/*/**", "lib/std/*/*/**", "lib/std/*/*/*/**", "lib/std/*/*/*/*/**", "lib/std/*/*/*/*/*/**"]
+exclude = ["lib/std/os/**", "lib/std/os/*/**", "lib/std/os/*/*/**", "lib/std/os/*/*/*/**"]
+tree_hash = "sha256:aca074cfe655b9d1d3780e1ce96c2961000f854d0b84c204dfcb74646ce0cc2e"
+added_by = "CorpusPopC4"
+added_on = "2026-11-23"
+reason = "compiler plus stdlib anchor; lib/std subset minus os/ for size"
+notice_present_upstream = false
+
+[[project]]
+name = "zls"
+language = "zig"
+url = "https://github.com/zigtools/zls"
+rev = "37a0d59803419dda5f97133cbc8fe6c68098386d"
+spdx = "MIT"
+storage = "copied"
+paths = ["*"]
+tree_hash = "sha256:851ff8892a17e8b35e24af385e80b497dce306bc67d581c4a8fa92e36c81065e"
+added_by = "CorpusPopC4"
+added_on = "2026-11-23"
+reason = "language server, LSP stress"
+notice_present_upstream = false
+
+
+[[project]]
+name = "ghostty"
+language = "zig"
+url = "https://github.com/ghostty-org/ghostty"
+rev = "74241405fe457d6a569a110cffe9d75a1c9a53b7"
+spdx = "MIT"
+storage = "copied"
+paths = ["src/**", "src/*/**", "src/*/*/**", "src/*/*/*/**", "src/*/*/*/*/**", "src/*/*/*/*/*/**"]
+exclude = ["example/**", "example/*/**", "example/*/*/**", "example/*/*/*/**", "pkg/**", "pkg/*/**", "pkg/*/*/**", "pkg/*/*/*/**", "pkg/*/*/*/*/**", "pkg/*/*/*/*/*/**", "test/**", "test/*/**", "test/*/*/**", "test/*/*/*/**", "test/*/*/*/*/**", "src/terminal/x11_color.zig", "src/build/LibVtPackages.zig"]
+tree_hash = "sha256:60629621df2170c6e330a29dd559a64bbec16813bb8e2a24a640ae155f79d423"
+added_by = "CorpusPopC4"
+added_on = "2026-11-23"
+reason = "terminal emulator; src/ subset; excludes vendored example/pkg/test trees, x11_color.zig, and LibVtPackages.zig whose example JSON names BSD-3-Clause outside the allowlist"
+notice_present_upstream = false
 
 [[project]]
 name = "spring-boot"

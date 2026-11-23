@@ -1,0 +1,33 @@
+/*
+ * Copyright (C) from 2022 The Play Framework Contributors <https://github.com/playframework>, 2011-2021 Lightbend Inc. <https://www.lightbend.com>
+ */
+
+package sbt.internal
+
+import sbt._
+import sbt.compiler.Eval
+
+object PlayDocsCompat {
+  def runTask[T](key: TaskKey[T], state: State): Option[(State, Result[T])] =
+    Project.runTask(key, state)
+
+  def getClasspathFiles(cp: Def.Classpath)(implicit fc: xsbti.FileConverter): Seq[java.io.File] =
+    cp.files
+}
+
+trait PlayDocsPluginCompat {
+  def uncached[T](value: T): T = value
+
+  def defaultLoad(state: State, localBase: java.io.File): (() => Eval, BuildStructure) = {
+    Load.defaultLoad(state, localBase, state.log)
+  }
+
+  def evaluateConfigurations(
+      sbtFile: java.io.File,
+      imports: Seq[String],
+      classLoader: ClassLoader,
+      eval: () => Eval
+  ): Seq[Def.Setting[?]] = {
+    EvaluateConfigurations.evaluateConfiguration(eval(), sbtFile, imports)(classLoader)
+  }
+}

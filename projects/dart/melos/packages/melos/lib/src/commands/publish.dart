@@ -1,0 +1,277 @@
+part of 'runner.dart';
+
+mixin _PublishMixin on _ExecMixin {
+  Future<void> publish({
+    GlobalOptions? global,
+    PackageFilters? packageFilters,
+    bool? dryRun,
+    bool? gitTagVersion,
+    // yes
+    bool? force,
+    String? pubServer,
+    bool? skipValidation,
+  }) async {
+    final workspace = await createWorkspace(
+      global: global,
+      packageFilters: packageFilters,
+    );
+    final publishConfig = workspace.config.commands.publish;
+
+    return _runLifecycle(workspace, CommandWithLifecycle.publish, () {
+      return _publish(
+        workspace: workspace,
+        global: global,
+        packageFilters: packageFilters,
+        dryRun: dryRun ?? publishConfig.dryRun ?? true,
+        gitTagVersion: gitTagVersion ?? publishConfig.gitTagVersion ?? false,
+        force: force ?? publishConfig.force ?? false,
+        pubServer: pubServer ?? publishConfig.pubServer,
+        skipValidation: skipValidation ?? publishConfig.skipValidation ?? false,
+      );
+    });
+  }
+
+  Future<void> _publish({
+    required MelosWorkspace workspace,
+    GlobalOptions? global,
+    PackageFilters? packageFilters,
+    bool dryRun = true,
+    bool gitTagVersion = false,
+    // yes
+    bool force = false,
+    String? pubServer,
+    bool skipValidation = false,
+  }) async {
+    logger.command('melos publish${dryRun ? " --$publishOptionDryRun" : ''}');
+    logger.child(targetStyle(workspace.path)).newLine();
+
+    final readRegistryProgress = logger.progress(
+      'Reading pub registry for package information',
+    );
+
+    Map<String, String?> latestPublishedVersionForPackages;
+
+    try {
+      latestPublishedVersionForPackages =
+          await _getLatestPublishedVersionForPackages(workspace);
+    } finally {
+      readRegistryProgress.finish(
+        message: successLabel,
+        showTiming: true,
+      );
+    }
+
+    final unpublishedPackages = <Package>[
+      for (final entry in latestPublishedVersionForPackages.entries)
+        if (entry.value == null ||
+            entry.value !=
+                workspace.filteredPackages[entry.key]!.version.toString())
+          workspace.filteredPackages[entry.key]!,
+    ];
+
+    if (unpublishedPackages.isEmpty) {
+      logger
+        ..newLine()
+        ..success(
+          'No unpublished packages found - '
+          'all local packages are already up to date.',
+        );
+      return;
+    }
+
+    sortPackagesForPublishing(unpublishedPackages);
+
+    logger
+      ..newLine()
+      ..warning(
+        AnsiStyles.bold(
+          dryRun
+              ? 'The following packages will be validated only (dry run):'
+              : 'The following packages WILL be published to the registry:',
+        ),
+        label: false,
+        dryRun: dryRun,
+      )
+      ..newLine();
+
+    logger.stdout(
+      listAsPaddedTable(
+        [
+          [
+            AnsiStyles.underline.bold('Package Name'),
+            AnsiStyles.underline.bold('Registry'),
+            AnsiStyles.underline.bold('Local'),
+          ],
+          ...unpublishedPackages.map((package) {
+            return [
+              AnsiStyles.italic(package.name),
+              AnsiStyles.dim(latestPublishedVersionForPackages[package.name]),
+              AnsiStyles.green(package.version.toString()),
+            ];
+          }),
+        ],
+        paddingSize: 4,
+      ),
+    );
+
+    if (!force) {
+      final shouldContinue = promptBool();
+      if (!shouldContinue) {
+        throw CancelledException();
+      }
+      logger.newLine();
+    }
+
+    await _performPublishing(
+      workspace,
+      unpublishedPackages,
+      dryRun: dryRun,
+      gitTagVersion: gitTagVersion,
+      pubServer: pubServer,
+      skipValidation: skipValidation,
+    );
+  }
+
+  Future<Map<String, String?>> _getLatestPublishedVersionForPackages(
+    MelosWorkspace workspace,
+  ) async {
+    final pool = Pool(10);
+    final latestPackageVersion = <String, String?>{};
+
+    await pool.forEach<Package, void>(workspace.filteredPackages.values, (
+      package,
+    ) async {
+      if (package.isPrivate) {
+        return;
+      }
+
+      final pubPackage = await package.getPublishedPackage(
+        logger: logger,
+        backoff: workspace.config.pub.retryBackoff,
+        timeout: workspace.config.pub.requestTimeout,
+      );
+      final versions = pubPackage?.prioritizedVersions.reversed
+          .map((v) => v.version.toString())
+          .toList();
+
+      if (versions == null || versions.isEmpty) {
+        latestPackageVersion[package.name] = null;
+        return;
+      }
+
+      // If current version is a prerelease version then get the latest
+      // prerelease version with a matching preid instead if any.
+      if (package.version.isPreRelease) {
+        final preid = package.version.preRelease.length == 4
+            ? package.version.preRelease[2].toString()
+            : package.version.preRelease[0].toString();
+        final versionsWithPreid = versions
+            .where((version) => version.contains(preid))
+            .toList();
+        latestPackageVersion[package.name] = versionsWithPreid.isEmpty
+            ? versions[0]
+            : versionsWithPreid[0];
+      } else {
+        latestPackageVersion[package.name] = versions[0];
+      }
+    }).drain<void>();
+
+    return latestPackageVersion;
+  }
+
+  Future<void> _performPublishing(
+    MelosWorkspace workspace,
+    List<Package> unpublishedPackages, {
+    required bool dryRun,
+    required bool gitTagVersion,
+    String? pubServer,
+    bool skipValidation = false,
+  }) async {
+    final updateRegistryProgress = logger.progress(
+      'Publishing ${unpublishedPackages.length} packages to registry:',
+    );
+    final execArgs = [
+      ...pubCommandExecArgs(useFlutter: false, workspace: workspace),
+      'publish',
+    ];
+
+    if (dryRun) {
+      execArgs.add('--dry-run');
+    } else {
+      execArgs.add('--force');
+    }
+
+    if (pubServer != null) {
+      execArgs.addAll(['--server', pubServer]);
+    }
+
+    if (skipValidation) {
+      execArgs.add('--skip-validation');
+    }
+
+    await _execForAllPackages(
+      workspace,
+      execArgs,
+      executablePackages: unpublishedPackages,
+      concurrency: 1,
+      failFast: true,
+      orderDependents: false,
+      additionalEnvironment: {
+        EnvironmentVariableKey.melosPublishDryRun: dryRun.toString(),
+      },
+    );
+
+    if (exitCode == 0) {
+      if (!dryRun && gitTagVersion) {
+        logger
+          ..newLine()
+          ..log('Creating git tags for any versions not already created... ');
+        if (workspace.config.commands.version.workspaceTag) {
+          final versions = unpublishedPackages
+              .map((package) => package.version)
+              .toSet();
+          if (versions.length == 1) {
+            final tag = gitTagForVersion(versions.single.toString());
+            await gitTagCreate(
+              tag,
+              'Publish $tag.',
+              workingDirectory: workspace.path,
+              logger: logger,
+            );
+          } else {
+            logger.warning(
+              'Skipping git tag creation since the published packages have '
+              'different versions (${versions.join(', ')}), while '
+              '"command/version/workspaceTag" expects all packages to share '
+              'the same version.',
+            );
+          }
+        } else {
+          await Future.forEach(unpublishedPackages, (package) async {
+            final tag = gitTagForPackage(package, package.version.toString());
+            await gitTagCreate(
+              tag,
+              'Publish $tag.',
+              workingDirectory: package.path,
+              logger: logger,
+            );
+          });
+        }
+      }
+
+      updateRegistryProgress.finish(
+        message: successLabel,
+        showTiming: true,
+      );
+
+      logger
+        ..newLine()
+        ..success(
+          dryRun
+              ? 'All packages were validated successfully.'
+              : 'All packages have successfully been published.',
+          dryRun: dryRun,
+        );
+    }
+  }
+}

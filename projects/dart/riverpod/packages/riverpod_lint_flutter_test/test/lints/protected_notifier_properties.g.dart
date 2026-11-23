@@ -1,0 +1,680 @@
+// GENERATED CODE - DO NOT MODIFY BY HAND
+
+part of 'protected_notifier_properties.dart';
+
+// **************************************************************************
+// RiverpodGenerator
+// **************************************************************************
+
+// GENERATED CODE - DO NOT MODIFY BY HAND
+// ignore_for_file: type=lint, type=warning
+
+@ProviderFor(A)
+final aProvider = AProvider._();
+
+final class AProvider extends $NotifierProvider<A, int> {
+  AProvider._()
+    : super(
+        from: null,
+        argument: null,
+        retry: null,
+        name: r'aProvider',
+        isAutoDispose: true,
+        dependencies: null,
+        $allTransitiveDependencies: null,
+      );
+
+  @override
+  String debugGetCreateSourceHash() => _$aHash();
+
+  @$internal
+  @override
+  A create() => A();
+
+  /// {@macro riverpod.override_with_value}
+  Override overrideWithValue(int value) {
+    return $overrideWithValue(value);
+  }
+}
+
+String _$aHash() => r'9bf449b010f4dd5800e78f9f5b8a431b1a79c8b7';
+
+abstract class _$A extends $Notifier<int> {
+  int build();
+  @$mustCallSuper
+  @override
+  WhenComplete runBuild() {
+    final ref = this.ref as $Ref<int, int>;
+    final element =
+        ref.element
+            as $ClassProviderElement<
+              AnyNotifier<int, int>,
+              int,
+              Object?,
+              Object?
+            >;
+    return element.handleCreate(ref, build);
+  }
+}
+
+@ProviderFor(A2)
+final a2Provider = A2Provider._();
+
+final class A2Provider extends $NotifierProvider<A2, int> {
+  A2Provider._()
+    : super(
+        from: null,
+        argument: null,
+        retry: null,
+        name: r'a2Provider',
+        isAutoDispose: false,
+        dependencies: null,
+        $allTransitiveDependencies: null,
+      );
+
+  @override
+  String debugGetCreateSourceHash() => _$a2Hash();
+
+  @$internal
+  @override
+  A2 create() => A2();
+
+  /// {@macro riverpod.override_with_value}
+  Override overrideWithValue(int value) {
+    return $overrideWithValue(value);
+  }
+}
+
+String _$a2Hash() => r'898d46cbcec03233c7b8b0754810a6903226aa2e';
+
+abstract class _$A2 extends $Notifier<int> {
+  int build();
+  @$mustCallSuper
+  @override
+  WhenComplete runBuild() {
+    final ref = this.ref as $Ref<int, int>;
+    final element =
+        ref.element
+            as $ClassProviderElement<
+              AnyNotifier<int, int>,
+              int,
+              Object?,
+              Object?
+            >;
+    return element.handleCreate(ref, build);
+  }
+}
+
+@ProviderFor(A3)
+final a3Provider = A3Family._();
+
+final class A3Provider extends $NotifierProvider<A3, int> {
+  A3Provider._({required A3Family super.from, required int super.argument})
+    : super(
+        retry: null,
+        name: r'a3Provider',
+        isAutoDispose: true,
+        dependencies: null,
+        $allTransitiveDependencies: null,
+      );
+
+  @override
+  String debugGetCreateSourceHash() => _$a3Hash();
+
+  @override
+  String toString() {
+    return r'a3Provider'
+        ''
+        '($argument)';
+  }
+
+  @$internal
+  @override
+  A3 create() => A3();
+
+  /// {@macro riverpod.override_with_value}
+  Override overrideWithValue(int value) {
+    return $overrideWithValue(value);
+  }
+
+  @override
+  bool operator ==(Object other) {
+    return other is A3Provider && other.argument == argument;
+  }
+
+  @override
+  int get hashCode {
+    return argument.hashCode;
+  }
+}
+
+String _$a3Hash() => r'2e21e9af8b67b5412611e0d23b862ead56deb8e1';
+
+final class A3Family extends $Family
+    with $ClassFamilyOverride<A3, int, int, int, int> {
+  A3Family._()
+    : super(
+        retry: null,
+        name: r'a3Provider',
+        dependencies: null,
+        $allTransitiveDependencies: null,
+        isAutoDispose: true,
+      );
+
+  A3Provider call(int param) => A3Provider._(argument: param, from: this);
+
+  @override
+  String toString() => r'a3Provider';
+}
+
+abstract class _$A3 extends $Notifier<int> {
+  late final _$args = ref.$arg as int;
+  int get param => _$args;
+
+  int build(int param);
+  @$mustCallSuper
+  @override
+  WhenComplete runBuild() {
+    final ref = this.ref as $Ref<int, int>;
+    final element =
+        ref.element
+            as $ClassProviderElement<
+              AnyNotifier<int, int>,
+              int,
+              Object?,
+              Object?
+            >;
+    return element.handleCreate(ref, () => build(_$args));
+  }
+}
+
+@ProviderFor(A4)
+final a4Provider = A4Family._();
+
+final class A4Provider extends $NotifierProvider<A4, int> {
+  A4Provider._({required A4Family super.from, required int super.argument})
+    : super(
+        retry: null,
+        name: r'a4Provider',
+        isAutoDispose: false,
+        dependencies: null,
+        $allTransitiveDependencies: null,
+      );
+
+  @override
+  String debugGetCreateSourceHash() => _$a4Hash();
+
+  @override
+  String toString() {
+    return r'a4Provider'
+        ''
+        '($argument)';
+  }
+
+  @$internal
+  @override
+  A4 create() => A4();
+
+  /// {@macro riverpod.override_with_value}
+  Override overrideWithValue(int value) {
+    return $overrideWithValue(value);
+  }
+
+  @override
+  bool operator ==(Object other) {
+    return other is A4Provider && other.argument == argument;
+  }
+
+  @override
+  int get hashCode {
+    return argument.hashCode;
+  }
+}
+
+String _$a4Hash() => r'cdd9ad09099881cafe06d7b3095a8b06dbe7d876';
+
+final class A4Family extends $Family
+    with $ClassFamilyOverride<A4, int, int, int, int> {
+  A4Family._()
+    : super(
+        retry: null,
+        name: r'a4Provider',
+        dependencies: null,
+        $allTransitiveDependencies: null,
+        isAutoDispose: false,
+      );
+
+  A4Provider call(int param) => A4Provider._(argument: param, from: this);
+
+  @override
+  String toString() => r'a4Provider';
+}
+
+abstract class _$A4 extends $Notifier<int> {
+  late final _$args = ref.$arg as int;
+  int get param => _$args;
+
+  int build(int param);
+  @$mustCallSuper
+  @override
+  WhenComplete runBuild() {
+    final ref = this.ref as $Ref<int, int>;
+    final element =
+        ref.element
+            as $ClassProviderElement<
+              AnyNotifier<int, int>,
+              int,
+              Object?,
+              Object?
+            >;
+    return element.handleCreate(ref, () => build(_$args));
+  }
+}
+
+@ProviderFor(A5)
+final a5Provider = A5Family._();
+
+final class A5Provider extends $AsyncNotifierProvider<A5, int> {
+  A5Provider._({required A5Family super.from, required int super.argument})
+    : super(
+        retry: null,
+        name: r'a5Provider',
+        isAutoDispose: true,
+        dependencies: null,
+        $allTransitiveDependencies: null,
+      );
+
+  @override
+  String debugGetCreateSourceHash() => _$a5Hash();
+
+  @override
+  String toString() {
+    return r'a5Provider'
+        ''
+        '($argument)';
+  }
+
+  @$internal
+  @override
+  A5 create() => A5();
+
+  @override
+  bool operator ==(Object other) {
+    return other is A5Provider && other.argument == argument;
+  }
+
+  @override
+  int get hashCode {
+    return argument.hashCode;
+  }
+}
+
+String _$a5Hash() => r'c83634c22b6a9149aa8787e45c3b7cd6c88b5958';
+
+final class A5Family extends $Family
+    with $ClassFamilyOverride<A5, AsyncValue<int>, int, FutureOr<int>, int> {
+  A5Family._()
+    : super(
+        retry: null,
+        name: r'a5Provider',
+        dependencies: null,
+        $allTransitiveDependencies: null,
+        isAutoDispose: true,
+      );
+
+  A5Provider call(int param) => A5Provider._(argument: param, from: this);
+
+  @override
+  String toString() => r'a5Provider';
+}
+
+abstract class _$A5 extends $AsyncNotifier<int> {
+  late final _$args = ref.$arg as int;
+  int get param => _$args;
+
+  FutureOr<int> build(int param);
+  @$mustCallSuper
+  @override
+  WhenComplete runBuild() {
+    final ref = this.ref as $Ref<AsyncValue<int>, int>;
+    final element =
+        ref.element
+            as $ClassProviderElement<
+              AnyNotifier<AsyncValue<int>, int>,
+              AsyncValue<int>,
+              Object?,
+              Object?
+            >;
+    return element.handleCreate(ref, () => build(_$args));
+  }
+}
+
+@ProviderFor(A6)
+final a6Provider = A6Family._();
+
+final class A6Provider extends $AsyncNotifierProvider<A6, int> {
+  A6Provider._({required A6Family super.from, required int super.argument})
+    : super(
+        retry: null,
+        name: r'a6Provider',
+        isAutoDispose: false,
+        dependencies: null,
+        $allTransitiveDependencies: null,
+      );
+
+  @override
+  String debugGetCreateSourceHash() => _$a6Hash();
+
+  @override
+  String toString() {
+    return r'a6Provider'
+        ''
+        '($argument)';
+  }
+
+  @$internal
+  @override
+  A6 create() => A6();
+
+  @override
+  bool operator ==(Object other) {
+    return other is A6Provider && other.argument == argument;
+  }
+
+  @override
+  int get hashCode {
+    return argument.hashCode;
+  }
+}
+
+String _$a6Hash() => r'fe641c72cacf3dd119eb77a34fe8fc71c5c30139';
+
+final class A6Family extends $Family
+    with $ClassFamilyOverride<A6, AsyncValue<int>, int, FutureOr<int>, int> {
+  A6Family._()
+    : super(
+        retry: null,
+        name: r'a6Provider',
+        dependencies: null,
+        $allTransitiveDependencies: null,
+        isAutoDispose: false,
+      );
+
+  A6Provider call(int param) => A6Provider._(argument: param, from: this);
+
+  @override
+  String toString() => r'a6Provider';
+}
+
+abstract class _$A6 extends $AsyncNotifier<int> {
+  late final _$args = ref.$arg as int;
+  int get param => _$args;
+
+  FutureOr<int> build(int param);
+  @$mustCallSuper
+  @override
+  WhenComplete runBuild() {
+    final ref = this.ref as $Ref<AsyncValue<int>, int>;
+    final element =
+        ref.element
+            as $ClassProviderElement<
+              AnyNotifier<AsyncValue<int>, int>,
+              AsyncValue<int>,
+              Object?,
+              Object?
+            >;
+    return element.handleCreate(ref, () => build(_$args));
+  }
+}
+
+@ProviderFor(A7)
+final a7Provider = A7Family._();
+
+final class A7Provider extends $StreamNotifierProvider<A7, int> {
+  A7Provider._({required A7Family super.from, required int super.argument})
+    : super(
+        retry: null,
+        name: r'a7Provider',
+        isAutoDispose: true,
+        dependencies: null,
+        $allTransitiveDependencies: null,
+      );
+
+  @override
+  String debugGetCreateSourceHash() => _$a7Hash();
+
+  @override
+  String toString() {
+    return r'a7Provider'
+        ''
+        '($argument)';
+  }
+
+  @$internal
+  @override
+  A7 create() => A7();
+
+  @override
+  bool operator ==(Object other) {
+    return other is A7Provider && other.argument == argument;
+  }
+
+  @override
+  int get hashCode {
+    return argument.hashCode;
+  }
+}
+
+String _$a7Hash() => r'd3d9ab5090e21987d65522f14ebb70d0058fc56a';
+
+final class A7Family extends $Family
+    with $ClassFamilyOverride<A7, AsyncValue<int>, int, Stream<int>, int> {
+  A7Family._()
+    : super(
+        retry: null,
+        name: r'a7Provider',
+        dependencies: null,
+        $allTransitiveDependencies: null,
+        isAutoDispose: true,
+      );
+
+  A7Provider call(int param) => A7Provider._(argument: param, from: this);
+
+  @override
+  String toString() => r'a7Provider';
+}
+
+abstract class _$A7 extends $StreamNotifier<int> {
+  late final _$args = ref.$arg as int;
+  int get param => _$args;
+
+  Stream<int> build(int param);
+  @$mustCallSuper
+  @override
+  WhenComplete runBuild() {
+    final ref = this.ref as $Ref<AsyncValue<int>, int>;
+    final element =
+        ref.element
+            as $ClassProviderElement<
+              AnyNotifier<AsyncValue<int>, int>,
+              AsyncValue<int>,
+              Object?,
+              Object?
+            >;
+    return element.handleCreate(ref, () => build(_$args));
+  }
+}
+
+@ProviderFor(A8)
+final a8Provider = A8Family._();
+
+final class A8Provider extends $StreamNotifierProvider<A8, int> {
+  A8Provider._({required A8Family super.from, required int super.argument})
+    : super(
+        retry: null,
+        name: r'a8Provider',
+        isAutoDispose: false,
+        dependencies: null,
+        $allTransitiveDependencies: null,
+      );
+
+  @override
+  String debugGetCreateSourceHash() => _$a8Hash();
+
+  @override
+  String toString() {
+    return r'a8Provider'
+        ''
+        '($argument)';
+  }
+
+  @$internal
+  @override
+  A8 create() => A8();
+
+  @override
+  bool operator ==(Object other) {
+    return other is A8Provider && other.argument == argument;
+  }
+
+  @override
+  int get hashCode {
+    return argument.hashCode;
+  }
+}
+
+String _$a8Hash() => r'54f4a841a283161bed3d444dcee53bf367958678';
+
+final class A8Family extends $Family
+    with $ClassFamilyOverride<A8, AsyncValue<int>, int, Stream<int>, int> {
+  A8Family._()
+    : super(
+        retry: null,
+        name: r'a8Provider',
+        dependencies: null,
+        $allTransitiveDependencies: null,
+        isAutoDispose: false,
+      );
+
+  A8Provider call(int param) => A8Provider._(argument: param, from: this);
+
+  @override
+  String toString() => r'a8Provider';
+}
+
+abstract class _$A8 extends $StreamNotifier<int> {
+  late final _$args = ref.$arg as int;
+  int get param => _$args;
+
+  Stream<int> build(int param);
+  @$mustCallSuper
+  @override
+  WhenComplete runBuild() {
+    final ref = this.ref as $Ref<AsyncValue<int>, int>;
+    final element =
+        ref.element
+            as $ClassProviderElement<
+              AnyNotifier<AsyncValue<int>, int>,
+              AsyncValue<int>,
+              Object?,
+              Object?
+            >;
+    return element.handleCreate(ref, () => build(_$args));
+  }
+}
+
+@ProviderFor(B)
+final bProvider = BProvider._();
+
+final class BProvider extends $NotifierProvider<B, int> {
+  BProvider._()
+    : super(
+        from: null,
+        argument: null,
+        retry: null,
+        name: r'bProvider',
+        isAutoDispose: false,
+        dependencies: null,
+        $allTransitiveDependencies: null,
+      );
+
+  @override
+  String debugGetCreateSourceHash() => _$bHash();
+
+  @$internal
+  @override
+  B create() => B();
+
+  /// {@macro riverpod.override_with_value}
+  Override overrideWithValue(int value) {
+    return $overrideWithValue(value);
+  }
+}
+
+String _$bHash() => r'741d6fd19e802d37fc20ec16e9fd3d8a2030b613';
+
+abstract class _$B extends $Notifier<int> {
+  int build();
+  @$mustCallSuper
+  @override
+  WhenComplete runBuild() {
+    final ref = this.ref as $Ref<int, int>;
+    final element =
+        ref.element
+            as $ClassProviderElement<
+              AnyNotifier<int, int>,
+              int,
+              Object?,
+              Object?
+            >;
+    return element.handleCreate(ref, build);
+  }
+}
+
+@ProviderFor(B2)
+final b2Provider = B2Provider._();
+
+final class B2Provider extends $NotifierProvider<B2, int> {
+  B2Provider._()
+    : super(
+        from: null,
+        argument: null,
+        retry: null,
+        name: r'b2Provider',
+        isAutoDispose: true,
+        dependencies: null,
+        $allTransitiveDependencies: null,
+      );
+
+  @override
+  String debugGetCreateSourceHash() => _$b2Hash();
+
+  @$internal
+  @override
+  B2 create() => B2();
+
+  /// {@macro riverpod.override_with_value}
+  Override overrideWithValue(int value) {
+    return $overrideWithValue(value);
+  }
+}
+
+String _$b2Hash() => r'38dae6c94ee1643194279c4e944effcc7e7696b5';
+
+abstract class _$B2 extends $Notifier<int> {
+  int build();
+  @$mustCallSuper
+  @override
+  WhenComplete runBuild() {
+    final ref = this.ref as $Ref<int, int>;
+    final element =
+        ref.element
+            as $ClassProviderElement<
+              AnyNotifier<int, int>,
+              int,
+              Object?,
+              Object?
+            >;
+    return element.handleCreate(ref, build);
+  }
+}

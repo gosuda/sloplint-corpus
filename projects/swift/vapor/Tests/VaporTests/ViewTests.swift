@@ -1,0 +1,25 @@
+import Foundation
+import HTTPTypes
+import RoutingKit
+import Testing
+import Vapor
+import VaporTesting
+
+@Suite("View Tests")
+struct ViewTests {
+    @Test("Test returning a view as a response")
+    func viewResponse() async throws {
+        try await withApp { app in
+            app.get("view") { req -> View in
+                return View(data: Data("<h1>hello</h1>".utf8))
+            }
+
+            try await app.testing { client in
+                let res = try await client.get("/view")
+                #expect(res.status.code == 200)
+                #expect(res.headers.contentType == .html)
+                try #expect(await res.body.requireString() == "<h1>hello</h1>")
+            }
+        }
+    }
+}

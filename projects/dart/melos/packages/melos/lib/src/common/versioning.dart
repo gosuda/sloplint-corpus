@@ -1,0 +1,409 @@
+import 'package:conventional_commit/conventional_commit.dart';
+import 'package:pub_semver/pub_semver.dart';
+
+/// Indicates the semver release type this commit message creates.
+enum SemverReleaseType {
+  /// A patch release indicates non-breaking changes (e.g. bug fixes).
+  patch,
+
+  /// Indicates new API changes have been made (e.g. new features).
+  minor,
+
+  /// A major release is when the breaking changes have been introduced.
+  major,
+}
+
+extension ConventionalCommitVersioningExtension on ConventionalCommit {
+  /// Whether this commit should trigger a version bump in its residing
+  /// package.
+  bool get isVersionableCommit {
+    return isBreakingChange ||
+        [
+          'feat',
+          'fix',
+          'bug',
+          'perf',
+          'refactor',
+          'revert',
+        ].contains(type);
+  }
+
+  /// Whether this commit should be listed in the changelog of its residing
+  /// package.
+  ///
+  /// This is a superset of [isVersionableCommit]: in addition to the
+  /// version-bumping commits, it includes `docs` commits so documentation
+  /// changes are recorded in the changelog without triggering a release on
+  /// their own.
+  bool get includeInChangelog {
+    return isVersionableCommit || type == 'docs';
+  }
+
+  /// Returns the [SemverReleaseType] for this commit, e.g.
+  /// [SemverReleaseType.major].
+  SemverReleaseType get semverReleaseType {
+    if (isBreakingChange) {
+      return SemverReleaseType.major;
+    }
+
+    if (isFeature) {
+      return SemverReleaseType.minor;
+    }
+
+    return SemverReleaseType.patch;
+  }
+}
+
+bool isValidVersion(String version) {
+  try {
+    Version.parse(version);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+Version nextStableVersion(
+  Version currentVersion,
+  SemverReleaseType releaseType,
+) {
+  if (currentVersion.major > 0) {
+    // Standard semantic versioning once the version reaches 1.0.0.
+    return switch (releaseType) {
+      SemverReleaseType.major => currentVersion.nextBreaking,
+      SemverReleaseType.minor => currentVersion.nextMinor,
+      SemverReleaseType.patch => currentVersion.nextPatch,
+    };
+  }
+  // Below 1.0.0 the interpretation of each number is shifted down one slot:
+  //   - a breaking change bumps the minor: 0.1.2 -> 0.2.0
+  //   - a new feature or a change that doesn't affect the public API bumps
+  //     the patch: 0.1.2 -> 0.1.3
+  return switch (releaseType) {
+    SemverReleaseType.major => currentVersion.nextMinor,
+    SemverReleaseType.minor ||
+    SemverReleaseType.patch => currentVersion.nextPatch,
+  };
+}
+
+/// Returns the build number of [version] if its build metadata is a single
+/// integer component (e.g. `+11`), otherwise `null`.
+int? _integerBuildNumber(Version version) {
+  if (version.build.length == 1 && version.build.first is int) {
+    return version.build.first as int;
+  }
+  return null;
+}
+
+Version nextPrereleaseVersion(
+  Version currentVersion,
+  SemverReleaseType releaseType, {
+  String? preid,
+}) {
+  if (currentVersion.isPreRelease) {
+    final currentPre = currentVersion.preRelease.length == 2
+        ? currentVersion.preRelease[1] as int
+        : -1;
+    // Note we preserve the current prereleases preid if no preid option
+    // specified. So 1.0.0-nullsafety.0 would become ...-nullsafety.X rather
+    //than use the default preid "dev".
+    var nextPreidInt = currentPre + 1;
+    final nextPreidName = preid ?? currentVersion.preRelease[0] as String;
+
+    // Reset the preid int if preid name has changed,
+    // e.g. was "...dev.3" and is now a "nullsafety" preid so the next
+    // prerelease version becomes "...nullsafety.0" instead of
+    // "...nullsafety.4".
+    if (nextPreidName != currentVersion.preRelease[0]) {
+      nextPreidInt = 0;
+    }
+
+    return Version(
+      currentVersion.major,
+      currentVersion.minor,
+      currentVersion.patch,
+      pre: '$nextPreidName.$nextPreidInt',
+    );
+  }
+
+  final nextVersion = nextStableVersion(currentVersion, releaseType);
+  return Version(
+    nextVersion.major,
+    nextVersion.minor,
+    nextVersion.patch,
+    pre: '$preid.0',
+  );
+}
+
+/// Returns the next version of [currentVersion].
+///
+/// An integer build number (e.g. `+11`) is retained and incremented on every
+/// version bump. Non-integer or multi-component build metadata
+/// (prerelease-style tags, git hashes, dot-separated builds) is not retained.
+Version nextVersion(
+  Version currentVersion,
+  SemverReleaseType releaseType, {
+  bool graduate = false,
+  bool prerelease = false,
+  String? preid,
+}) {
+  final next = _nextVersionWithoutBuild(
+    currentVersion,
+    releaseType,
+    graduate: graduate,
+    prerelease: prerelease,
+    preid: preid,
+  );
+  final currentBuildNumber = _integerBuildNumber(currentVersion);
+  if (currentBuildNumber == null) {
+    return next;
+  }
+  return Version(
+    next.major,
+    next.minor,
+    next.patch,
+    pre: next.isPreRelease ? next.preRelease.join('.') : null,
+    build: '${currentBuildNumber + 1}',
+  );
+}
+
+Version _nextVersionWithoutBuild(
+  Version currentVersion,
+  SemverReleaseType releaseType, {
+  required bool graduate,
+  required bool prerelease,
+  String? preid,
+}) {
+  var requestedPreidOrDefault = preid ?? 'dev';
+  final shouldGraduate = graduate;
+  var shouldMakePreRelease = prerelease;
+  final preReleaseComponents = currentVersion.preRelease;
+  if (preReleaseComponents.isNotEmpty) {
+    // If the current version then we should make a prerelease, unless
+    // graduating the version is explicitly requested.
+    shouldMakePreRelease = !shouldGraduate;
+    // Extract the existing preid from prerelease list if no preid provided.
+    // We do this to preserve the current preid so it's not overridden with the
+    // default 'dev' preid.
+    if (preid == null) {
+      //  - Versions in the format `0.8.0-nullsafety.1` have 2 pre release
+      //    items, so we extract 'nullsafety' preid.
+      //  - Versions in the format `0.2.0-1.2.nullsafety.4` have 4 pre release
+      //    items, so we extract 'nullsafety' preid.
+
+      T preReleaseComponent<T>(int index) {
+        final item = preReleaseComponents[index];
+        if (item is T) {
+          return item as T;
+        } else {
+          throw UnsupportedError(
+            'Unexpected prerelease component in version $currentVersion. '
+            'Expected a $T, at index $index but got $item.',
+          );
+        }
+      }
+
+      if (preReleaseComponents.length == 2) {
+        requestedPreidOrDefault = preReleaseComponent<String>(0);
+        preReleaseComponent<int>(1);
+      } else if (preReleaseComponents.length == 4) {
+        preReleaseComponent<int>(0);
+        preReleaseComponent<int>(1);
+        requestedPreidOrDefault = preReleaseComponent<String>(2);
+        preReleaseComponent<int>(3);
+        if (requestedPreidOrDefault != 'nullsafety') {
+          throw UnsupportedError(
+            'Unsupported prerelease format in version $currentVersion. '
+            'Expected a "nullsafety" preid, but got $requestedPreidOrDefault.',
+          );
+        }
+      } else {
+        throw UnsupportedError(
+          'Unsupported prerelease format in version $currentVersion. '
+          'Expected 2 or 4 prerelease components, but got '
+          '$preReleaseComponents.',
+        );
+      }
+    }
+  }
+
+  // Prerelease graduating to stable. Includes nullsafety graduation.
+  if (currentVersion.isPreRelease && shouldGraduate) {
+    return Version(
+      currentVersion.major,
+      currentVersion.minor,
+      currentVersion.patch,
+    );
+  }
+
+  // Non-prerelease to non-prerelease versioning.
+  if (!currentVersion.isPreRelease && !shouldMakePreRelease) {
+    return nextStableVersion(currentVersion, releaseType);
+  }
+
+  // Non-prerelease to prerelease versioning (excluding nullsafety).
+  if (!currentVersion.isPreRelease &&
+      shouldMakePreRelease &&
+      requestedPreidOrDefault != 'nullsafety') {
+    return nextPrereleaseVersion(
+      currentVersion,
+      releaseType,
+      preid: requestedPreidOrDefault,
+    );
+  }
+
+  // Prerelease to prerelease versioning (excluding nullsafety).
+  if (currentVersion.isPreRelease &&
+      shouldMakePreRelease &&
+      requestedPreidOrDefault != 'nullsafety') {
+    return nextPrereleaseVersion(
+      currentVersion,
+      releaseType,
+      preid: requestedPreidOrDefault,
+    );
+  }
+
+  // Nullsafety
+  // Non-prerelease version to a first time nullsafety release.
+  if (!currentVersion.isPreRelease &&
+      shouldMakePreRelease &&
+      requestedPreidOrDefault == 'nullsafety') {
+    // Going from non-null to a first nullsafety release then the convention
+    // here is that a major version is created regardless of the requested
+    // release type.
+    final nextMajorStable = nextStableVersion(
+      currentVersion,
+      SemverReleaseType.major,
+    );
+
+    return Version(
+      nextMajorStable.major,
+      nextMajorStable.minor,
+      nextMajorStable.patch,
+      pre: '1.0.nullsafety.0',
+    );
+  }
+
+  // Non-nullsafety prerelease (or a nullsafety prerelease in the format
+  // '0.8.0-nullsafety.1`) to a nullsafety prerelease.
+  // Versions in the format `0.8.0-nullsafety.1` have 2 pre release items.
+  if (currentVersion.isPreRelease &&
+      currentVersion.preRelease.length == 2 &&
+      shouldMakePreRelease &&
+      requestedPreidOrDefault == 'nullsafety') {
+    // Going from non-nullsafety prerelease to a first nullsafety release then
+    // the convention here is that a major version is created regardless of the
+    // requested release type.
+    var baseVersion = nextStableVersion(
+      currentVersion,
+      SemverReleaseType.major,
+    );
+    // Otherwise if it's already an old format nullsafety prerelease version
+    // then use the current version and don't major version bump it.
+    if (currentVersion.preRelease[0] == 'nullsafety') {
+      baseVersion = currentVersion;
+    } else if (currentVersion.major == 0) {
+      // Bump the 'major' version again if the preids changed
+      // (e.g. dev to nullsafety) and the current version is not yet full
+      // semver (>= 1.0.0), e.g.:
+      // `0.1.0-dev.5` should become `0.2.0-1.0.nullsafety.0`
+      // and not `0.1.0-1.0.nullsafety.0`.
+      // >=1.0.0 is already handled by [nextStableVersion].
+      baseVersion = nextStableVersion(baseVersion, SemverReleaseType.major);
+    }
+
+    return Version(
+      baseVersion.major,
+      baseVersion.minor,
+      baseVersion.patch,
+      pre: '1.0.nullsafety.0',
+    );
+  }
+
+  // Nullsafety prerelease to another nullsafety prerelease.
+  // Existing nullsafety prerelease version is expected to be in the format
+  // `0.2.0-1.2.nullsafety.4` - versions in this format have 4 prerelease items.
+  if (currentVersion.isPreRelease &&
+      currentVersion.preRelease.length == 4 &&
+      currentVersion.preRelease[2] == 'nullsafety' &&
+      requestedPreidOrDefault == 'nullsafety') {
+    // e.g. for 0.2.0-1.2.nullsafety.4 then currentVersion.preRelease is in the
+    // format: [1, 2, nullsafety, 4] so this equates to
+    // [major, minor, preid, patch].
+    var nextPreMajor = currentVersion.preRelease[0] as int;
+    var nextPreMinor = currentVersion.preRelease[1] as int;
+    var nextPrePatch = currentVersion.preRelease[3] as int;
+    switch (releaseType) {
+      case SemverReleaseType.major:
+        nextPreMajor++;
+        nextPreMinor = 0;
+        nextPrePatch = 0;
+      case SemverReleaseType.minor:
+        nextPreMinor++;
+        nextPrePatch = 0;
+      case SemverReleaseType.patch:
+        nextPrePatch++;
+    }
+    return Version(
+      currentVersion.major,
+      currentVersion.minor,
+      currentVersion.patch,
+      pre: '$nextPreMajor.$nextPreMinor.$requestedPreidOrDefault.$nextPrePatch',
+    );
+  }
+
+  // Unhandled versioning behaviour.
+  throw UnsupportedError(
+    'Incrementing the version $currentVersion with the following options '
+    '(graduate: $graduate, preid: $preid, prerelease: $prerelease, '
+    'releaseType: $releaseType) is not supported by Melos, please raise an '
+    'issue on GitHub if this is unexpected behaviour.',
+  );
+}
+
+Version incrementBuildNumber(Version currentVersion) {
+  final build = currentVersion.build;
+
+  int? nextBuildNumber;
+  if (build.isEmpty) {
+    nextBuildNumber = 0;
+  } else if (build.length == 1) {
+    final buildNumber = build.first;
+    if (buildNumber is int) {
+      nextBuildNumber = buildNumber + 1;
+    }
+  }
+
+  if (nextBuildNumber != null) {
+    return Version(
+      currentVersion.major,
+      currentVersion.minor,
+      currentVersion.patch,
+      build: nextBuildNumber.toString(),
+    );
+  }
+
+  throw ArgumentError(
+    'Cannot increment build number for version $currentVersion',
+  );
+}
+
+class ManualVersionChange {
+  factory ManualVersionChange(Version version) =>
+      ManualVersionChange._((_) => version);
+
+  ManualVersionChange._(this._impl);
+
+  factory ManualVersionChange.incrementBySemverReleaseType(
+    SemverReleaseType releaseType,
+  ) => ManualVersionChange._(
+    (currentVersion) => nextVersion(currentVersion, releaseType),
+  );
+
+  factory ManualVersionChange.incrementBuildNumber() =>
+      ManualVersionChange._(incrementBuildNumber);
+
+  final Version Function(Version) _impl;
+
+  Version call(Version currentVersion) => _impl(currentVersion);
+}

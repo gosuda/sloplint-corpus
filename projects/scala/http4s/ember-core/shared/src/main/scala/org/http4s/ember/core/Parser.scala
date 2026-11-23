@@ -1,0 +1,717 @@
+/*
+ * Copyright 2019 http4s.org
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.http4s.ember.core
+import cats._
+import cats.effect.kernel.Concurrent
+import cats.effect.kernel.Deferred
+import cats.effect.kernel.Ref
+import cats.syntax.all._
+import fs2._
+import org.http4s._
+import org.http4s.internal.CharPredicate
+import org.typelevel.ci.CIString
+import scodec.bits.ByteVector
+
+import java.nio.charset.StandardCharsets
+import scala.annotation.switch
+import scala.util.control.NoStackTrace
+import scala.util.control.NonFatal
+
+private[ember] object Parser {
+
+  object MessageP {
+
+    def recurseFind[F[_], S, A](
+        currentBuffer: Array[Byte],
+        read: Read[F],
+        maxHeaderSize: Int,
+        state: S,
+    )(
+        f: (S, Array[Byte]) => F[Either[S, A]]
+    )(idx: A => Int)(implicit F: MonadThrow[F]): F[(A, Array[Byte])] =
+      f(state, currentBuffer).flatMap {
+        case Left(s) =>
+          if (currentBuffer.length > maxHeaderSize)
+            F.raiseError(EmberException.MessageTooLong(maxHeaderSize))
+          else {
+            read.flatMap {
+              case Some(chunk) =>
+                val nextBuffer = Util.concatBytes(currentBuffer, chunk)
+                recurseFind(nextBuffer, read, maxHeaderSize, s)(f)(idx)
+              case None if currentBuffer.length > 0 =>
+                F.raiseError(EmberException.ReachedEndOfStream())
+              case _ => F.raiseError(EmberException.EmptyStream())
+            }
+          }
+        case Right(out) =>
+          (out, currentBuffer.drop(idx(out))).pure[F]
+      }
+
+  }
+
+  final case class HeaderP(
+      headers: Headers,
+      chunked: Boolean,
+      contentLength: Option[Long],
+      idx: Int,
+  )
+
+  object HeaderP {
+    private[this] final val contentLengthS = "Content-Length"
+    private[this] final val transferEncodingS = "Transfer-Encoding"
+    private[this] final val chunkedS = "chunked"
+
+    sealed trait Progress
+    object Progress {
+      case object InProgress extends Progress
+      case object Complete extends Progress
+      final case class Errored(cause: Throwable) extends Progress
+    }
+
+    final case class ParserState(
+        idx: Int,
+        state: Boolean,
+        progress: Progress,
+        chunked: Boolean,
+        contentLength: Option[Long],
+        headers: List[Header.Raw],
+        name: Option[String],
+        start: Int,
+    )
+
+    object ParserState {
+      def initial: ParserState = ParserState(
+        idx = 0,
+        state = false,
+        progress = Progress.InProgress,
+        chunked = false,
+        contentLength = None,
+        headers = List.empty,
+        name = None,
+        start = 0,
+      )
+    }
+
+    def parse[F[_]](message: Array[Byte], maxHeaderSize: Int, s: ParserState)(implicit
+        F: MonadThrow[F]
+    ): F[Either[ParserState, HeaderP]] = {
+      var idx: Int = s.idx
+      var state = s.state
+      var progress: Progress = s.progress
+      var chunked: Boolean = s.chunked
+      var contentLength: Option[Long] = s.contentLength
+
+      var headers: List[Header.Raw] = s.headers
+      var name: String = s.name.orNull
+      var start: Int = s.start
+      val upperBound = Math.min(message.size - 1, maxHeaderSize)
+
+      while (progress == Progress.InProgress && idx <= upperBound) {
+        if (!state) {
+          message(idx) match {
+            case ':' =>
+              state = true // set state to check for header value
+              name = new String(message, start, idx - start, StandardCharsets.ISO_8859_1)
+              start = idx + 1 // advance past colon for next start
+            case '\r' if start == idx => // proceed
+            case '\n' if idx > 0 && message(idx - 1) == cr => progress = Progress.Complete
+            case c if c <= 0x20 | c == 0x7f =>
+              progress = Progress.Errored(InvalidHeaderWhitespace)
+            case _ => // proceed
+          }
+        } else {
+          val current = message(idx)
+          if (idx > 0 && message(idx - 1) == cr && current != lf) {
+            // RFC 9112 2.2: previous byte was CR not followed by LF -> bare CR
+            progress = Progress.Errored(InvalidHeaderWhitespace)
+          } else if (current == lf) {
+            // If crlf is next we have completed the header value
+            if (idx > 0 && message(idx - 1) == cr) {
+              // RFC 9110 5.5: field values are octets, historically ISO-8859-1.
+              // Decoding with the platform charset (UTF-8) would let multi-byte
+              // sequences become single non-ASCII codepoints that
+              // equalsIgnoreCase then Unicode-case-folds (e.g. U+212A KELVIN
+              // SIGN -> 'k'), bypassing the framing-header checks below.
+              val hValue =
+                new String(message, start, idx - start - 1, StandardCharsets.ISO_8859_1).trim
+
+              val hName = name // copy var to val
+              name = null // set name back to null
+              val newHeader = Header.Raw(CIString(hName), hValue) // create header
+              if (hName.equalsIgnoreCase(contentLengthS)) { // Check if this is content-length.
+                if (hValue.isEmpty || !hValue.forall(CharPredicate.Digit))
+                  // RFC 9110 8.6: Content-Length = 1*DIGIT. Anything else (sign
+                  // prefix, hex, whitespace, list) is a framing ambiguity and
+                  // must be rejected to prevent request smuggling.
+                  progress = Progress.Errored(InvalidContentLength)
+                else
+                  try {
+                    val len = hValue.toLong
+                    if (contentLength.exists(_ != len))
+                      // RFC 9112 6.3: differing Content-Length values are an
+                      // unrecoverable framing error; a repeated identical value
+                      // MAY be collapsed to one.
+                      progress = Progress.Errored(DuplicateContentLength)
+                    else
+                      contentLength = Some(len)
+                  } catch {
+                    case scala.util.control.NonFatal(_) =>
+                      progress = Progress.Errored(InvalidContentLength)
+                  }
+              } else if (
+                hName
+                  .equalsIgnoreCase(transferEncodingS)
+              ) { // Check if this is Transfer-encoding
+                // RFC 9112 7: transfer-coding names are case-insensitive.
+                // RFC 9112 6.1: a server SHOULD reject any transfer coding it
+                // does not understand. Ember implements only chunked, so any
+                // other token (in any Transfer-Encoding field-line) is a framing
+                // ambiguity and a request-smuggling differential.
+                val codings = hValue.split(',')
+                if (codings.isEmpty || codings.exists(c => !c.trim.equalsIgnoreCase(chunkedS)))
+                  progress = Progress.Errored(UnsupportedTransferEncoding)
+                else
+                  chunked = true
+              }
+              start = idx + 1 // Next Start is after the CRLF
+              headers = newHeader :: headers // Add Header
+              state = false // Go back to Looking for HeaderName or Termination
+            } else {
+              // RFC 9112 2.2: bare LF (not preceded by CR) inside header value
+              progress = Progress.Errored(InvalidHeaderWhitespace)
+            }
+          } else if (current == cr) {
+            if (idx < message.length - 1 && message(idx + 1) != lf) {
+              progress = Progress.Errored(InvalidHeaderWhitespace)
+            }
+          } else if ((current >= nul && current < space && current != htab) || current == 0x7f) {
+            // RFC 9110 5.5: Reject NUL, DEL, and control characters except HTAB
+            progress = Progress.Errored(InvalidHeaderWhitespace)
+          }
+        }
+        idx += 1 // Single Advance Every Iteration
+      }
+
+      progress match {
+        case Progress.Errored(e) =>
+          F.raiseError(ParseHeadersError(e))
+        case Progress.InProgress =>
+          ParserState(
+            idx,
+            state,
+            progress,
+            chunked,
+            contentLength,
+            headers,
+            Option(name),
+            start,
+          ).asLeft.pure[F]
+        case Progress.Complete =>
+          HeaderP(Headers(headers.reverse), chunked, contentLength, idx).asRight.pure[F]
+      }
+    }
+
+    case object InvalidHeaderWhitespace extends Exception with NoStackTrace {
+      override val getMessage = "InvalidHeaderWhitespace"
+    }
+    case object DuplicateContentLength extends Exception with NoStackTrace {
+      override val getMessage = "DuplicateContentLength"
+    }
+    case object InvalidContentLength extends Exception with NoStackTrace {
+      override val getMessage = "InvalidContentLength"
+    }
+    case object UnsupportedTransferEncoding extends Exception with NoStackTrace {
+      override val getMessage = "UnsupportedTransferEncoding"
+    }
+    case object ContentLengthAndTransferEncoding extends Exception with NoStackTrace {
+      override val getMessage = "ContentLengthAndTransferEncoding"
+    }
+    final case class ParseHeadersError(cause: Throwable)
+        extends Exception(
+          s"Encountered Error Attempting to Parse Headers - ${cause.getMessage}",
+          cause,
+        )
+
+    final case class IncompleteHttpMessage(headers: Headers)
+        extends Exception("Tried To Parse An Incomplete HTTP Message")
+  }
+
+  object Request {
+
+    final case class ReqPrelude(method: Method, uri: Uri, version: HttpVersion, nextIndex: Int)
+
+    object ReqPrelude {
+
+      final case class ParserState(
+          idx: Int,
+          state: Byte,
+          complete: Boolean,
+          throwable: Option[Throwable],
+          method: Option[Method],
+          uri: Option[Uri],
+          httpVersion: Option[HttpVersion],
+          start: Int,
+      )
+
+      object ParserState {
+        def initial: ParserState = ParserState(
+          idx = 0,
+          state = 0,
+          complete = false,
+          throwable = None,
+          method = None,
+          httpVersion = None,
+          uri = None,
+          start = 0,
+        )
+      }
+
+      def parse[F[_]](message: Array[Byte], maxHeaderSize: Int, s: ParserState)(implicit
+          F: MonadThrow[F]
+      ): F[Either[ParserState, ReqPrelude]] = {
+        var idx = s.idx
+        var state: Byte = s.state
+        var complete = s.complete
+
+        var throwable: Throwable = s.throwable.orNull
+        var method: Method = s.method.orNull
+        var uri: Uri = s.uri.orNull
+        var httpVersion: HttpVersion = s.httpVersion.orNull
+
+        var start = s.start
+        val upperBound = Math.min(message.size - 1, maxHeaderSize)
+        while (!complete && idx <= upperBound) {
+          val value = message(idx)
+          (state: @switch) match {
+            case 0 =>
+              if (value == space) {
+                Method.fromString(new String(message, start, idx - start)) match {
+                  case Left(e) =>
+                    throwable = e
+                    complete = true
+                  case Right(m) =>
+                    method = m
+                }
+                start = idx + 1
+                state = 1
+              }
+            case 1 =>
+              if (value == space) {
+                Uri.fromString(new String(message, start, idx - start)) match {
+                  case Left(e) =>
+                    throwable = e
+                    complete = true
+                  case Right(u) =>
+                    uri = u
+                }
+                start = idx + 1
+                state = 2
+              }
+            case 2 =>
+              if (value == lf && (idx > 0 && message(idx - 1) == cr)) {
+                HttpVersion.fromString(new String(message, start, idx - start - 1)) match {
+                  case Left(e) =>
+                    throwable = e
+                    complete = true
+                  case Right(h) =>
+                    httpVersion = h
+                }
+                complete = true
+              }
+          }
+          idx += 1
+        }
+
+        if (throwable != null)
+          F.raiseError(
+            ParsePreludeError(
+              throwable.getMessage(),
+              Option(throwable),
+              Option(method),
+              Option(uri),
+              Option(httpVersion),
+            )
+          )
+        else if (method == null || uri == null || httpVersion == null)
+          ParserState(
+            idx,
+            state,
+            complete,
+            Option(throwable),
+            Option(method),
+            Option(uri),
+            Option(httpVersion),
+            start,
+          ).asLeft
+            .pure[F]
+        else
+          ReqPrelude(method, uri, httpVersion, idx).asRight.pure[F]
+      }
+
+      final case class ParsePreludeError(
+          message: String,
+          caused: Option[Throwable],
+          method: Option[Method],
+          uri: Option[Uri],
+          httpVersion: Option[HttpVersion],
+      ) extends Exception(
+            s"Parse Prelude Error Encountered - Message: $message - Partially Decoded: $method $uri $httpVersion",
+            caused.orNull,
+          )
+    }
+
+    def parser[F[_]](maxHeaderSize: Int)(
+        buffer: Array[Byte],
+        read: Read[F],
+    )(implicit F: Concurrent[F]): F[(Request[F], Drain[F])] =
+      for {
+        x <- MessageP.recurseFind(buffer, read, maxHeaderSize, ReqPrelude.ParserState.initial)(
+          (state, ibuffer) => ReqPrelude.parse(ibuffer, maxHeaderSize, state)
+        )(_.nextIndex)
+        (prelude, buffer2) = x
+        y <- MessageP
+          .recurseFind(
+            buffer2,
+            read,
+            maxHeaderSize,
+            HeaderP.ParserState.initial,
+          )((state, ibuffer) => HeaderP.parse(ibuffer, maxHeaderSize, state))(_.idx)
+          // We've already consumed data to parse the prelude so empty actually means end of stream
+          .adaptError { case _: EmberException.EmptyStream =>
+            EmberException.ReachedEndOfStream()
+          }
+        (headerP, finalBuffer) = y
+
+        baseReq = org.http4s.Request[F](
+          method = prelude.method,
+          uri = prelude.uri,
+          httpVersion = prelude.version,
+          headers = headerP.headers,
+        )
+
+        _ <-
+          if (headerP.chunked && headerP.contentLength.isDefined)
+            F.raiseError[Unit](
+              HeaderP.ParseHeadersError(HeaderP.ContentLengthAndTransferEncoding)
+            )
+          else F.unit
+
+        request <-
+          if (headerP.chunked) {
+            Ref.of[F, Option[Array[Byte]]](None).product(Deferred[F, Headers]).map {
+              case (rest, trailers) =>
+                (
+                  baseReq
+                    .withAttribute(Message.Keys.TrailerHeaders[F], trailers.get)
+                    .withBodyStream(
+                      ChunkedEncoding
+                        .decode(finalBuffer, read, maxHeaderSize, maxHeaderSize, trailers, rest)
+                    ),
+                  rest.get,
+                )
+            }
+          } else {
+            Body.parseFixedBody(headerP.contentLength.getOrElse(0L), finalBuffer, read).map {
+              case (bodyStream, drain) =>
+                (baseReq.withBodyStream(bodyStream), drain)
+            }
+          }
+      } yield request
+  }
+
+  object Response {
+
+    def parser[F[_]: Concurrent](maxHeaderSize: Int)(
+        buffer: Array[Byte],
+        read: Read[F],
+    ): F[(Response[F], Drain[F])] = parser[F](maxHeaderSize, discardBody = false)(buffer, read)
+
+    def parser[F[_]: Concurrent](maxHeaderSize: Int, discardBody: Boolean)(
+        buffer: Array[Byte],
+        read: Read[F],
+    ): F[(Response[F], Drain[F])] = {
+      // per https://httpwg.org/specs/rfc7230.html#rfc.section.3.3.3
+      def expectNoBody(status: Status): Boolean =
+        status == Status.NoContent ||
+          status == Status.NotModified ||
+          status.responseClass == Status.Informational
+
+      for {
+        x <- MessageP.recurseFind(buffer, read, maxHeaderSize, RespPrelude.ParserState.initial)(
+          (state, ibuffer) => RespPrelude.parse(ibuffer, maxHeaderSize, state)
+        )(_.nextIndex)
+        (prelude, buffer2) = x
+        y <- MessageP
+          .recurseFind(
+            buffer2,
+            read,
+            maxHeaderSize,
+            HeaderP.ParserState.initial,
+          )((state, ibuffer) => HeaderP.parse(ibuffer, maxHeaderSize, state))(_.idx)
+          // We've already consumed data to parse the prelude so empty actually means end of stream
+          .adaptError { case _: EmberException.EmptyStream =>
+            EmberException.ReachedEndOfStream()
+          }
+
+        (headerP, finalBuffer) = y
+
+        _ <-
+          if (headerP.chunked && headerP.contentLength.isDefined)
+            Concurrent[F].raiseError[Unit](
+              HeaderP.ParseHeadersError(HeaderP.ContentLengthAndTransferEncoding)
+            )
+          else Concurrent[F].unit
+
+        baseResp = org.http4s.Response[F](
+          httpVersion = prelude.version,
+          status = prelude.status,
+          headers = headerP.headers,
+        )
+
+        resp <-
+          if (discardBody) {
+            (baseResp -> none[Array[Byte]].pure[F]).pure[F]
+          } else if (expectNoBody(prelude.status)) {
+            (baseResp -> finalBuffer.some.pure[F]).pure[F]
+          } else if (headerP.chunked) {
+            Ref.of[F, Option[Array[Byte]]](None).product(Deferred[F, Headers]).map {
+              case (rest, trailers) =>
+                baseResp
+                  .withAttribute(Message.Keys.TrailerHeaders[F], trailers.get)
+                  .withBodyStream(
+                    ChunkedEncoding
+                      .decode(finalBuffer, read, maxHeaderSize, maxHeaderSize, trailers, rest)
+                  ) ->
+                  rest.get
+            }
+          } else {
+            headerP.contentLength
+              .fold(Body.parseUnknownBody(finalBuffer, read))(
+                Body.parseFixedBody(_, finalBuffer, read)
+              )
+              .map { case (bodyStream, drain) =>
+                baseResp.withBodyStream(bodyStream) -> drain
+              }
+          }
+      } yield resp
+    }
+
+    object RespPrelude {
+
+      final case class RespPrelude(version: HttpVersion, status: Status, nextIndex: Int)
+
+      final case class ParserState(
+          idx: Int,
+          state: Byte,
+          complete: Boolean,
+          throwable: Option[Throwable],
+          httpVersion: Option[HttpVersion],
+          codeS: Option[String],
+          status: Option[Status],
+          start: Int,
+      )
+
+      object ParserState {
+        def initial: ParserState = ParserState(
+          idx = 0,
+          state = 0,
+          complete = false,
+          throwable = None,
+          httpVersion = None,
+          codeS = None,
+          status = None,
+          start = 0,
+        )
+      }
+
+      // HTTP/1.1 200 OK
+      // Status-Line = HTTP-Version SP Status-Code SP Reason-Phrase CRLF
+      def parse[F[_]](buffer: Array[Byte], maxHeaderSize: Int, s: ParserState)(implicit
+          F: MonadThrow[F]
+      ): F[Either[ParserState, RespPrelude]] = {
+        var complete = s.complete
+        var idx = s.idx
+        var throwable: Throwable = s.throwable.orNull
+        var httpVersion: HttpVersion = s.httpVersion.orNull
+
+        var codeS: String = s.codeS.orNull
+        // val reason: String = null
+        var status: Status = s.status.orNull
+        var start = s.start
+        var state = s.state // 0 Is for HttpVersion, 1 for Status Code, 2 For Reason Phrase
+        val upperBound = Math.min(buffer.size - 1, maxHeaderSize)
+
+        while (!complete && idx <= upperBound) {
+          val value = buffer(idx)
+          (state: @switch) match {
+            case 0 =>
+              if (value == space) {
+                val s = new String(buffer, start, idx - start)
+                HttpVersion.fromString(s) match {
+                  case Left(e) =>
+                    throwable = e
+                    complete = true
+                  case Right(h) =>
+                    httpVersion = h
+                }
+                start = idx + 1
+                state = 1
+              }
+            case 1 =>
+              if (value == space) {
+                codeS = new String(buffer, start, idx - start)
+                state = 2
+                start = idx + 1
+              }
+            case 2 =>
+              if (value == lf && (idx > 0 && buffer(idx - 1) == cr)) {
+                val codeInt = codeS.toInt
+                Status.fromInt(codeInt) match {
+                  case Left(e) =>
+                    if (NonFatal(e)) {
+                      throwable = e
+                      complete = true
+                    } else
+                      throw e
+                  case Right(st) =>
+                    status = st
+                    complete = true
+                }
+              }
+          }
+          idx += 1
+        }
+
+        if (throwable != null)
+          F.raiseError(RespPreludeError("Encountered Error parsing", Option(throwable)))
+        else if (httpVersion == null || status == null)
+          ParserState(
+            idx,
+            state,
+            complete,
+            Option(throwable),
+            Option(httpVersion),
+            Option(codeS),
+            Option(status),
+            start,
+          ).asLeft
+            .pure[F]
+        else
+          RespPrelude(httpVersion, status, idx).asRight.pure[F]
+      }
+
+      case class RespPreludeError(message: String, cause: Option[Throwable])
+          extends Exception(
+            s"Received Error while parsing prelude - Message: $message - ${cause.map(_.getMessage)}",
+            cause.orNull,
+          ) // scalafix:ok Http4sGeneralLinters.noCaseClassWithoutAccessModifier; bincompat until 1.0
+    }
+  }
+
+  object Body {
+    def parseFixedBody[F[_]: Concurrent](
+        contentLength: Long,
+        buffer: Array[Byte],
+        read: Read[F],
+    ): F[(EntityBody[F], Drain[F])] =
+      if (contentLength > 0) {
+        if (buffer.length >= contentLength) {
+          val (body, rest) = buffer.splitAt(contentLength.toInt)
+          (
+            Stream.chunk(Chunk.byteVector(ByteVector(body))).covary[F],
+            (Some(rest): Option[Array[Byte]]).pure[F],
+          )
+            .pure[F]
+        } else {
+          val unread = contentLength - buffer.length
+          Ref.of[F, Option[Array[Byte]]](None).map { state =>
+            val body = decode(unread, buffer, state, read)
+            // If the remaining bytes for the body have not yet been read, close the connection.
+            // followup: Check if there are bytes immediately available without blocking
+            val drain: Drain[F] = state.get
+
+            (body, drain)
+          }
+        }
+      } else {
+        (EmptyBody.covary[F], (Some(buffer): Option[Array[Byte]]).pure[F]).pure[F]
+      }
+
+    def parseUnknownBody[F[_]: Concurrent](
+        buffer: Array[Byte],
+        read: Read[F],
+    ): F[(EntityBody[F], Drain[F])] =
+      Ref[F].of(false).map { consumed =>
+        lazy val readAll: Pull[F, Byte, Unit] =
+          Pull.eval(read).flatMap {
+            case Some(c) => Pull.output(c) >> readAll
+            case None => Pull.eval(consumed.set(true)).void
+          }
+
+        val body =
+          Pull
+            .eval(consumed.get)
+            .flatMap {
+              case true => Pull.raiseError(BodyAlreadyConsumedError())
+              case false => Pull.output(Chunk.array(buffer)) >> readAll
+            }
+            .stream
+
+        val drain: Drain[F] = (None: Option[Array[Byte]]).pure[F]
+
+        (body, drain)
+      }
+
+    final case class BodyAlreadyConsumedError()
+        extends Exception("Body Has Been Consumed Completely Already")
+
+    def decode[F[_]: Concurrent](
+        unread: Long,
+        buffer: Array[Byte],
+        nextBuffer: Ref[F, Option[Array[Byte]]],
+        read: Read[F],
+    ): Stream[F, Byte] = {
+      def go(remaining: Long): Pull[F, Byte, Unit] =
+        Pull.eval(read).flatMap {
+          case Some(chunk) =>
+            if (chunk.size >= remaining) {
+              val (rest, after) = chunk.splitAt(remaining.toInt)
+              Pull.eval(nextBuffer.set(Some(after.toArray))) >> Pull.output(rest) >> Pull.done
+            } else {
+              Pull.output(chunk) >> go(remaining - chunk.size)
+            }
+          case None => Pull.raiseError(EmberException.ReachedEndOfStream())
+        }
+
+      // TODO: This doesn't forbid concurrent reads of the body stream, only sequential reads.
+      val pull = Pull.eval(nextBuffer.get).flatMap {
+        case Some(_) =>
+          Pull.raiseError(BodyAlreadyConsumedError())
+        case None =>
+          Pull.output(Chunk.array(buffer)) >> go(unread)
+      }
+
+      pull.stream
+    }
+  }
+
+  private[this] final val nul = 0 // '\0'
+  private[this] final val htab = 9 // '\t'
+  private[this] final val lf = 10 // '\n'
+  private[this] final val cr = 13 // '\r'
+  private[this] final val space = 32 // ' '
+}
