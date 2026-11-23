@@ -31,3 +31,88 @@ added_by = "CorpusPopC1"
 added_on = "2026-11-23"
 reason = "mid-size shell/DSL with custom parser, application"
 notice_present_upstream = false
+
+[[project]]
+name = "nest"
+language = "typescript"
+url = "https://github.com/nestjs/nest"
+rev = "94df49d7898df2009fc6dd4900ed77847eb8aaab"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:9c29aa3acd652bfc98c356e2cde55752b046106938da134b8e5dd1b6c7732ced"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "mid-size decorator-heavy server framework, library"
+notice_present_upstream = false
+
+[[project]]
+name = "antd"
+language = "typescript"
+url = "https://github.com/ant-design/ant-design"
+rev = "3e3b72052c1fd99b92bec1151261755d1806dd87"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:2a412a2595446d1d9ea989e362c789f3a287ed149c2ed3b5ef7de9bb37bc4426"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "mid-size component library, TSX-heavy"
+notice_present_upstream = false
+
+[[project]]
+name = "vscode-editor"
+language = "typescript"
+url = "https://github.com/microsoft/vscode"
+rev = "a902b1c8a50d432e738bec7e31a233e82ce63db6"
+spdx = "MIT"
+storage = "copied"
+paths = ["src/vs/editor/**", "src/vs/editor/*/**", "src/vs/editor/*/*/**", "src/vs/editor/*/*/*/**", "src/vs/editor/*/*/*/*/**", "src/vs/editor/*/*/*/*/*/**", "src/vs/editor/*/*/*/*/*/*/**", "src/vs/editor/*/*/*/*/*/*/*/**", "src/vs/editor/*/*/*/*/*/*/*/*/**"]
+tree_hash = "sha256:e8d7f6b8bec03dfb03c45c2f3af99dad480f21cd25dcb789a799ca8ec3f515db"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "large editor core subset, application"
+notice_present_upstream = false
+
+[[project]]
+name = "angular-compiler"
+language = "typescript"
+url = "https://github.com/angular/angular"
+rev = "8b15295e8c7f1543d41dadb5955279702be52c16"
+spdx = "MIT"
+storage = "copied"
+paths = ["packages/compiler/**", "packages/compiler/*/**", "packages/compiler/*/*/**", "packages/compiler/*/*/*/**", "packages/compiler/*/*/*/*/**", "packages/compiler/*/*/*/*/*/**", "packages/compiler/*/*/*/*/*/*/**", "packages/compiler/*/*/*/*/*/*/*/**", "packages/compiler/*/*/*/*/*/*/*/*/**"]
+tree_hash = "sha256:1623e0843268b1e8548309b0c55c55226935c884e3cc7d310938fa286b2ec9a5"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "framework compiler package, decorators"
+notice_present_upstream = false
+
+[[project]]
+name = "mui"
+language = "typescript"
+url = "https://github.com/mui/material-ui"
+rev = "b4bd6e8b207c335cd5662e1bf0d3663a83c97017"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+exclude = ["GoogleMaps.tsx"]
+tree_hash = "sha256:51dc31b4cfb364439f0406689f7aa94f6e68ead9b2f2694fc1b49db8d9b2cc1d"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "mid-size component library, TSX-heavy"
+notice_present_upstream = false
+
+[[project]]
+name = "vue"
+language = "typescript"
+url = "https://github.com/vuejs/vue"
+rev = "9e88707940088cb1f4cd7dd210c9168a50dc347c"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:211e5d75c46c0aeb617f656595e57a753240959251e67b1b5e6268dc784c7e60"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "small reactive UI framework, library"
+notice_present_upstream = false

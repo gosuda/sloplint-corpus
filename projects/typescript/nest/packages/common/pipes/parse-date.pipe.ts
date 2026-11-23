@@ -1,0 +1,112 @@
+import { Injectable } from '../decorators/core/injectable.decorator.js';
+import { Optional } from '../decorators/core/optional.decorator.js';
+import { HttpStatus } from '../enums/http-status.enum.js';
+import { PipeTransform } from '../interfaces/features/pipe-transform.interface.js';
+import {
+  ErrorHttpStatusCode,
+  HttpErrorByCode,
+} from '../utils/http-error-by-code.util.js';
+import { isNil, isNumber, isString } from '../utils/shared.utils.js';
+
+/**
+ * @publicApi
+ */
+export interface ParseDatePipeOptions {
+  /**
+   * If true, the pipe will return null or undefined if the value is not provided
+   * @default false
+   */
+  optional?: boolean;
+  /**
+   * A factory whose result is returned when the value is `null` or `undefined`,
+   * regardless of `optional`
+   */
+  default?: () => Date;
+  /**
+   * The HTTP status code to be used in the response when the validation fails.
+   */
+  errorHttpStatusCode?: ErrorHttpStatusCode;
+  /**
+   * A factory function that returns an exception object to be thrown
+   * if validation fails.
+   * @param error Error message
+   * @returns The exception object
+   */
+  exceptionFactory?: (error: string) => any;
+}
+
+const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+/**
+ * @publicApi
+ */
+@Injectable()
+export class ParseDatePipe implements PipeTransform {
+  protected exceptionFactory: (error: string) => any;
+
+  constructor(
+    @Optional() protected readonly options: ParseDatePipeOptions = {},
+  ) {
+    const { exceptionFactory, errorHttpStatusCode = HttpStatus.BAD_REQUEST } =
+      options;
+
+    this.exceptionFactory =
+      exceptionFactory ||
+      (error => new HttpErrorByCode[errorHttpStatusCode](error));
+  }
+
+  /**
+   * Method that accesses and performs optional transformation on argument for
+   * in-flight requests.
+   *
+   * @param value currently processed route argument
+   * @param metadata contains metadata about the currently processed route argument
+   */
+  transform(value: unknown): Date | null | undefined {
+    if (isNil(value)) {
+      // `default` applies to nil values whether or not `optional` is set.
+      if (this.options.default) {
+        return this.options.default();
+      }
+      if (this.options.optional) {
+        return value;
+      }
+    }
+
+    if (isNil(value) || value === '') {
+      throw this.exceptionFactory('Validation failed (no Date provided)');
+    }
+
+    const transformedValue =
+      isString(value) || isNumber(value) || value instanceof Date
+        ? new Date(value)
+        : new Date(NaN);
+
+    if (
+      isNaN(transformedValue.getTime()) ||
+      (isString(value) && this.hasDayPastMonthEnd(value))
+    ) {
+      throw this.exceptionFactory('Validation failed (invalid date format)');
+    }
+
+    return transformedValue;
+  }
+
+  /**
+   * `new Date()` rolls a day past the end of its month into the next month
+   * ("2024-02-30" becomes March 1), so an ISO date's day is checked against
+   * the length of its month.
+   */
+  protected hasDayPastMonthEnd(value: string): boolean {
+    const match = /^\s*([+-]\d{6}|\d{4})-(\d{2})-(\d{2})(?!\d)/.exec(value);
+    if (!match) {
+      return false;
+    }
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const isLeapYear = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+    const daysInMonth =
+      month === 2 && isLeapYear ? 29 : DAYS_IN_MONTH[month - 1];
+    return Number(match[3]) > daysInMonth;
+  }
+}
