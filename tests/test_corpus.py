@@ -133,6 +133,25 @@ class TestSpdx(unittest.TestCase):
         self.assertEqual(corpus.spdx_ids("NOASSERTION"), {"NOASSERTION"})
 
 
+class TestGlobs(unittest.TestCase):
+    def test_double_star_spans_directories(self):
+        self.assertTrue(corpus.match_subset("src/lib.rs", ["src/**"]))
+        self.assertTrue(corpus.match_subset("src/net/tcp.rs", ["src/**"]))
+        self.assertTrue(corpus.match_subset("src/a/b/c.rs", ["src/**"]))
+
+    def test_patterns_anchor_at_root(self):
+        self.assertFalse(corpus.match_subset("vendor/src/x.rs", ["src/**"]))
+        self.assertFalse(corpus.match_subset("examples/src/demo.rs", ["src/**", "tests/**"]))
+
+    def test_excludes_span_directories(self):
+        self.assertTrue(corpus.match_subset("vendor/a/b.rs", ["vendor/**"]))
+        self.assertFalse(corpus.match_subset("src/lib.rs", ["vendor/**"]))
+
+    def test_single_star_stays_within_a_segment(self):
+        self.assertTrue(corpus.match_subset("src/lib.rs", ["src/*.rs"]))
+        self.assertFalse(corpus.match_subset("src/net/tcp.rs", ["src/*.rs"]))
+
+
 class TestHeaders(unittest.TestCase):
     def test_clean_headers_pass(self):
         root = make_repo()

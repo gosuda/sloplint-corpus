@@ -535,11 +535,35 @@ def cmd_verify(args):
     return 0
 
 
+def _glob_to_regex(pattern):
+    slot = "\x00DS\x00"
+    tmp = pattern.replace("**/", slot)
+    out = []
+    i = 0
+    while i < len(tmp):
+        char = tmp[i]
+        if char == "*":
+            if i + 1 < len(tmp) and tmp[i + 1] == "*":
+                out.append(".*")
+                i += 2
+            else:
+                out.append("[^/]*")
+                i += 1
+        elif char == "?":
+            out.append("[^/]")
+            i += 1
+        elif tmp.startswith(slot, i):
+            out.append("(?:.*/)?")
+            i += len(slot)
+        else:
+            out.append(re.escape(char))
+            i += 1
+    return "".join(out)
+
+
 def match_subset(relpath, patterns):
-    from pathlib import PurePosixPath
-    path = PurePosixPath(relpath)
     for pattern in patterns:
-        if path.match(pattern):
+        if re.fullmatch(_glob_to_regex(pattern), relpath):
             return True
     return False
 
