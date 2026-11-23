@@ -864,11 +864,20 @@ def cmd_fetch(args):
     if args.lang:
         projects = [p for p in projects if p.get("language") == args.lang]
     failures = 0
+    cache_base = os.path.abspath(os.path.join(root, ".cache", "tree"))
     for project in projects:
         name = project.get("name", "?")
         language = project.get("language", "")
         storage = project.get("storage", "")
         tag = "project %s" % name
+        if not isinstance(name, str) or not NAME_RE.match(name):
+            fail("%s: bad name; use [a-z0-9-]" % tag)
+            failures += 1
+            continue
+        if language not in EXTENSIONS:
+            fail("%s: unknown language %r" % (tag, language))
+            failures += 1
+            continue
         if storage == "copied":
             if not args.check:
                 continue
@@ -890,6 +899,10 @@ def cmd_fetch(args):
                 failures += 1
                 continue
             dest = cached_pinned_dir(root, language, name)
+            if os.path.normpath(dest) != dest or not dest.startswith(cache_base + os.sep):
+                fail("%s: pinned cache path escapes .cache/tree; refusing" % tag)
+                failures += 1
+                continue
             if args.check:
                 if not os.path.isdir(dest):
                     fail("%s: pinned entry not materialized under .cache/tree" % tag)

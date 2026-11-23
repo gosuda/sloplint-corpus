@@ -389,6 +389,36 @@ class TestVerify(unittest.TestCase):
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("linkdir is a symlink", proc.stdout)
 
+    @unittest.skipUnless(HAS_GIT, "needs git")
+    def test_fetch_rejects_escaping_entry(self):
+        root = make_repo(mode="private")
+        self.addCleanup(shutil.rmtree, root, True)
+        sentinel = os.path.join(root, "keep", "precious.txt")
+        write(sentinel, "do not delete\n")
+        upstream = tempfile.mkdtemp(prefix="corpus-upstream-")
+        self.addCleanup(shutil.rmtree, upstream, True)
+        write(os.path.join(upstream, "src", "a.py"), "x = 1\n")
+        subprocess.run(["git", "init", "-q", upstream], check=True, timeout=60)
+        subprocess.run(["git", "-C", upstream, "add", "-A"], check=True, timeout=60)
+        subprocess.run(["git", "-C", upstream, "-c", "user.name=t",
+                        "-c", "user.email=t@t", "commit", "-qm", "fixture"],
+                       check=True, timeout=60)
+        rev = subprocess.run(["git", "-C", upstream, "rev-parse", "HEAD"],
+                             capture_output=True, text=True, check=True,
+                             timeout=60).stdout.strip()
+        with open(os.path.join(root, "corpus.toml"), "a") as fh:
+            fh.write('\n[[project]]\nname = "../../../keep"\nlanguage = "python"\n'
+                     'url = "%s"\nrev = "%s"\nspdx = "NOASSERTION"\n'
+                     'storage = "pinned"\npaths = ["src/**"]\n'
+                     'tree_hash = "sha256:%s"\nadded_by = "t"\n'
+                     'added_on = "2026-11-23"\nreason = "x"\n'
+                     'notice_present_upstream = false\n' % (upstream, rev, "0" * 64))
+        proc = run_tool(root, "fetch", "--allow-unlicensed")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("bad name", proc.stdout)
+        self.assertTrue(os.path.isfile(sentinel))
+
+
     @unittest.skipUnless(HAS_ASKALONO, "askalono binary not installed")
     def test_clean_tree_passes(self):
         root = make_repo()
