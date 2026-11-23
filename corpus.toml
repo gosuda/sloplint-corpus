@@ -30,3 +30,101 @@ added_by = "CorpusPopC6"
 added_on = "2026-11-23"
 reason = "own linter .lgo test fixtures including parse-error edge cases"
 notice_present_upstream = false
+
+[[project]]
+name = "quint-llm-kit"
+language = "quint"
+url = "https://github.com/quint-co/quint-llm-kit"
+rev = "cc75369f741af7d490936f82002c2d28e3b3d78d"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["*.qnt"]
+tree_hash = "sha256:5444f57a3f961c12f3318d87e061ac5b1b2a64c3e09fecd62dd1d0b163aba940"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "largest third-party Quint suite; mostly mcp-servers fixture-style specs, era and style spread"
+notice_present_upstream = false
+
+[[project]]
+name = "choreo"
+language = "quint"
+url = "https://github.com/quint-co/choreo"
+rev = "000cf4eed315187dc6f216a148781cff7dde6521"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["*.qnt"]
+tree_hash = "sha256:28d2bee7f46e9ceb30e99c566d5339d60a4debe9096b5d5089c2d725697e3ab1"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "choreography protocol specs over Quint; application-style contracts"
+notice_present_upstream = false
+
+[[project]]
+name = "tla-examples-in-quint"
+language = "quint"
+url = "https://github.com/hibariya/tla-examples-in-quint"
+rev = "2e714431d0ba387eccd849f93d195c3343f827b8"
+spdx = "MIT"
+storage = "copied"
+paths = ["*.qnt"]
+tree_hash = "sha256:667032a51c291c2d6d4d06a6285f7637b391c6a256adc474aae7eed0a62d95e1"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "TLA ports rewritten in Quint; translator-path syntax diversity"
+notice_present_upstream = false
+
+[[project]]
+name = "kogen-spec"
+language = "quint"
+url = "https://github.com/KogenAI/kogen-spec"
+rev = "8e28fcf7bb48aef673a18a2268d3613ea8a8ba2a"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["*.qnt"]
+tree_hash = "sha256:45e57b51da6e9a0efffd6701b5105967f2569517dbc760ba60cdceae45792641"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "archived formal spec; era and style spread for small suites"
+notice_present_upstream = false
+
+[[project]]
+name = "vibe-verify"
+language = "quint"
+url = "https://github.com/jpablo/vibe-verify"
+rev = "4384e5658f8ba76cff5f1e19ec8e8ac8ee07daf5"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["*.qnt"]
+tree_hash = "sha256:d97e2576ff1553ffcc4719ad6135558559b2441f44d1fee9e70b17d77a0e7166"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "small verification examples; short-file and tutorial syntax"
+notice_present_upstream = false
+
+[[project]]
+name = "metatron"
+language = "quint"
+url = "https://github.com/rahulmutt/metatron"
+rev = "a7df3756f7fc171be35494e953f23bf743d96764"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["*.qnt"]
+tree_hash = "sha256:75529b82d9b48aa497ca28701eb5450f2411bcd3fe3d320a1c966c22834c6310"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "archived Quint suite; era spread for small projects"
+notice_present_upstream = false
+
+[[project]]
+name = "quint-specification-journey"
+language = "quint"
+url = "https://github.com/nsengupta/quint-specification-journey"
+rev = "d8bccc8b44c1203d79d9022ea6969585b947fa1d"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["*.qnt"]
+tree_hash = "sha256:9ec30c2eaf86b5f743113d35354819367dfdc4d96b6f1e10020be3bf72929025"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "specification-journey tutorial files; beginner-syntax spread"
+notice_present_upstream = false
