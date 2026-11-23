@@ -212,11 +212,11 @@ rev = "545f13bed085bdd7143ecb91a6a449647fbf70fc"
 spdx = "MIT"
 storage = "copied"
 paths = ["lib/**", "lib/*/**", "lib/*/*/**", "lib/*/*/*/**", "lib/*/*/*/*/**", "lib/*/*/*/*/*/**", "lib/*/*/*/*/*/*/**", "lib/*/*/*/*/*/*/*/**", "lib/*/*/*/*/*/*/*/*/**", "lib/*/*/*/*/*/*/*/*/*/**", "lib/*/*/*/*/*/*/*/*/*/*/**", "lib/*/*/*/*/*/*/*/*/*/*/*/**", "lib/*/*/*/*/*/*/*/*/*/*/*/*/**"]
-exclude = ["syntax-printer.js", "test/**", "test/*/**", "test/*/*/**", "test/*/*/*/**", "test/*/*/*/*/**", "test/*/*/*/*/*/**", "test/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/*/*/*/**", "examples/**", "examples/*/**", "examples/*/*/**", "examples/*/*/*/**", "examples/*/*/*/*/**", "examples/*/*/*/*/*/**", "examples/*/*/*/*/*/*/**", "examples/*/*/*/*/*/*/*/**", "examples/*/*/*/*/*/*/*/*/**", "examples/*/*/*/*/*/*/*/*/*/**", "examples/*/*/*/*/*/*/*/*/*/*/**", "examples/*/*/*/*/*/*/*/*/*/*/*/**", "examples/*/*/*/*/*/*/*/*/*/*/*/*/**"]
-tree_hash = "sha256:d72b89c72920995feb610e2c48f69e95b2087aba90838a2524e1bf45502984df"
+exclude = ["syntax-printer.js", "test/**", "test/*/**", "test/*/*/**", "test/*/*/*/**", "test/*/*/*/*/**", "test/*/*/*/*/*/**", "test/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/*/*/**", "test/*/*/*/*/*/*/*/*/*/*/*/*/**", "examples/**", "examples/*/**", "examples/*/*/**", "examples/*/*/*/**", "examples/*/*/*/*/**", "examples/*/*/*/*/*/**", "examples/*/*/*/*/*/*/**", "examples/*/*/*/*/*/*/*/**", "examples/*/*/*/*/*/*/*/*/**", "examples/*/*/*/*/*/*/*/*/*/**", "examples/*/*/*/*/*/*/*/*/*/*/**", "examples/*/*/*/*/*/*/*/*/*/*/*/**", "examples/*/*/*/*/*/*/*/*/*/*/*/*/**", "lib/define/DotenvPlugin.js"]
+tree_hash = "sha256:ff4f257fe89df9720f61a1a0abc93dd2b356fd13799b801f4a29157d957aea29"
 added_by = "CorpusPopC1"
 added_on = "2026-11-23"
-reason = "bundler core, tool"
+reason = "bundler core, tool (excludes lib/define/DotenvPlugin.js: ports BSD-2-Clause dotenv code)"
 notice_present_upstream = false
 
 [[project]]
