@@ -2,8 +2,59 @@ version = 1
 SPDX-PackageName = "sloplint-corpus"
 SPDX-PackageDownloadLocation = "https://github.com/gosuda/sloplint-corpus"
 
+# These annotations cover only this repository's own files. Third-party
+# code under projects/ keeps its own license and is never covered here.
+
 [[annotations]]
-path = "**"
+path = "tools/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 gosuda"
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
+path = "tests/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 gosuda"
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
+path = ".github/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 gosuda"
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
+path = "proofs/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 gosuda"
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
+path = "README.md"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 gosuda"
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
+path = "LICENSE"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 gosuda"
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
+path = "budgets.toml"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 gosuda"
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
+path = "corpus.toml"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 gosuda"
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
+path = "REUSE.toml"
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 gosuda"
 SPDX-License-Identifier = "MIT"

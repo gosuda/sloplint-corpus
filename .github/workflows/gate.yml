@@ -20,4 +20,4 @@ jobs:
       - name: Install askalono 0.5.0
         run: cargo install askalono-cli --version 0.5.0 --locked
       - name: Fail-closed license gate
-        run: python3 tools/corpus/corpus verify --offline
+        run: python3 tools/corpus/corpus verify --offline --expect-mode public
