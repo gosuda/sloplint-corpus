@@ -698,6 +698,30 @@ class TestAddLocal(unittest.TestCase):
         self.assertTrue(os.path.isdir(os.path.join(upstream, ".git")))
 
     @unittest.skipUnless(HAS_GIT, "needs git")
+    def test_fetch_preserves_upstream_at_old_fetch_path(self):
+        root = make_repo(mode="private")
+        self.addCleanup(shutil.rmtree, root, True)
+        upstream = os.path.join(root, ".cache", "tmp", "fetch-demo")
+        os.makedirs(upstream)
+        write(os.path.join(upstream, "src", "lib.rs"), "pub fn f() {}\n")
+        subprocess.run(["git", "init", "-q", upstream], check=True, timeout=60)
+        subprocess.run(["git", "-C", upstream, "add", "-A"], check=True, timeout=60)
+        subprocess.run(["git", "-C", upstream, "-c", "user.name=t",
+                        "-c", "user.email=t@t", "commit", "-qm", "fixture"],
+                       check=True, timeout=60)
+        rev = subprocess.run(["git", "-C", upstream, "rev-parse", "HEAD"],
+                             capture_output=True, text=True, check=True,
+                             timeout=60).stdout.strip()
+        proc = run_tool(root, "add", "--url", upstream, "--rev", rev,
+                        "--lang", "rust", "--spdx", "NOASSERTION",
+                        "--name", "demo", "--storage", "pinned",
+                        "--paths", "src/**", "--reason", "fetch victim")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        fetch = run_tool(root, "fetch", "--lang", "rust", "--allow-unlicensed")
+        self.assertEqual(fetch.returncode, 0, fetch.stdout + fetch.stderr)
+        self.assertTrue(os.path.isdir(os.path.join(upstream, ".git")))
+
+    @unittest.skipUnless(HAS_GIT, "needs git")
     def test_add_rejects_nested_license(self):
         upstream = tempfile.mkdtemp(prefix="corpus-upstream-")
         self.addCleanup(shutil.rmtree, upstream, True)

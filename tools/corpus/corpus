@@ -1068,13 +1068,13 @@ def cmd_fetch(args):
                     fail("%s: %s" % (tag, problem))
                     failures += 1
                     continue
-            tmp = os.path.join(root, ".cache", "tmp", "fetch-" + name)
-            if os.path.exists(tmp):
-                shutil.rmtree(tmp)
-            os.makedirs(os.path.dirname(tmp), exist_ok=True)
+            scratch_parent = os.path.join(root, ".cache", "tmp")
+            os.makedirs(scratch_parent, exist_ok=True)
+            tmp = tempfile.mkdtemp(prefix="fetch-" + name + "-", dir=scratch_parent)
             proc = subprocess.run(["git", "clone", "--quiet", project["url"], tmp],
                                   capture_output=True, text=True, timeout=600)
             if proc.returncode != 0:
+                shutil.rmtree(tmp, ignore_errors=True)
                 fail("%s: git clone failed" % tag)
                 failures += 1
                 continue
