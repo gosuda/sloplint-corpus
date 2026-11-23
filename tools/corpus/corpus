@@ -337,6 +337,12 @@ def check_headers(projdir, language, declared_ids, public, errors, tag):
                               "(MIT, Apache-2.0, OR only)" % (tag, rel, bad_expr))
             elif has_copyleft_phrase(text):
                 errors.append("%s: %s header carries copyleft license text" % (tag, rel))
+            else:
+                bad = {i for i in ids if i not in declared_ids}
+                if bad:
+                    errors.append("%s: %s header names %s outside declared spdx" %
+                                  (tag, rel, sorted(bad)[0]))
+                    continue
         else:
             bad = {i for i in ids if i not in declared_ids}
             if bad:

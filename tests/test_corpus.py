@@ -240,6 +240,16 @@ class TestHeaders(unittest.TestCase):
         corpus.check_headers(projdir, "rust", {"MIT"}, True, errors, "project demo")
         self.assertTrue(any("copyleft" in e for e in errors), errors)
 
+    def test_allowlisted_header_outside_declared_fails_public(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        projdir = add_synthetic_project(root, files={
+            "src/lib.rs": "// SPDX-License-Identifier: Apache-2.0\n"
+                          "pub fn f() {}\n"})
+        errors = []
+        corpus.check_headers(projdir, "rust", {"MIT"}, True, errors, "project demo")
+        self.assertTrue(any("outside declared spdx" in e for e in errors), errors)
+
     def test_spdx_header_mismatch_fails_private(self):
         root = make_repo(mode="private")
         self.addCleanup(shutil.rmtree, root, True)
