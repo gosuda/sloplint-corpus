@@ -1,0 +1,258 @@
+open Stdune
+open Dune_rules
+
+let () = Dune_tests_common.init ()
+
+let expand args =
+  let { Action_builder.With_targets.build; targets = _ } =
+    Command.expand ~dir:Path.root args
+  in
+  let result, _deps =
+    Fiber.run
+      (Memo.run (Action_builder.evaluate_and_collect_deps build))
+      ~iter:(fun () -> assert false)
+  in
+  Appendable_list.to_list result
+;;
+
+let%expect_test "dependency set digest encoding" =
+  let module Dep = Dune_engine.Dep in
+  let module Alias = Dune_engine.Alias in
+  let module Digest = Dune_digest.Digest in
+  let dir = Path.Build.relative Path.Build.root "default/dependencies" in
+  let cases =
+    [ "env", Dep.env (Env.Var.of_string "DUNE_TEST_DEP_DIGEST")
+    ; "file", Dep.file (Path.build (Path.Build.relative dir "file"))
+    ; "alias", Dep.alias (Alias.make (Alias.Name.of_string "test") ~dir)
+    ; ( "selector"
+      , Dep.file_selector
+          (Dune_engine.File_selector.of_predicate_lang
+             ~dir:(Path.build dir)
+             Predicate_lang.true_) )
+    ; "universe", Dep.universe
+    ]
+  in
+  let print_digest name deps =
+    let digest = Digest.Manual.create () in
+    Dep.Set.digest deps digest;
+    printfn "%s: %s" name (Digest.to_string (Digest.Manual.get digest))
+  in
+  print_digest "empty" Dep.Set.empty;
+  List.iter cases ~f:(fun (name, dep) -> print_digest name (Dep.Set.singleton dep));
+  let deps = List.map cases ~f:snd in
+  print_digest "all" (Dep.Set.of_list deps);
+  print_digest "reversed" (Dep.Set.of_list (List.rev deps));
+  [%expect
+    {|
+    empty: af1349b9f5f9a1a6a0404dea36dcc949
+    env: 8207bb77ced4c5c379c6131bba780a0f
+    file: 5daf2b80cce9c80447af0a286098da6d
+    alias: 404f27abc43904a90df236b530f225b5
+    selector: 6ef1a176ddddab81b386615e9de8b744
+    universe: 846333980f613b6bffc8021457063c93
+    all: 7468558d36373d40865356e5a37c8257
+    reversed: 7468558d36373d40865356e5a37c8257
+    |}]
+;;
+
+let%expect_test "nested argument groups preserve order" =
+  let open Command.Args in
+  let args =
+    S
+      [ A "a"
+      ; S []
+      ; S [ As [ "b"; "c" ]; S [ A "d"; S []; S [ As [ "e"; "f" ] ] ] ]
+      ; A "g"
+      ]
+  in
+  List.iter (expand args) ~f:(printfn "%S");
+  [%expect
+    {|
+    "a"
+    "b"
+    "c"
+    "d"
+    "e"
+    "f"
+    "g"
+    |}]
+;;
+
+let%expect_test "static dependencies preserve lazy sets and eager facts" =
+  let module Dep = Dune_engine.Dep in
+  let run memo =
+    Fiber.run (Memo.run memo) ~iter:(fun () -> failwith "unexpected suspension")
+  in
+  let legacy deps = Action_builder.dyn_memo_deps (Memo.return (deps, ())) in
+  let env = Dep.env (Env.Var.of_string "STATIC_DEPS_TEST") in
+  let missing =
+    Dep.file
+      (Path.build (Path.Build.relative Path.Build.root "default/unbuilt-static-dep"))
+  in
+  let deps = Dep.Set.of_list [ missing; env; Dep.universe ] in
+  (* No build configuration is installed, and lazy evaluation must not try to
+     build the missing target. *)
+  let static = Action_builder.deps deps in
+  print_endline "constructed without a build configuration";
+  let (), actual = run (Action_builder.evaluate_and_collect_deps static) in
+  let (), previous = run (Action_builder.evaluate_and_collect_deps (legacy deps)) in
+  printfn
+    "lazy dependencies kept: %b"
+    (Dep.Set.equal actual deps && Dep.Set.equal actual previous);
+  let check_facts deps expected =
+    let (), actual =
+      run (Action_builder.evaluate_and_collect_facts (Action_builder.deps deps))
+    in
+    let (), previous = run (Action_builder.evaluate_and_collect_facts (legacy deps)) in
+    Dep.Facts.equal actual expected && Dep.Facts.equal actual previous
+  in
+  printfn "empty eager facts kept: %b" (check_facts Dep.Set.empty Dep.Facts.empty);
+  let expected =
+    Dep.Facts.union
+      (Dep.Facts.singleton env Dep.Fact.nothing)
+      (Dep.Facts.singleton Dep.universe Dep.Fact.nothing)
+  in
+  printfn
+    "nonempty eager facts kept: %b"
+    (check_facts (Dep.Set.of_list [ env; Dep.universe ]) expected);
+  [%expect
+    {|
+    constructed without a build configuration
+    lazy dependencies kept: true
+    empty eager facts kept: true
+    nonempty eager facts kept: true
+    |}]
+;;
+
+let%expect_test "singleton list maps preserve evaluation and dependencies" =
+  let module Dep = Dune_engine.Dep in
+  let run memo =
+    Fiber.run (Memo.run memo) ~iter:(fun () -> failwith "unexpected suspension")
+  in
+  let first, second = ref 1, ref 2 in
+  let deps = Dep.Set.singleton Dep.universe in
+  let facts = Dep.Facts.singleton Dep.universe Dep.Fact.nothing in
+  List.iter
+    [ []; [ first ]; [ first; second; first ] ]
+    ~f:(fun values ->
+      let calls = ref 0 in
+      let fact_calls = ref 0 in
+      let mapped =
+        Action_builder.List.map values ~f:(fun value ->
+          incr calls;
+          Action_builder.record value deps ~f:(fun _ ->
+            incr fact_calls;
+            Memo.return Dep.Fact.nothing))
+      in
+      assert (!calls = 0 && !fact_calls = 0);
+      let lazy_values, lazy_deps =
+        run (Action_builder.evaluate_and_collect_deps mapped)
+      in
+      assert (List.equal ( == ) lazy_values values);
+      assert (!calls = List.length values && !fact_calls = 0);
+      assert (Dep.Set.equal lazy_deps (if values = [] then Dep.Set.empty else deps));
+      let eager_values, eager_facts =
+        run (Action_builder.evaluate_and_collect_facts mapped)
+      in
+      assert (List.equal ( == ) eager_values values);
+      assert (!calls = 2 * List.length values && !fact_calls = List.length values);
+      assert (Dep.Facts.equal eager_facts (if values = [] then Dep.Facts.empty else facts)));
+  let release = Fiber.Ivar.create () in
+  let calls = ref 0 in
+  let suspended =
+    Action_builder.List.map [ first ] ~f:(fun value ->
+      incr calls;
+      let open Fiber.O in
+      Action_builder.of_memo
+        (Memo.of_reproducible_fiber
+           (let+ () = Fiber.Ivar.read release in
+            value)))
+  in
+  assert (!calls = 0);
+  let released = ref false in
+  let values, deps =
+    Fiber.run
+      (Memo.run (Action_builder.evaluate_and_collect_deps suspended))
+      ~iter:(fun () ->
+        assert (!calls = 1 && not !released);
+        released := true;
+        [ Fiber.Fill (release, ()) ])
+  in
+  assert (!released && !calls = 1);
+  assert (List.equal ( == ) values [ first ] && Dep.Set.is_empty deps);
+  let exception Failed in
+  List.iter [ false; true ] ~f:(fun delayed ->
+    let calls = ref 0 in
+    let failing =
+      Action_builder.List.map [ () ] ~f:(fun () ->
+        incr calls;
+        if delayed
+        then Action_builder.of_memo (Memo.of_thunk (fun () -> raise Failed))
+        else raise Failed)
+    in
+    assert (!calls = 0);
+    let result =
+      Fiber.run
+        (Fiber.collect_errors (fun () ->
+           Memo.run (Action_builder.evaluate_and_collect_deps failing)))
+        ~iter:(fun () -> failwith "unexpected suspension")
+    in
+    assert (!calls = 1);
+    assert (
+      match result with
+      | Error [ { Exn_with_backtrace.exn = Failed; _ } ] -> true
+      | Error [ { Exn_with_backtrace.exn = Memo.Error.E error; _ } ] ->
+        (match Memo.Error.get error with
+         | Failed -> true
+         | _ -> false)
+      | _ -> false));
+  print_endline "singleton map invariants hold";
+  [%expect {| singleton map invariants hold |}]
+;;
+
+let%expect_test "success prefixes preserve parallel cache restoration" =
+  let run memo =
+    Fiber.run (Memo.run memo) ~iter:(fun () ->
+      failwith "prefix restoration blocked the action that releases it")
+  in
+  let changed = Memo.Var.create ~name:"prefix-restore-change" false in
+  let gate = Fiber.Ivar.create () in
+  let prefix_calls = ref 0 in
+  let action_calls = ref 0 in
+  let parent_calls = ref 0 in
+  let prefix_node =
+    Memo.lazy_node ~name:"restored-prefix" ~cutoff:Unit.equal (fun () ->
+      let open Memo.O in
+      let* changed = Memo.Var.read changed in
+      incr prefix_calls;
+      if changed
+      then Memo.of_reproducible_fiber (Fiber.Ivar.read gate)
+      else Memo.return ())
+  in
+  let action_node =
+    Memo.lazy_node ~name:"restored-action" ~cutoff:Unit.equal (fun () ->
+      let open Memo.O in
+      let* changed = Memo.Var.read changed in
+      incr action_calls;
+      if changed
+      then Memo.of_reproducible_fiber (Fiber.Ivar.fill gate ())
+      else Memo.return ())
+  in
+  let prefix = Action_builder.record_success (Memo.Node.read prefix_node) in
+  let parent =
+    Memo.lazy_node ~name:"restored-prefix-parent" (fun () ->
+      incr parent_calls;
+      let open Action_builder.O in
+      prefix
+      >>> Action_builder.of_memo (Memo.Node.read action_node)
+      |> Action_builder.evaluate_and_collect_facts)
+  in
+  run (Memo.Node.read prefix_node);
+  let (), _ = run (Memo.Node.read parent) in
+  assert (!prefix_calls = 1 && !action_calls = 1 && !parent_calls = 1);
+  Memo.reset (Memo.Var.set changed true);
+  let (), _ = run (Memo.Node.read parent) in
+  assert (!prefix_calls = 2 && !action_calls = 2 && !parent_calls = 1);
+  print_endline "parallel cache restoration preserved";
+  [%expect {| parallel cache restoration preserved |}]
+;;

@@ -1,0 +1,183 @@
+open Import
+open Memo.O
+
+let gen_select_rules sctx ~dir compile_info ~for_ =
+  Lib.Compile.resolved_selects compile_info ~for_
+  |> Resolve.Memo.read_memo
+  >>= Memo.parallel_iter ~f:(fun { Lib.Compile.Resolved_select.dst_fn; src_fn; loc } ->
+    let dst = Ml_sources.source_in_dir ~dir dst_fn ~for_ in
+    Super_context.add_rule
+      sctx
+      ~loc
+      ~dir
+      (Action_builder.with_file_targets
+         ~file_targets:[ dst ]
+         (let open Action_builder.O in
+          let* src_fn = Resolve.read src_fn in
+          let src = Path.build (Path.Build.append_local dir src_fn) in
+          let+ () = Action_builder.path src in
+          let context = Super_context.context sctx in
+          Action.Full.make (Copy_line_directive.action context ~src ~dst))))
+;;
+
+let with_lib_deps (t : Context.t) merlin_ident ~dir ~f =
+  match Context.merlin t with
+  | false -> f ()
+  | true ->
+    let prefix =
+      Merlin_ident.merlin_file_path dir merlin_ident
+      |> Path.build
+      |> Build_system.build_file
+      |> Action_builder.record_success
+    in
+    Rules.prefix_rules prefix ~f
+;;
+
+type kind =
+  | Executables of Buildable.t * (Loc.t * string) list
+  | Library of Buildable.t * Lib_name.Local.t
+  | Parameter of Buildable.t * Lib_name.Local.t
+  | Melange of
+      { preprocess : Preprocess.preprocess
+      ; lint : Preprocess.Without_instrumentation.t Preprocess.Per_module.t
+      ; empty_module_interface_if_absent : bool
+      }
+
+let fold_resolve (t : _ Preprocess.t) ~init ~f =
+  match t with
+  | Pps t -> Resolve.Memo.List.fold_left t.pps ~init ~f
+  | No_preprocessing | Action _ | Future_syntax _ -> Resolve.Memo.return init
+;;
+
+let instrumentation_deps t ~instrumentation_backend =
+  let open Resolve.Memo.O in
+  let f = function
+    | Preprocess.With_instrumentation.Ordinary _ -> Resolve.Memo.return []
+    | Instrumentation_backend { libname; deps; flags = _ } ->
+      instrumentation_backend libname
+      >>| (function
+       | Some _ -> deps
+       | None -> [])
+  in
+  Instrumentation.fold t ~init:[] ~f:(fun t init ->
+    let f acc t =
+      let+ x = f t in
+      x :: acc
+    in
+    fold_resolve t ~init ~f)
+  >>| List.rev
+  >>| List.flatten
+;;
+
+let modules_rules
+      ~preprocess
+      ~lint
+      ~empty_module_interface_if_absent
+      sctx
+      expander
+      ~dir
+      scope
+      modules
+      ~lib_name
+      ~empty_intf_modules
+      ~for_
+  =
+  let { Preprocess.config = preprocess; preprocessor_deps } = preprocess in
+  let* pp =
+    let instrumentation_backend = Lib.DB.instrumentation_backend (Scope.libs scope) in
+    let* preprocess_with_instrumentation =
+      (* TODO wrong and blocks loading all the rules in this directory *)
+      Instrumentation.with_instrumentation preprocess ~instrumentation_backend
+      |> Resolve.Memo.read_memo
+    in
+    let* instrumentation_deps =
+      (* TODO wrong and blocks loading all the rules in this directory *)
+      instrumentation_deps preprocess ~instrumentation_backend |> Resolve.Memo.read_memo
+    in
+    Pp_spec_rules.make
+      sctx
+      ~for_
+      ~dir
+      ~scope
+      ~preprocess:preprocess_with_instrumentation
+      ~expander
+      ~preprocessor_deps
+      ~instrumentation_deps
+      ~lint
+      ~lib_name
+  in
+  let add_empty_intf =
+    let default = empty_module_interface_if_absent in
+    match empty_intf_modules with
+    | None -> fun _ -> default
+    | Some mains ->
+      if Dune_project.executables_implicit_empty_intf (Scope.project scope)
+      then (
+        let executable_names =
+          List.map mains ~f:(fun main ->
+            Module_name.of_string_allow_invalid main
+            |> Module_name.Unchecked.allow_invalid)
+        in
+        fun name -> default || List.mem executable_names name ~equal:Module_name.equal)
+      else fun _ -> default
+  in
+  let+ modules =
+    Modules.map_user_written modules ~f:(fun m ->
+      let* m = Pp_spec.pp_module pp m in
+      if add_empty_intf (Module.name m) && not (Module.has m ~ml_kind:Intf)
+      then Module_compilation.with_empty_intf ~sctx ~dir m
+      else Memo.return m)
+  in
+  modules, pp
+;;
+
+let modules_rules sctx kind expander ~dir scope modules ~for_ =
+  let* () =
+    match kind with
+    | Executables _ | Library _ | Melange _ -> Memo.return ()
+    | Parameter _ ->
+      let* ocaml = Super_context.context sctx |> Context.ocaml in
+      if Ocaml_config.parameterised_modules ocaml.ocaml_config
+      then Memo.return ()
+      else
+        User_error.raise
+          [ Pp.text "The compiler you are using is not compatible with library parameter"
+          ]
+  in
+  let preprocess, lint, empty_module_interface_if_absent =
+    match kind with
+    | Executables (buildable, _) | Parameter (buildable, _) ->
+      buildable.preprocess, buildable.lint, buildable.empty_module_interface_if_absent
+    | Library (buildable, _) ->
+      let preprocess =
+        match for_ with
+        | Compilation_mode.Ocaml -> buildable.preprocess
+        | Melange -> buildable.melange_preprocess
+      in
+      preprocess, buildable.lint, buildable.empty_module_interface_if_absent
+    | Melange { preprocess; lint; empty_module_interface_if_absent } ->
+      preprocess, lint, empty_module_interface_if_absent
+  in
+  let lib_name =
+    match kind with
+    | Executables _ | Melange _ -> None
+    | Library (_, name) | Parameter (_, name) -> Some name
+  in
+  let empty_intf_modules =
+    match kind with
+    | Executables (_, modules) -> Some modules
+    | Library _ | Melange _ | Parameter _ -> None
+  in
+  modules_rules
+    ~preprocess
+    ~lint
+    ~empty_module_interface_if_absent
+    sctx
+    expander
+    ~dir
+    scope
+    modules
+    ~lib_name
+    ~empty_intf_modules
+    ~for_
+;;

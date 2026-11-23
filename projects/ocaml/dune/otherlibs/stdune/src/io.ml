@@ -1,0 +1,550 @@
+let close_in = close_in
+let close_out = close_out
+
+let close_both (ic, oc) =
+  match close_out oc with
+  | () -> close_in ic
+  | exception exn ->
+    close_in ic;
+    Exn.reraise exn
+;;
+
+let input_lines =
+  let rec loop ic acc =
+    match input_line ic with
+    | exception End_of_file -> List.rev acc
+    | line -> loop ic (line :: acc)
+  in
+  fun ic -> loop ic []
+;;
+
+let input_zero_from_buffer from buf =
+  match String.index_from_opt buf from '\x00' with
+  | None -> None
+  | Some eos -> Some (String.sub buf ~pos:from ~len:(eos - from), eos + 1)
+;;
+
+(* Note, the complexity of this function will be bad if the zero-separated
+   elements are much larger than the current input buffer *)
+let input_zero_separated =
+  (* Take all the \0-terminated strings from [buf], return the scanned list and
+     the remainder *)
+  let rec scan_inputs_buf from buf acc =
+    (* note that from is untouched if input_zero_from_buffer returns None *)
+    match input_zero_from_buffer from buf with
+    | Some (istr, from) -> scan_inputs_buf from buf (istr :: acc)
+    | None ->
+      let total_len = String.length buf in
+      if total_len > from
+      then (
+        let rest = String.sub buf ~pos:from ~len:(total_len - from) in
+        Some rest, acc)
+      else None, acc
+  in
+  let ibuf_size = 65536 in
+  let ibuf = Bytes.create ibuf_size in
+  let rec input_loop ic rem acc =
+    let res = input ic ibuf 0 ibuf_size in
+    if res = 0
+    then (
+      (* end of file, check if there is a remainder, and return the results *)
+      match rem with
+      | Some rem -> List.rev (rem :: acc)
+      | None -> List.rev acc)
+    else (
+      (* new input, append remainder and scan it *)
+      let actual_input = Bytes.sub_string ibuf ~pos:0 ~len:res in
+      let actual_input =
+        match rem with
+        | None -> actual_input
+        | Some rem -> rem ^ actual_input
+      in
+      let rem, acc = scan_inputs_buf 0 actual_input acc in
+      input_loop ic rem acc)
+  in
+  fun ic -> input_loop ic None []
+;;
+
+let copy_channels =
+  let buf_len = 65536 in
+  let global_buf = Bytes.create buf_len in
+  let rec loop buf ic oc =
+    match input ic buf 0 buf_len with
+    | 0 -> ()
+    | n ->
+      output oc buf 0 n;
+      loop buf ic oc
+  in
+  let busy = ref false in
+  fun ic oc ->
+    if !busy
+    then loop (Bytes.create buf_len) ic oc
+    else (
+      busy := true;
+      match loop global_buf ic oc with
+      | () -> busy := false
+      | exception exn ->
+        busy := false;
+        Exn.reraise exn)
+;;
+
+let setup_copy ~overwrite ?(chmod = Fun.id) ~src ~dst () =
+  let ic = Stdlib.open_in_bin src in
+  let oc =
+    try
+      let perm =
+        (Unix.fstat (Unix.descr_of_in_channel ic)).st_perm
+        |> Permissions.Mode.of_int
+        |> chmod
+        |> Permissions.Mode.to_int
+      in
+      let creation = if overwrite then Open_trunc else Open_excl in
+      Stdlib.open_out_gen [ Open_wronly; Open_creat; creation; Open_binary ] perm dst
+    with
+    | exn ->
+      close_in ic;
+      Exn.reraise exn
+  in
+  ic, oc
+;;
+
+module Copyfile = struct
+  (* Bindings to mac's fast copy function. It's similar to a hardlink, except
+     it does COW when edited. It will also default back to regular copying if
+     it fails for w/e reason *)
+  external copyfile : string -> string -> bool -> unit = "stdune_copyfile"
+
+  external sendfile
+    :  src:Unix.file_descr
+    -> dst:Unix.file_descr
+    -> int
+    -> unit
+    = "stdune_sendfile"
+
+  let available =
+    match Platform.OS.value with
+    | Darwin -> `Copyfile
+    | Linux -> `Sendfile
+    | _ -> `Nothing
+  ;;
+
+  let sendfile_with_fallback =
+    let setup_copy ~overwrite ?(chmod = Fun.id) ~src ~dst () =
+      match Unix.openfile src [ O_RDONLY; O_CLOEXEC ] 0 with
+      | exception Unix.Unix_error (Unix.ENOENT, _, _) -> Error `Src_missing
+      | fd_src ->
+        let fd_src = Fd.unsafe_of_unix_file_descr fd_src in
+        (match Unix.fstat (Fd.unsafe_to_unix_file_descr fd_src) with
+         | exception exn ->
+           Fd.close fd_src;
+           Error (`Exn (Exn_with_backtrace.capture exn))
+         | src_stat ->
+           (match src_stat.st_kind with
+            | S_DIR ->
+              Fd.close fd_src;
+              Error `Src_is_a_dir
+            | _ ->
+              let open Result.O in
+              let+ fd_dst, src_size =
+                match
+                  let dst_perm =
+                    src_stat.st_perm
+                    |> Permissions.Mode.of_int
+                    |> chmod
+                    |> Permissions.Mode.to_int
+                  in
+                  let creation = if overwrite then Unix.O_TRUNC else Unix.O_EXCL in
+                  Unix.openfile dst [ O_WRONLY; O_CREAT; creation; O_CLOEXEC ] dst_perm
+                with
+                | fd_dst -> Ok (Fd.unsafe_of_unix_file_descr fd_dst, src_stat.st_size)
+                | exception exn ->
+                  Fd.close fd_src;
+                  (match exn with
+                   | Unix.Unix_error (Unix.EISDIR, _, _) -> Error `Dst_is_a_dir
+                   | _ -> Error (`Exn (Exn_with_backtrace.capture exn)))
+              in
+              fd_src, fd_dst, src_size))
+    in
+    fun ~overwrite ?chmod ~src ~dst () ->
+      (* All of this exception translation is done for now to maintain the
+         same error messages as the other file copying functions.
+
+         Eventually, we should stop using exceptions for signalling these
+         errors. But that's a bit of a large change since there's a lot of
+         exception catching to audit. *)
+      match setup_copy ~overwrite ?chmod ~src ~dst () with
+      | Error (`Exn exn) -> Exn_with_backtrace.reraise exn
+      | Error `Src_is_a_dir -> raise (Sys_error "Is a directory")
+      | Error `Dst_is_a_dir ->
+        let message = Printf.sprintf "%s: Is a directory" dst in
+        raise (Sys_error message)
+      | Error `Src_missing ->
+        let message = Printf.sprintf "%s: No such file or directory" src in
+        raise (Sys_error message)
+      | Ok (src, dst, src_size) ->
+        let close_fds () =
+          Fd.close src;
+          Fd.close dst
+        in
+        (match
+           sendfile
+             ~src:(Fd.unsafe_to_unix_file_descr src)
+             ~dst:(Fd.unsafe_to_unix_file_descr dst)
+             src_size
+         with
+         | exception Unix.Unix_error (EINVAL, "sendfile", _) ->
+           Exn.protectx
+             ( Unix.in_channel_of_descr (Fd.unsafe_to_unix_file_descr src)
+             , Unix.out_channel_of_descr (Fd.unsafe_to_unix_file_descr dst) )
+             (* we make sure to close the fd's with the channel api to make
+                sure everything has been flushed *)
+             ~f:(fun (ic, oc) -> copy_channels ic oc)
+             ~finally:close_both
+         | () -> close_fds ()
+         | exception exn ->
+           close_fds ();
+           Exn.reraise exn)
+  ;;
+
+  let copyfile ~overwrite ?chmod ~src ~dst () =
+    let src_stats =
+      match Unix.stat src with
+      | exception Unix.Unix_error (Unix.ENOENT, _, _) ->
+        let message = Printf.sprintf "%s: No such file or directory" src in
+        raise (Sys_error message)
+      | { st_kind = S_DIR; _ } -> raise (Sys_error "Is a directory")
+      | stats -> stats
+    in
+    (try copyfile src dst overwrite with
+     | Unix.Unix_error (Unix.EPERM, "unlink", _) ->
+       let message = Printf.sprintf "%s: Is a directory" dst in
+       raise (Sys_error message)
+     | Unix.Unix_error (Unix.ENOENT, "realpath", _) ->
+       let message = Printf.sprintf "%s: No such file or directory" src in
+       raise (Sys_error message));
+    match chmod with
+    | None -> ()
+    | Some chmod ->
+      src_stats.st_perm
+      |> Permissions.Mode.of_int
+      |> chmod
+      |> Permissions.Mode.to_int
+      |> Unix.chmod dst
+  ;;
+
+  let copy_file_portable ~overwrite ?chmod ~src ~dst () =
+    Exn.protectx
+      (setup_copy ~overwrite ?chmod ~src ~dst ())
+      ~finally:close_both
+      ~f:(fun (ic, oc) -> copy_channels ic oc)
+  ;;
+
+  let copy_file_best =
+    match available with
+    | `Sendfile -> sendfile_with_fallback
+    | `Copyfile -> copyfile
+    | `Nothing -> copy_file_portable
+  ;;
+
+  let copy_file_impl = ref `Best
+
+  let copy_file ~overwrite ?chmod ~src ~dst () =
+    match !copy_file_impl with
+    | `Portable -> copy_file_portable ~overwrite ?chmod ~src ~dst ()
+    | `Best -> copy_file_best ~overwrite ?chmod ~src ~dst ()
+  ;;
+end
+
+let set_copy_impl m = Copyfile.copy_file_impl := m
+
+let write_fd (fd : Fd.t) content =
+  let start = Counter.Timer.start () in
+  Counter.incr Metrics.File_write.count;
+  Counter.add Metrics.File_write.bytes (String.length content);
+  let res = Fs_io.write_fd (Fd.unsafe_to_unix_file_descr fd) content in
+  Counter.Timer.stop Metrics.File_write.time start;
+  res
+;;
+
+module Make (Path : sig
+    type t
+
+    val to_string : t -> string
+  end) =
+struct
+  type path = Path.t
+
+  let open_in ?(binary = true) p =
+    let fn = Path.to_string p in
+    if binary then Stdlib.open_in_bin fn else Stdlib.open_in fn
+  ;;
+
+  let default_out_perm = Permissions.Mode.default_file
+
+  let open_out ?(binary = true) ?(perm = default_out_perm) p =
+    let fn = Path.to_string p in
+    let flags : Stdlib.open_flag list =
+      [ Open_wronly; Open_creat; Open_trunc; (if binary then Open_binary else Open_text) ]
+    in
+    Stdlib.open_out_gen flags (Permissions.Mode.to_int perm) fn
+  ;;
+
+  let with_file_in ?binary fn ~f = Exn.protectx (open_in ?binary fn) ~finally:close_in ~f
+
+  let with_file_out ?binary ?perm p ~f =
+    Exn.protectx (open_out ?binary ?perm p) ~finally:close_out ~f
+  ;;
+
+  let with_lexbuf_from_file fn ~f =
+    with_file_in fn ~f:(fun ic ->
+      let lb = Lexing.from_channel ic in
+      lb.lex_curr_p
+      <- { pos_fname = Path.to_string fn; pos_lnum = 1; pos_bol = 0; pos_cnum = 0 };
+      f lb)
+  ;;
+
+  let read_file ?(binary = true) fn =
+    let start = Counter.Timer.start () in
+    Counter.incr Metrics.File_read.count;
+    let res =
+      try
+        if binary
+        then Fs_io.read_file (Path.to_string fn)
+        else with_file_in ~binary fn ~f:Fs_io.read_all_unless_large
+      with
+      | exn -> Error exn
+    in
+    (match res with
+     | Error _ -> ()
+     | Ok contents -> Counter.add Metrics.File_read.bytes (String.length contents));
+    Counter.Timer.stop Metrics.File_read.time start;
+    res
+  ;;
+
+  let read_file_if_small fn ~max_size =
+    let start = Counter.Timer.start () in
+    Counter.incr Metrics.File_read.count;
+    let res =
+      try Fs_io.read_file_if_small (Path.to_string fn) ~max_size with
+      | exn -> Error exn
+    in
+    (match res with
+     | Ok (Some contents) -> Counter.add Metrics.File_read.bytes (String.length contents)
+     | Ok None | Error _ -> ());
+    Counter.Timer.stop Metrics.File_read.time start;
+    res
+  ;;
+
+  let read_file_exn ?binary fn = read_file ?binary fn |> Result.ok_exn
+  let lines_of_file fn = with_file_in fn ~f:input_lines ~binary:false
+  let zero_strings_of_file fn = with_file_in fn ~f:input_zero_separated ~binary:true
+
+  let write_file ?(binary = true) ?perm fn data =
+    let start = Counter.Timer.start () in
+    Counter.incr Metrics.File_write.count;
+    Counter.add Metrics.File_write.bytes (String.length data);
+    let res =
+      try
+        if binary
+        then
+          Fs_io.write_file
+            ~perm:(Option.value ~default:default_out_perm perm |> Permissions.Mode.to_int)
+            ~data
+            ~path:(Path.to_string fn)
+        else Ok (with_file_out ~binary ?perm fn ~f:(fun oc -> output_string oc data))
+      with
+      | exn -> Error exn
+    in
+    Counter.Timer.stop Metrics.File_write.time start;
+    res
+  ;;
+
+  let write_file_exn ?binary ?perm fn data =
+    write_file ?binary ?perm fn data |> Result.ok_exn
+  ;;
+
+  let write_lines ?binary ?perm fn lines =
+    let start = Counter.Timer.start () in
+    Counter.incr Metrics.File_write.count;
+    let res =
+      with_file_out ?binary ?perm fn ~f:(fun oc ->
+        List.iter
+          ~f:(fun line ->
+            Counter.add Metrics.File_write.bytes (String.length line + 1);
+            output_string oc line;
+            output_string oc "\n")
+          lines)
+    in
+    Counter.Timer.stop Metrics.File_write.time start;
+    res
+  ;;
+
+  let read_file_and_normalize_eols_exn fn =
+    if not Stdlib.Sys.win32
+    then read_file_exn fn
+    else (
+      let src = read_file_exn fn in
+      let len = String.length src in
+      let dst = Bytes.create len in
+      let rec find_next_crnl i =
+        match String.index_from src i '\r' with
+        | None -> None
+        | Some j ->
+          if j + 1 < len && src.[j + 1] = '\n' then Some j else find_next_crnl (j + 1)
+      in
+      let rec loop src_pos dst_pos =
+        match find_next_crnl src_pos with
+        | None ->
+          let len =
+            if len > src_pos && src.[len - 1] = '\r'
+            then len - 1 - src_pos
+            else len - src_pos
+          in
+          Bytes.blit_string ~src ~src_pos ~dst ~dst_pos ~len;
+          Bytes.sub_string dst ~pos:0 ~len:(dst_pos + len)
+        | Some i ->
+          let len = i - src_pos in
+          Bytes.blit_string ~src ~src_pos ~dst ~dst_pos ~len;
+          let dst_pos = dst_pos + len in
+          Bytes.set dst dst_pos '\n';
+          loop (i + 2) (dst_pos + 1)
+      in
+      loop 0 0)
+  ;;
+
+  let compare_text_files fn1 fn2 =
+    let s1 = read_file_and_normalize_eols_exn fn1 in
+    let s2 = read_file_and_normalize_eols_exn fn2 in
+    String.compare s1 s2
+  ;;
+
+  let compare_files fn1 fn2 =
+    let s1 = read_file_exn fn1 in
+    let s2 = read_file_exn fn2 in
+    String.compare s1 s2
+  ;;
+
+  let setup_copy ?chmod ~src ~dst () =
+    let src = Path.to_string src in
+    let dst = Path.to_string dst in
+    setup_copy ~overwrite:true ?chmod ~src ~dst ()
+  ;;
+
+  let copy_file ~overwrite ?chmod ~src ~dst () =
+    let src = Path.to_string src in
+    let dst = Path.to_string dst in
+    Copyfile.copy_file ~overwrite ?chmod ~src ~dst ()
+  ;;
+
+  let file_line path n =
+    with_file_in ~binary:false path ~f:(fun ic ->
+      for _ = 1 to n - 1 do
+        ignore (input_line ic)
+      done;
+      input_line ic)
+  ;;
+
+  let file_lines path ~start ~stop =
+    with_file_in ~binary:true path ~f:(fun ic ->
+      let rec aux acc lnum =
+        if lnum > stop
+        then List.rev acc
+        else if lnum < start
+        then (
+          ignore (input_line ic);
+          aux acc (lnum + 1))
+        else (
+          let line = input_line ic in
+          aux ((string_of_int lnum, line) :: acc) (lnum + 1))
+      in
+      aux [] 1)
+  ;;
+
+  let cat ?binary ?dst fn =
+    let dst =
+      match dst with
+      | Some dst -> dst
+      | None -> stdout
+    in
+    with_file_in ?binary fn ~f:(fun ic -> copy_channels ic dst)
+  ;;
+end
+
+include Make (Path)
+
+module String_path = struct
+  include Make (struct
+      type t = string
+
+      let to_string x = x
+    end)
+
+  let copy_file = Copyfile.copyfile
+end
+
+let portable_symlink ~overwrite ~src ~dst =
+  if Stdlib.Sys.win32
+  then copy_file ~overwrite ~src ~dst ()
+  else (
+    let src =
+      match Path.parent dst with
+      | None -> Path.to_string src
+      | Some from ->
+        (* A relative symlink target is resolved from the real directory that
+           contains [dst], not necessarily from the lexical spelling of [from].
+           External paths may contain symlinked prefixes (for example
+           /var -> /private/var on macOS), so keep external-to-external symlink
+           targets absolute. *)
+        (match Path.as_external src, Path.as_external from with
+         | Some _, Some _ -> Path.to_string src
+         | _ -> Path.reach ~from src)
+    in
+    let dst = Path.to_string dst in
+    try Unix.symlink src dst with
+    | Unix.Unix_error (Unix.EEXIST, _, _) as exn when overwrite ->
+      (match Unix.readlink dst with
+       | exception Unix.Unix_error _ -> raise exn
+       | target when target = src -> ()
+       | _ ->
+         (* @@DRA Win32 remove read-only attribute needed when symlinking
+            enabled *)
+         Unix.unlink dst;
+         Unix.symlink src dst))
+;;
+
+let portable_hardlink ~overwrite ~src ~dst =
+  let user_error msg =
+    User_error.raise
+      [ Pp.textf
+          "Sandbox creation error: cannot resolve symbolic link %S."
+          (Path.to_string src)
+      ; User_error.reason (Pp.verbatim msg)
+      ]
+  in
+  let src =
+    match Fpath.follow_symlink (Path.to_string src) with
+    | Ok path -> Path.of_string path
+    | Error Not_a_symlink -> src
+    | Error Max_depth_exceeded ->
+      user_error "Too many indirections; is this a cyclic symbolic link?"
+    | Error (Unix_error error) -> user_error (Unix_error.Detailed.to_string_hum error)
+  in
+  try Fpath.link (Path.to_string src) (Path.to_string dst) with
+  | Unix.Unix_error (Unix.EEXIST, _, _) when overwrite ->
+    (* CR-someday amokhov: Investigate why we need to occasionally clear the
+        destination (we also do this in the symlink case above). Perhaps, the
+        list of dependencies may have duplicates? If yes, it may be better to
+        filter out the duplicates first. *)
+    let src = Path.to_string src in
+    let dst = Path.to_string dst in
+    Fpath.unlink_exn dst;
+    Fpath.link src dst
+  | Unix.Unix_error (Unix.EINVAL, _, _)
+  (* If the file system do not support hard links. Should not really happen in
+      practice (NTFS and ReFS do support hard links on windows.) *)
+  | Unix.Unix_error (Unix.EMLINK, _, _) ->
+    (* If we can't make a new hard link because we reached the limit on the
+        number of hard links per file, we fall back to copying. We expect
+        that this happens very rarely (probably only for empty files). *)
+    copy_file ~overwrite ~src ~dst ()
+;;

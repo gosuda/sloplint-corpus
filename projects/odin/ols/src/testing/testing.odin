@@ -1,0 +1,1224 @@
+package ols_testing
+
+import "core:fmt"
+import "core:log"
+import "core:mem/virtual"
+import "core:odin/ast"
+import "core:odin/parser"
+import "core:slice"
+import "core:strings"
+import "core:testing"
+
+import "src:common"
+import "src:server"
+import "src:spall"
+
+File :: struct {
+	name:   string,
+	source: string,
+}
+
+Package :: struct {
+	pkg:    string,
+	source: string, // backwards compatable–for single-file packages
+	files:  []File,
+}
+
+Source :: struct {
+	main:        string, // backwards compatable–for single-file packages
+	files:       []File,
+	packages:    []Package,
+	document:    ^server.Document,
+	collections: map[string]string,
+	config:      common.Config,
+}
+
+@(thread_local)
+test_config: common.Config
+
+@(private)
+setup :: proc(src: ^Source) {
+	spall.thread_begin()
+
+	spall.trace(#procedure)
+
+	src.document = new(server.Document)
+
+	src.document.client_owned = true
+	src.document.allocator = new(virtual.Arena)
+	src.document.symbol_cache_arena = new(virtual.Arena)
+	src.document.package_name = "test"
+
+	_ = virtual.arena_init_growing(src.document.allocator)
+	_ = virtual.arena_init_growing(src.document.symbol_cache_arena)
+
+	if len(src.main) > 0 {
+		src.files = slice.concatenate([][]File{{{"main.odin", src.main}}, src.files}, context.temp_allocator)
+		src.main = ""
+	}
+
+	if len(src.files) <= 0 {
+		log.error("Expected at least one file")
+		return
+	}
+
+	f := &src.files[0]
+	source := transmute([]u8)f.source
+
+	fullpath := strings.join({"test", f.name}, "/", context.temp_allocator)
+	src.document.uri = common.create_uri(fullpath, context.temp_allocator)
+	src.document.text = source
+	src.document.used_text = len(source)
+
+	// Make the test packages reachable through the collections
+	if len(src.collections) > 0 {
+		server.build_cache.pkg_aliases = make(map[string][dynamic]string, 0, context.temp_allocator)
+	}
+
+	for collection, collection_path in src.collections {
+		src.config.collections[collection] = collection_path
+
+		aliases := make([dynamic]string, context.temp_allocator)
+
+		for src_pkg in src.packages {
+			append(&aliases, src_pkg.pkg)
+		}
+
+		server.build_cache.pkg_aliases[collection] = aliases
+	}
+
+	builtin_path := server.get_builtin_path()
+	server.setup_index(builtin_path)
+	defer delete(builtin_path)
+
+	// Set the collection's config to the test's config to enable feature flags like enable_fake_method
+	test_config = src.config
+	server.indexer.index.collection.config = &test_config
+
+	server.document_setup(src.document)
+
+	server.document_refresh(src.document, &test_config, nil)
+
+	context.allocator = virtual.arena_allocator(src.document.allocator)
+
+	if len(src.files) > 1 {
+		pkg := new(ast.Package, context.temp_allocator)
+		pkg.name = "test"
+		pkg.fullpath = "test"
+		pkg.name = "test"
+
+		for f in src.files[1:] {
+			process_file(f.name, f.source, pkg)
+		}
+	}
+
+	for src_pkg in src.packages {
+		context.allocator = virtual.arena_allocator(src.document.allocator)
+
+		pkg := new(ast.Package, context.temp_allocator)
+		pkg.name = src_pkg.pkg
+		pkg.fullpath = strings.join({"test", pkg.name}, "/", context.temp_allocator)
+
+		if pkg.name == "runtime" || strings.contains(pkg.fullpath, "base/runtime") {
+			pkg.kind = .Runtime
+		}
+
+		if len(src_pkg.files) > 0 do for f in src_pkg.files {
+			process_file(f.name, f.source, pkg)
+		}
+		else {
+			process_file("package.odin", src_pkg.source, pkg)
+		}
+	}
+
+	process_file :: proc(filename: string, source: string, pkg: ^ast.Package) {
+
+		fullpath := strings.join({pkg.fullpath, filename}, "/", context.temp_allocator)
+
+		p := parser.Parser {
+			err   = parser.default_error_handler,
+			warn  = parser.default_error_handler,
+			flags = {.Optional_Semicolons},
+		}
+
+		file := ast.File {
+			fullpath = fullpath,
+			src      = source,
+			pkg      = pkg,
+		}
+
+		ok := server.parse_file(&p, &file)
+
+		if !ok || file.syntax_error_count > 0 {
+			panic("Parser error in test package source")
+		}
+
+		uri := common.create_uri(fullpath, context.temp_allocator)
+
+		err := server.collect_symbols(&server.indexer.index.collection, file, uri.uri)
+		if err != .None {
+			log.errorf("Error (%v) while collecting symbols in file (%s) \"%s\"", err, fullpath, source)
+		}
+	}
+}
+
+@(private)
+teardown :: proc(src: ^Source) {
+
+	defer spall.thread_end()
+	spall.trace(#procedure)
+
+	server.free_index()
+	server.indexer.index = {}
+	server.build_cache.pkg_aliases = {}
+	test_config = {}
+
+	delete(src.config.collections)
+	delete(src.collections)
+	delete(src.document.package_name)
+	when ODIN_OS == .Windows {
+		// Only on Windows fullpath is allocated (replace_separators in document_setup); elsewhere it's an alias of uri.path
+		delete(src.document.fullpath)
+	}
+
+	virtual.arena_destroy(src.document.allocator)
+	free(src.document.allocator)
+
+	virtual.arena_destroy(src.document.symbol_cache_arena)
+	free(src.document.symbol_cache_arena)
+
+	free(src.document)
+	src.document = nil
+}
+
+source_remove_cursor :: proc(src: ^Source) -> (cursor: common.Position) {
+
+	source: ^string
+	if src.main != "" {
+		source = &src.main
+	} else if len(src.files) > 0 {
+		source = &src.files[0].source
+	}
+
+	if source == nil || len(source) == 0 {
+		log.error("Cannot get cursor from an empty file")
+		return
+	}
+
+	CURSOR :: "{*}"
+
+	marker_pos := strings.index(source^, CURSOR)
+	if marker_pos < 0 {
+		log.errorf("Didn't find %s in `%s`", CURSOR, source^)
+		return
+	}
+
+	// remove cursor mark from source
+	new_source := make([]u8, len(source) - len(CURSOR), context.temp_allocator)
+	copy(new_source[:marker_pos], source[:marker_pos])
+	copy(new_source[marker_pos:], source[marker_pos + len(CURSOR):])
+	source^ = string(new_source)
+
+	// find cursor (line,col) position
+	return common.get_relative_token_position(marker_pos, transmute([]u8)source^, 0)
+}
+
+expect_signature_labels :: proc(
+	t: ^testing.T,
+	src: ^Source,
+	expect_labels: []string,
+	expected_active_parameter := -1,
+) {
+	spall.trace(#procedure)
+
+	cursor := source_remove_cursor(src)
+
+	setup(src)
+	defer teardown(src)
+
+	help, ok := server.get_signature_information(src.document, cursor, &test_config)
+
+	if !ok {
+		log.error("Failed get_signature_information")
+	}
+
+	if len(expect_labels) == 0 && len(help.signatures) > 0 {
+		log.errorf("Expected empty signature label, but received %v", help.signatures)
+	}
+
+	flags := make([]int, len(expect_labels), context.temp_allocator)
+
+	for expect_label, i in expect_labels {
+		for signature, j in help.signatures {
+			if expect_label == signature.label {
+				flags[i] += 1
+			}
+		}
+	}
+
+	for flag, i in flags {
+		if flag != 1 {
+			log.errorf("Expected signature label %v, but received %v", expect_labels[i], help.signatures)
+		}
+	}
+
+	if expected_active_parameter != -1 {
+		if expected_active_parameter != help.activeParameter {
+			log.errorf(
+				"Expected active parameter %v, but reveived %v",
+				expected_active_parameter,
+				help.activeParameter,
+			)
+		}
+	}
+}
+
+expect_signature_parameter_position :: proc(t: ^testing.T, src: ^Source, position: int) {
+	cursor := source_remove_cursor(src)
+
+	setup(src)
+	defer teardown(src)
+
+	help, ok := server.get_signature_information(src.document, cursor, &test_config)
+	_ = ok
+
+	if help.activeParameter != position {
+		log.errorf("expected parameter position %v, but received %v", position, help.activeParameter)
+	}
+}
+
+expect_completion_labels :: proc(
+	t: ^testing.T,
+	src: ^Source,
+	trigger_character: string,
+	expect_labels: []string,
+	expect_excluded: []string = nil,
+) {
+	spall.trace(#procedure)
+
+	cursor := source_remove_cursor(src)
+
+	setup(src)
+	defer teardown(src)
+
+	completion_context := server.CompletionContext {
+		triggerCharacter = trigger_character,
+	}
+
+	completion_list, ok := server.get_completion_list(src.document, cursor, completion_context, &test_config)
+
+	if !ok {
+		log.error("Failed get_completion_list")
+	}
+
+	missing_expected := make([dynamic]string, context.temp_allocator)
+	loop_expected: for label, i in expect_labels {
+		for completion, j in completion_list.items {
+			if label == completion.label {
+				continue loop_expected
+			}
+		}
+		append(&missing_expected, label)
+	}
+
+	present_excluded := make([dynamic]string, context.temp_allocator)
+	loop_excluded: for label, i in expect_excluded {
+		for completion, j in completion_list.items {
+			if label == completion.label {
+				append(&present_excluded, label)
+				continue loop_excluded
+			}
+		}
+	}
+
+	if len(missing_expected) > 0 ||
+	   len(present_excluded) > 0 ||
+	   (len(expect_labels) == 0 && len(completion_list.items) > 0) {
+		sb := strings.builder_make(context.temp_allocator)
+		defer log.error(strings.to_string(sb))
+
+		fmt.sbprintln(&sb, "Completion label mismatch.")
+
+		strings.write_string(&sb, "Actual:   [")
+		for completion, i in completion_list.items {
+			if i > 0 {
+				strings.write_string(&sb, ", ")
+			}
+			fmt.sbprintf(&sb, "\"%s\"", completion.label)
+		}
+		strings.write_string(&sb, "]\n")
+
+		if len(missing_expected) > 0 {
+			fmt.sbprintfln(&sb, "Expected: %v", expect_labels)
+			fmt.sbprintfln(&sb, "Missing:  %v", missing_expected[:])
+		}
+
+		if len(present_excluded) > 0 {
+			fmt.sbprintfln(&sb, "Excluded: %v", expect_excluded)
+			fmt.sbprintfln(&sb, "Present:  %v", present_excluded[:])
+		}
+	}
+}
+
+// Checks that every expected label appears exactly once and in the given order.
+// Ivar tests use this to verify that fields appear before fake methods.
+expect_completion_label_order :: proc(
+	t: ^testing.T,
+	src: ^Source,
+	trigger_character: string,
+	expect_labels: []string,
+) {
+	spall.trace(#procedure)
+
+	cursor := source_remove_cursor(src)
+
+	setup(src)
+	defer teardown(src)
+
+	completion_context := server.CompletionContext {
+		triggerCharacter = trigger_character,
+	}
+	completion_list, ok := server.get_completion_list(src.document, cursor, completion_context, &test_config)
+	if !ok {
+		log.error("Failed get_completion_list")
+	}
+
+	previous_index := -1
+	for label in expect_labels {
+		index := -1
+		count := 0
+		for completion, i in completion_list.items {
+			if completion.label == label {
+				index = i
+				count += 1
+			}
+		}
+		if count != 1 {
+			log.errorf("Expected one completion labeled %q, received %v", label, count)
+		} else if index <= previous_index {
+			log.errorf("Expected completion labels in order %v, received %v", expect_labels, completion_list.items)
+		}
+		previous_index = index
+	}
+}
+
+expect_completion_docs :: proc(
+	t: ^testing.T,
+	src: ^Source,
+	trigger_character: string,
+	expect_details: []string,
+	expect_excluded: []string = nil,
+) {
+	spall.trace(#procedure)
+
+	cursor := source_remove_cursor(src)
+
+	setup(src)
+	defer teardown(src)
+
+	get_doc :: proc(doc: server.CompletionDocumention) -> string {
+		switch v in doc {
+		case string:
+			return v
+		case server.MarkupContent:
+			first_strip, _ := strings.remove(v.value, "```odin\n", 2, context.temp_allocator)
+			content_without_markdown, _ := strings.remove(first_strip, "\n```", 2, context.temp_allocator)
+			return content_without_markdown
+		}
+		return ""
+	}
+
+	completion_context := server.CompletionContext {
+		triggerCharacter = trigger_character,
+	}
+
+	completion_list, ok := server.get_completion_list(src.document, cursor, completion_context, &test_config)
+
+	if !ok {
+		log.error("Failed get_completion_list")
+	}
+
+	if len(expect_details) == 0 && len(completion_list.items) > 0 {
+		log.errorf("Expected empty completion docs, but received %v", completion_list.items)
+	}
+
+	flags := make([]int, len(expect_details), context.temp_allocator)
+
+	for expect_detail, i in expect_details {
+		for completion, j in completion_list.items {
+			if expect_detail == get_doc(completion.documentation) {
+				flags[i] += 1
+			}
+		}
+	}
+
+	for flag, i in flags {
+		if flag != 1 {
+			log.errorf("Expected completion docs %v, but received %v", expect_details[i], completion_list.items)
+		}
+	}
+
+	for expect_exclude in expect_excluded {
+		for completion in completion_list.items {
+			if expect_exclude == get_doc(completion.documentation) {
+				log.errorf("Expected completion label %v to not be included", expect_exclude)
+			}
+		}
+	}
+}
+
+expect_completion_insert_text :: proc(
+	t: ^testing.T,
+	src: ^Source,
+	trigger_character: string,
+	expect_inserts: []string,
+) {
+	spall.trace(#procedure)
+
+	cursor := source_remove_cursor(src)
+
+	setup(src)
+	defer teardown(src)
+
+	completion_context := server.CompletionContext {
+		triggerCharacter = trigger_character,
+	}
+
+	completion_list, ok := server.get_completion_list(src.document, cursor, completion_context, &test_config)
+
+	if !ok {
+		log.error("Failed get_completion_list")
+	}
+
+	if len(expect_inserts) == 0 && len(completion_list.items) > 0 {
+		log.errorf("Expected empty completion inserts, but received %v", completion_list.items)
+	}
+
+	flags := make([]int, len(expect_inserts), context.temp_allocator)
+
+	for expect_insert, i in expect_inserts {
+		for completion, j in completion_list.items {
+			if insert_text, ok := completion.insertText.(string); ok {
+				if expect_insert == insert_text {
+					flags[i] += 1
+					continue
+				}
+			}
+		}
+	}
+
+	for flag, i in flags {
+		if flag != 1 {
+			log.errorf("Expected completion insert %v, but received %v", expect_inserts[i], completion_list.items)
+		}
+	}
+}
+
+expect_completion_edit_text :: proc(
+	t: ^testing.T,
+	src: ^Source,
+	trigger_character: string,
+	label: string,
+	expected_text: string,
+) {
+	cursor := source_remove_cursor(src)
+
+	setup(src)
+	defer teardown(src)
+
+	completion_context := server.CompletionContext {
+		triggerCharacter = trigger_character,
+	}
+
+	completion_list, ok := server.get_completion_list(src.document, cursor, completion_context, &test_config)
+
+	if !ok {
+		log.error("Failed get_completion_list")
+	}
+
+	found := false
+	for completion in completion_list.items {
+		if completion.label == label {
+			found = true
+			if text_edit, has_edit := completion.textEdit.(server.TextEdit); has_edit {
+				if text_edit.newText != expected_text {
+					log.errorf(
+						"Completion '%v' expected textEdit.newText %q, but received %q",
+						label,
+						expected_text,
+						text_edit.newText,
+					)
+				}
+			} else {
+				log.errorf("Completion '%v' has no textEdit", label)
+			}
+			break
+		}
+	}
+	if !found {
+		log.errorf("Expected completion label '%v' not found in %v", label, completion_list.items)
+	}
+}
+
+expect_completion_edits :: proc(
+	t: ^testing.T,
+	src: ^Source,
+	trigger_character: string,
+	label: string,
+	expected_edit: server.CompletionTextEdit,
+	expected_additional_edits: []server.TextEdit = nil,
+) {
+	cursor := source_remove_cursor(src)
+
+	setup(src)
+	defer teardown(src)
+
+	completion_context := server.CompletionContext {
+		triggerCharacter = trigger_character,
+	}
+
+	completion_list, ok := server.get_completion_list(src.document, cursor, completion_context, &test_config)
+	if !ok {
+		log.error("Failed get_completion_list")
+		return
+	}
+
+	for completion in completion_list.items {
+		if completion.label != label do continue
+
+		testing.expect_value(t, completion.textEdit, expected_edit)
+		additional_edits := completion.additionalTextEdits.([]server.TextEdit) or_else nil
+		testing.expect(t, slice.equal(additional_edits, expected_additional_edits))
+		return
+	}
+
+	testing.expectf(t, false, "Expected completion label '%v' not found in %v", label, completion_list.items)
+}
+
+expect_hover :: proc(t: ^testing.T, src: ^Source, expect_hover_string: string) {
+	spall.trace(#procedure)
+
+	cursor := source_remove_cursor(src)
+
+	setup(src)
+	defer teardown(src)
+
+	hover, valid, ok := server.get_hover_information(src.document, cursor, &test_config)
+
+	if !ok {
+		log.error(t, "Failed get_hover_information")
+		return
+	}
+
+	if !valid {
+		log.error(t, "Failed get_hover_information")
+		return
+	}
+
+	first_strip, _ := strings.remove(hover.contents.value, "```odin\n", 2, context.temp_allocator)
+	content_without_markdown, _ := strings.remove(first_strip, "\n```", 2, context.temp_allocator)
+
+	if content_without_markdown != expect_hover_string {
+		log.errorf("Expected hover string:\n%q, but received:\n%q", expect_hover_string, content_without_markdown)
+	}
+}
+
+expect_hover_contains :: proc(t: ^testing.T, src: ^Source, expect_substring: string) {
+	spall.trace(#procedure)
+
+	cursor := source_remove_cursor(src)
+
+	setup(src)
+	defer teardown(src)
+
+	hover, valid, ok := server.get_hover_information(src.document, cursor, &test_config)
+
+	if !ok || !valid {
+		log.error(t, "Failed get_hover_information")
+		return
+	}
+
+	if !strings.contains(hover.contents.value, expect_substring) {
+		log.errorf("Expected hover to contain:\n%q, but received:\n%q", expect_substring, hover.contents.value)
+	}
+}
+
+expect_definition_locations :: proc(t: ^testing.T, src: ^Source, expect_locations: []common.Location) {
+	spall.trace(#procedure)
+
+	cursor := source_remove_cursor(src)
+
+	setup(src)
+	defer teardown(src)
+
+	locations, ok := server.get_definition_location(src.document, cursor, &test_config)
+	if !ok && len(expect_locations) > 0 {
+		log.error("No definitions found.")
+		return
+	}
+
+	extra_expected, extra_locations, all_good := compare_expected_slice_set(
+		locations, expect_locations, equals = proc (a, e: common.Location) -> bool {
+			if e.uri != "" {
+				if a.range == e.range && a.uri == e.uri {
+					return true
+				}
+			} else if a.range == e.range {
+				return true
+			}
+			return false
+	})
+	if all_good do return
+
+	sb := strings.builder_make()
+
+	if len(extra_expected) > 0 {
+		strings.write_rune(&sb, '\n')
+		strings.write_int(&sb, len(extra_expected))
+		strings.write_string(&sb,  " Definition(s) expected but not reported:\n")
+		for i in extra_expected {
+			loc := expect_locations[i]
+			if loc.uri == "" {
+				loc.uri = "test/main.odin"
+			}
+			strings.write_string(&sb,
+				source_location_display(src^, loc, before=ANSI_RED_BG))
+		}
+	}
+
+	if len(extra_locations) > 0 {
+		strings.write_rune(&sb, '\n')
+		strings.write_int(&sb, len(extra_locations))
+		strings.write_string(&sb,  " Definition(s) reported but not expected:\n")
+		for i in extra_locations {
+			strings.write_string(&sb,
+				source_location_display(src^, locations[i], before=ANSI_GREEN_BG))
+		}
+	}
+
+	log.error(strings.to_string(sb))
+}
+
+expect_type_definition_locations :: proc(t: ^testing.T, src: ^Source, expect_locations: []common.Location) {
+	spall.trace(#procedure)
+
+	cursor := source_remove_cursor(src)
+
+	setup(src)
+	defer teardown(src)
+
+	locations, ok := server.get_type_definition_locations(src.document, cursor)
+	if !ok && len(expect_locations) > 0 {
+		log.error("No type definitions found.")
+		return
+	}
+
+	extra_expected, extra_locations, all_good := compare_expected_slice_set(
+		locations, expect_locations, equals = proc (a, e: common.Location) -> bool {
+			if e.uri != "" {
+				if a.range == e.range && a.uri == e.uri {
+					return true
+				}
+			} else if a.range == e.range {
+				return true
+			}
+			return false
+	})
+	if all_good do return
+
+	sb := strings.builder_make()
+
+	if len(extra_expected) > 0 {
+		strings.write_rune(&sb, '\n')
+		strings.write_int(&sb, len(extra_expected))
+		strings.write_string(&sb,  " Type definition(s) expected but not reported:\n")
+		for i in extra_expected {
+			loc := expect_locations[i]
+			if loc.uri == "" {
+				loc.uri = "test/main.odin"
+			}
+			strings.write_string(&sb,
+				source_location_display(src^, loc, before=ANSI_RED_BG))
+		}
+	}
+
+	if len(extra_locations) > 0 {
+		strings.write_rune(&sb, '\n')
+		strings.write_int(&sb, len(extra_locations))
+		strings.write_string(&sb,  " Type definition(s) reported but not expected:\n")
+		for i in extra_locations {
+			strings.write_string(&sb,
+				source_location_display(src^, locations[i], before=ANSI_GREEN_BG))
+		}
+	}
+
+	log.error(strings.to_string(sb))
+}
+
+expect_reference_locations :: proc(
+	t: ^testing.T,
+	src: ^Source,
+	expect_locations: []common.Location,
+	include_declaration := true,
+) {
+	spall.trace(#procedure)
+
+	cursor := source_remove_cursor(src)
+
+	setup(src)
+	defer teardown(src)
+
+	locations, got_references := server.get_references(src.document, cursor, include_declaration = include_declaration)
+	if !got_references && len(expect_locations) > 0 {
+		log.error("No references found.")
+		return
+	}
+
+	extra_expected, extra_locations, all_good := compare_expected_slice_set(locations, expect_locations,
+	                                                                        equals = proc (a, b: common.Location) -> bool {return a.range == b.range})
+	if all_good do return
+
+	sb := strings.builder_make()
+
+	if len(extra_expected) > 0 {
+		strings.write_rune(&sb, '\n')
+		strings.write_int(&sb, len(extra_expected))
+		strings.write_string(&sb,  " Reference(s) expected but not reported:\n")
+		for i in extra_expected {
+			loc := expect_locations[i]
+			if loc.uri == "" {
+				loc.uri = "test/main.odin"
+			}
+			strings.write_string(&sb,
+				source_location_display(src^, loc, before=ANSI_RED_BG))
+		}
+	}
+
+	if len(extra_locations) > 0 {
+		strings.write_rune(&sb, '\n')
+		strings.write_int(&sb, len(extra_locations))
+		strings.write_string(&sb,  " Reference(s) reported but not expected:\n")
+		for i in extra_locations {
+			strings.write_string(&sb,
+				source_location_display(src^, locations[i], before=ANSI_GREEN_BG))
+		}
+	}
+
+	log.error(strings.to_string(sb))
+}
+
+expect_prepare_rename_range :: proc(t: ^testing.T, src: ^Source, expect_range: common.Range) {
+	spall.trace(#procedure)
+
+	cursor := source_remove_cursor(src)
+
+	setup(src)
+	defer teardown(src)
+
+	range, ok := server.get_prepare_rename(src.document, cursor)
+	if !ok {
+		log.error("Failed to find range")
+	}
+
+	if range != expect_range {
+		ok = false
+		log.errorf("Failed to match with range: %v", expect_range)
+	}
+
+	if !ok {
+		log.error("Received: %v\n", range)
+	}
+}
+
+
+expect_action :: proc(t: ^testing.T, src: ^Source, expect_action_names: []string, ctx: server.CodeActionContext = {}) {
+	spall.trace(#procedure)
+
+	cursor := source_remove_cursor(src)
+
+	setup(src)
+	defer teardown(src)
+
+	input_range := common.Range{cursor, cursor}
+	actions, ok := server.get_code_actions(src.document, ctx, input_range, &test_config)
+	defer delete(actions)
+	if !ok {
+		log.error("Failed to find actions")
+	}
+
+	if len(expect_action_names) == 0 && len(actions) > 0 {
+		log.errorf("Expected empty actions, but received %v", actions)
+	}
+
+	flags := make([]int, len(expect_action_names), context.temp_allocator)
+
+	for name, i in expect_action_names {
+		for action, j in actions {
+			if action.title == name {
+				flags[i] += 1
+			}
+		}
+	}
+
+	for flag, i in flags {
+		if flag != 1 {
+			log.errorf("Expected action %v, but received %v", expect_action_names[i], actions)
+		}
+	}
+}
+
+expect_action_with_edit :: proc(t: ^testing.T, src: ^Source, action_name: string, expected_new_text: string) {
+	spall.trace(#procedure)
+
+	cursor := source_remove_cursor(src)
+
+	setup(src)
+	defer teardown(src)
+
+	input_range := common.Range{cursor, cursor}
+	actions, ok := server.get_code_actions(src.document, {}, input_range, &test_config)
+	defer delete(actions)
+	if !ok {
+		log.error("Failed to find actions")
+		return
+	}
+
+	for action in actions {
+		if action.title == action_name {
+			// Get the text edit for the document
+			if edits, found := action.edit.changes[src.document.uri.uri]; found {
+				if len(edits) > 0 {
+					actual_text := edits[0].newText
+					testing.expectf(
+						t,
+						actual_text == expected_new_text,
+						"\nExpected edit text:\n%s\n\nGot:\n%s",
+						expected_new_text,
+						actual_text,
+					)
+					return
+				}
+			}
+			log.errorf("Action '%s' found but has no edits", action_name)
+			return
+		}
+	}
+
+	log.errorf("Action '%s' not found in actions: %v", action_name, actions)
+}
+
+/*
+	Applies all the edits of a code action to the document and compares the result with `expected`.
+
+	The edits are applied back to front, which is one of the orders a client is allowed to use, and
+	the one that will produce a different result than a client applying them front to back if any of
+	the edits overlap. Overlapping edits are reported as an error for the same reason.
+*/
+expect_action_applied :: proc(
+	t: ^testing.T,
+	src: ^Source,
+	action_name: string,
+	expected: string,
+	ctx: server.CodeActionContext = {},
+) {
+	spall.trace(#procedure)
+
+	cursor := source_remove_cursor(src)
+
+	setup(src)
+	defer teardown(src)
+
+	input_range := common.Range{cursor, cursor}
+	actions, ok := server.get_code_actions(src.document, ctx, input_range, &test_config)
+	defer delete(actions)
+	if !ok {
+		log.error("Failed to find actions")
+		return
+	}
+
+	for action in actions {
+		if action.title != action_name {
+			continue
+		}
+
+		edits, found := action.edit.changes[src.document.uri.uri]
+
+		if !found {
+			log.errorf("Action '%s' found but has no edits", action_name)
+			return
+		}
+
+		text := apply_text_edits(edits, string(src.document.text))
+
+		testing.expectf(t, text == expected, "\nExpected:\n%s\n\nGot:\n%s", expected, text)
+		return
+	}
+
+	log.errorf("Action '%s' not found in actions: %v", action_name, actions)
+}
+
+@(private)
+AppliedTextEdit :: struct {
+	absolute: common.AbsoluteRange,
+	index:    int,
+	newText:  string,
+}
+
+@(private)
+apply_text_edits :: proc(edits: []server.TextEdit, text: string) -> string {
+	applied := make([dynamic]AppliedTextEdit, 0, len(edits), context.temp_allocator)
+
+	for edit, i in edits {
+		absolute, ok := common.get_absolute_range(edit.range, transmute([]u8)text)
+
+		if !ok {
+			log.errorf("Failed to get the absolute range of edit %v", edit)
+			return text
+		}
+
+		append(&applied, AppliedTextEdit{absolute = absolute, index = i, newText = edit.newText})
+	}
+
+	//Back to front, with the ties broken so that the array order decides the order of insertions
+	//that share a position.
+	slice.sort_by(applied[:], proc(a, b: AppliedTextEdit) -> bool {
+		if a.absolute.start != b.absolute.start {
+			return a.absolute.start > b.absolute.start
+		}
+
+		return a.index > b.index
+	})
+
+	for a, i in applied {
+		for b in applied[i + 1:] {
+			if edits_conflict(a.absolute, b.absolute) {
+				log.errorf(
+					"Overlapping edits, the result depends on the order the client applies them in: %v and %v",
+					edits[a.index],
+					edits[b.index],
+				)
+			}
+		}
+	}
+
+	result := text
+
+	for a in applied {
+		result = fmt.tprintf("%s%s%s", result[:a.absolute.start], a.newText, result[a.absolute.end:])
+	}
+
+	return result
+}
+
+@(private)
+edits_conflict :: proc(a, b: common.AbsoluteRange) -> bool {
+	a_is_insert := a.start == a.end
+	b_is_insert := b.start == b.end
+
+	//Insertions that share a position are well defined by the order of the edits.
+	if a_is_insert && b_is_insert {
+		return false
+	}
+
+	if a_is_insert {
+		return b.start <= a.start && a.start < b.end
+	}
+
+	if b_is_insert {
+		return a.start <= b.start && b.start < a.end
+	}
+
+	return a.start < b.end && b.start < a.end
+}
+
+expect_semantic_tokens :: proc(t: ^testing.T, src: ^Source, expected: []server.SemanticToken) {
+	spall.trace(#procedure)
+
+	setup(src)
+	defer teardown(src)
+
+
+	resolve_flag: server.ResolveReferenceFlag
+	symbols_and_nodes := server.resolve_entire_file(src.document)
+
+	range := common.Range {
+		end = {line = 9000000},
+	} //should be enough
+	tokens := server.get_semantic_tokens(src.document, range, symbols_and_nodes)
+
+	testing.expectf(
+		t,
+		len(expected) == len(tokens),
+		"\nExpected %d tokens, but received %d",
+		len(expected),
+		len(tokens),
+	)
+
+	for i in 0 ..< min(len(expected), len(tokens)) {
+		e, a := expected[i], tokens[i]
+		testing.expectf(
+			t,
+			e == a,
+			"\n[%d]: Expected \n(%d, %d, %d, %v, %w)\nbut received\n(%d, %d, %d, %v, %w)",
+			i,
+			e.delta_line,
+			e.delta_char,
+			e.len,
+			e.type,
+			e.modifiers,
+			a.delta_line,
+			a.delta_char,
+			a.len,
+			a.type,
+			a.modifiers,
+		)
+	}
+}
+
+resolution_cancel_checks: int
+
+@(private)
+cancel_resolution_after_start :: proc() -> bool {
+	resolution_cancel_checks += 1
+	return resolution_cancel_checks > 1
+}
+
+expect_file_resolution_cancelled :: proc(t: ^testing.T, src: ^Source) {
+	setup(src)
+	defer teardown(src)
+
+	resolution_cancel_checks = 0
+	_, completed := server.resolve_entire_file_cancellable(
+		src.document,
+		cancel_resolution_after_start,
+	)
+	_, cached := src.document.symbols.?
+
+	testing.expectf(t, !completed, "Expected file resolution to be cancelled")
+	testing.expectf(t, !cached, "Cancelled file resolution must not cache partial symbols")
+}
+
+expect_inlay_hints :: proc(t: ^testing.T, src: ^Source) {
+	spall.trace(#procedure)
+
+	src_builder := strings.builder_make(context.temp_allocator)
+	expected_hints := make([dynamic]server.InlayHint, context.temp_allocator)
+
+	HINT_OPEN :: "[["
+	HINT_CLOSE :: "]]"
+
+	{
+		last, line, col: int
+		saw_brackets: bool
+		for i := 0; i < len(src.main); i += 1 {
+			if saw_brackets {
+				if i + 1 < len(src.main) && src.main[i:][:len(HINT_CLOSE)] == HINT_CLOSE {
+					saw_brackets = false
+					hint_str := src.main[last:i]
+					last = i + len(HINT_CLOSE)
+					i = last - 1
+					append(
+						&expected_hints,
+						server.InlayHint{position = {line, col}, label = hint_str, kind = .Parameter},
+					)
+				}
+			} else {
+				if i + 1 < len(src.main) && src.main[i:][:len(HINT_OPEN)] == HINT_OPEN {
+					strings.write_string(&src_builder, src.main[last:i])
+					saw_brackets = true
+					last = i + len(HINT_OPEN)
+					i = last - 1
+				} else if src.main[i] == '\n' {
+					line += 1
+					col = 0
+				} else {
+					col += 1
+				}
+			}
+		}
+
+		if saw_brackets {
+			log.error("Unclosed inlay hint marker")
+			return
+		}
+
+		strings.write_string(&src_builder, src.main[last:len(src.main)])
+	}
+
+	src.main = strings.to_string(src_builder)
+
+	setup(src)
+	defer teardown(src)
+
+	symbols_and_nodes := server.resolve_entire_file(src.document)
+
+	range := common.Range {
+		end = {line = 9000000},
+	} //should be enough
+	hints, hints_ok := server.get_inlay_hints(src.document, range, symbols_and_nodes, &test_config)
+	if !hints_ok {
+		log.error("Failed get_inlay_hints")
+		return
+	}
+
+	testing.expectf(
+		t,
+		len(expected_hints) == len(hints),
+		"Expected %d inlay hints, but received %d",
+		len(expected_hints),
+		len(hints),
+	)
+
+	lines := strings.split_lines(src.main, context.temp_allocator)
+
+	get_source_line_with_hint :: proc(lines: []string, hint: server.InlayHint) -> string {
+		line := lines[hint.position.line] if hint.position.line >= 0 && hint.position.line < len(lines) else ""
+		if hint.position.character >= 0 && hint.position.character <= len(line) {
+			builder := strings.builder_make(context.temp_allocator)
+			strings.write_string(&builder, line[:hint.position.character])
+			strings.write_string(&builder, HINT_OPEN)
+			strings.write_string(&builder, hint.label)
+			strings.write_string(&builder, HINT_CLOSE)
+			strings.write_string(&builder, line[hint.position.character:])
+			return strings.to_string(builder)
+		}
+		return ""
+	}
+
+	for i in 0 ..< max(len(expected_hints), len(hints)) {
+		expected_text := "---"
+		actual_text := "---"
+
+		if i < len(expected_hints) {
+			expected := expected_hints[i]
+			expected_line := get_source_line_with_hint(lines, expected)
+			expected_text = fmt.tprintf(
+				"\"%s\" at (%d, %d): \"%s\"",
+				expected.label,
+				expected.position.line,
+				expected.position.character,
+				expected_line,
+			)
+		}
+
+		if i < len(hints) {
+			actual := hints[i]
+			actual_line := get_source_line_with_hint(lines, actual)
+			actual_text = fmt.tprintf(
+				"\"%s\" at (%d, %d): \"%s\"",
+				actual.label,
+				actual.position.line,
+				actual.position.character,
+				actual_line,
+			)
+		}
+
+		if i >= len(expected_hints) {
+			log.errorf("[%d]: Unexpected inlay hint\nExpected: %s\nActual:   %s", i, expected_text, actual_text)
+		} else if i >= len(hints) {
+			log.errorf("[%d]: Missing inlay hint\nExpected: %s\nActual:   %s", i, expected_text, actual_text)
+		} else if expected_hints[i] != hints[i] {
+			log.errorf("[%d]: Inlay hint mismatch\nExpected: %s\nActual:   %s", i, expected_text, actual_text)
+		}
+	}
+}

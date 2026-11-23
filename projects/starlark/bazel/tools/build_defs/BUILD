@@ -1,0 +1,38 @@
+filegroup(
+    name = "srcs",
+    srcs = glob(["**"]) + [
+        "//tools/build_defs/build_info:embedded_tools",
+        "//tools/build_defs/build_info/templates:embedded_tools",
+        "//tools/build_defs/cc:srcs",
+        "//tools/build_defs/cc/whitelists/parse_headers_and_layering_check:srcs",
+        "//tools/build_defs/hash:srcs",
+        "//tools/build_defs/inspect:srcs",
+        "//tools/build_defs/proguard:srcs",
+        "//tools/build_defs/repo:srcs",
+    ],
+    visibility = ["//tools:__pkg__"],
+)
+
+filegroup(
+    name = "embedded_tools",
+    srcs = glob(["**"]) + [
+        "//tools/build_defs/build_info:embedded_tools",
+        "//tools/build_defs/build_info/templates:embedded_tools",
+        "//tools/build_defs/cc:srcs",
+        "//tools/build_defs/cc/whitelists/parse_headers_and_layering_check:srcs",
+        "//tools/build_defs/hash:embedded_tools",
+        "//tools/build_defs/repo:embedded_tools",
+    ],
+    visibility = ["//tools:__pkg__"],
+)
+
+filegroup(
+    name = "bzl_srcs",
+    srcs = [
+        "//tools/build_defs/build_info:bzl_srcs",
+        "//tools/build_defs/cc:action_names.bzl",
+        "//tools/build_defs/hash:hash.bzl",
+        "//tools/build_defs/repo:bzl_srcs",
+    ],
+    visibility = ["//tools:__pkg__"],
+)

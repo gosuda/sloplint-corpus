@@ -4,6 +4,305 @@ schema_version = 1
 mode = "public"
 
 [[project]]
+name = "mathlib-algebra"
+language = "lean"
+url = "https://github.com/leanprover-community/mathlib4"
+rev = "90e6eec9fe53b02d431c90718e4a1d22d67a204e"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["Mathlib/Algebra/**", "Mathlib/Algebra/*/**", "Mathlib/Algebra/*/*/**", "Mathlib/Algebra/*/*/*/**", "Mathlib/Algebra/*/*/*/*/**"]
+tree_hash = "sha256:4034ce5419fea13443f71928ec6508ddd556656021e4dd21c5f1c80ab84dc287"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "Mathlib-style proof corpus, algebra hierarchy (selection slot: research proofs)"
+notice_present_upstream = false
+
+[[project]]
+name = "mathlib-data"
+language = "lean"
+url = "https://github.com/leanprover-community/mathlib4"
+rev = "90e6eec9fe53b02d431c90718e4a1d22d67a204e"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["Mathlib/Data/**", "Mathlib/Data/*/**", "Mathlib/Data/*/*/**", "Mathlib/Data/*/*/*/**"]
+tree_hash = "sha256:930ccf8d7ef6c9082379478a67cbf8782d1fec33ad1298683cd740c27e393754"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "Mathlib-style proof corpus, data structures (selection slot: libraries)"
+notice_present_upstream = false
+
+[[project]]
+name = "mathlib-tactic"
+language = "lean"
+url = "https://github.com/leanprover-community/mathlib4"
+rev = "90e6eec9fe53b02d431c90718e4a1d22d67a204e"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["Mathlib/Tactic/**", "Mathlib/Tactic/*/**", "Mathlib/Tactic/*/*/**", "Mathlib/Tactic/*/*/*/**", "MathlibTest/**", "MathlibTest/*/**", "MathlibTest/*/*/**", "MathlibTest/*/*/*/**", "MathlibTest/*/*/*/*/**"]
+tree_hash = "sha256:2fade1ccfccf2bd231120251b61cd7a274f3c0f5d29f8fb6fa59e2de286eee32"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "tactic framework plus official test suite (selection slot: tactics and tests)"
+notice_present_upstream = false
+
+[[project]]
+name = "batteries"
+language = "lean"
+url = "https://github.com/leanprover-community/batteries"
+rev = "673146e76a6f3a169512321a4a0e2dca578b7616"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:d467a3813e1ac12b242ea83057d8acaecf22897e3820d9842422a7ad408c5890"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "Lean core-library extension, Batteries Included (selection slot: standard library)"
+notice_present_upstream = false
+
+[[project]]
+name = "aesop"
+language = "lean"
+url = "https://github.com/leanprover-community/aesop"
+rev = "637fdbb8689a3387a82568b07355231f892144d7"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:c98f04184200d51e5553cc1fef7d18c1006b18d3ffc8deeb015e63496626bbb5"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "white-box proof automation, tactic-block heavy (selection slot: tactics)"
+notice_present_upstream = false
+
+[[project]]
+name = "cslib"
+language = "lean"
+url = "https://github.com/leanprover/cslib"
+rev = "5d861be63267a0680e6123f6a0e90a56b4c9fc22"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:02e2963d6db1c29bf959ae8412ff9dc8f855bc05a1f253d3d8a04826ecde4c2b"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "computer-science library, algorithm and proof mix (selection slot: libraries)"
+notice_present_upstream = false
+
+[[project]]
+name = "glimpse-of-lean"
+language = "lean"
+url = "https://github.com/PatrickMassot/GlimpseOfLean"
+rev = "7dc816910638406f4232d23977bbcc59a335393c"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:ac2243c6e340502b33251e20be322176dbcc3eef0856b3cdafa46511fe093f43"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "tutorial style, beginner idioms (selection slot: small programs)"
+notice_present_upstream = false
+
+[[project]]
+name = "dune"
+language = "ocaml"
+url = "https://github.com/ocaml/dune"
+rev = "b9a1254cf0cefebd68fe0f3bb04cae5184278d60"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+exclude = ["src/lev/**", "src/lev/*/**", "vendor/**", "vendor/*/**", "vendor/*/*/**", "vendor/*/*/*/**", "src/dune_pkg/**", "src/dune_pkg/*/**", "src/dune_pkg/*/*/**", "src/dune_pkg/*/*/*/**", "src/sat/**", "src/sat/*/**", "src/sat/*/*/**", "src/sat/*/*/*/**"]
+tree_hash = "sha256:8fa15b4da0d288f7b0ac4cbb6e3c46f433b3dca906196f3ffc99e79819f61b7f"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "build system minus vendored and LGPL dirs (selection slot: build system)"
+notice_present_upstream = false
+
+[[project]]
+name = "base"
+language = "ocaml"
+url = "https://github.com/janestreet/base"
+rev = "49a861eb32041978d72e369f85f89a4547a50f1f"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:88a7921cfed8ab32307fae06563d0cfebd7ee98ace513036e428e71fe2fedff1"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "core library, idiomatic Jane Street style (selection slot: library)"
+notice_present_upstream = false
+
+[[project]]
+name = "async"
+language = "ocaml"
+url = "https://github.com/janestreet/async"
+rev = "0a9af942b56928a80a568d244edbd100e69b4bb8"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:e8574358e28afad6851bcf86cee734c9d81cf0ea4b32f62be969875941bb80e0"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "async programming idioms (selection slot: library)"
+notice_present_upstream = false
+
+
+[[project]]
+name = "merlin"
+language = "ocaml"
+url = "https://github.com/ocaml/merlin"
+rev = "2f2f53e12a6f195b73149122dc476db8d8211702"
+spdx = "MIT"
+storage = "copied"
+paths = ["src/**", "src/*/**", "src/*/*/**", "src/*/*/*/**", "tests/**", "tests/*/**", "tests/*/*/**", "tests/*/*/*/**", "tests/*/*/*/*/**", "tests/*/*/*/*/*/**"]
+exclude = ["src/ocaml/**", "src/ocaml/*/**", "src/ocaml/*/*/**", "src/ocaml/*/*/*/**", "src/analysis/ocamldoc.ml", "src/analysis/ocamldoc.mli", "src/index-format/granular_map.ml", "src/index-format/granular_map.mli", "src/index-format/granular_set.ml", "src/index-format/granular_set.mli", "tests/test-dirs/server-tests/bench.t/ctxt.ml"]
+tree_hash = "sha256:9cbf0157cd7ef35532388c2a41a2c92697f70b712df0e44378dfe8c2bf9ea826"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "editor tooling minus vendored snapshots, LGPL files and oversize bench fixture (selection slot: tooling)"
+notice_present_upstream = false
+
+[[project]]
+name = "ols"
+language = "odin"
+url = "https://github.com/DanielGavin/ols"
+rev = "459ffb7e83196d46db85beec6902c2453f277f3f"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:1ad09fad04418ebabf4ca035116d94fbd903e9f40c78b78668ee452e40db13c3"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "language server (selection slot: tooling)"
+notice_present_upstream = false
+
+[[project]]
+name = "sds"
+language = "odin"
+url = "https://github.com/jakubtomsu/sds"
+rev = "a0b0ad183e194bc4b4c433d21841ca3af334e24a"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:a82fd94abc48f8cd33987b3e65827b585a7816724b922154f5ebc3aa131c1de7"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "static data structures (selection slot: small programs)"
+notice_present_upstream = false
+
+[[project]]
+name = "jobs"
+language = "odin"
+url = "https://github.com/jakubtomsu/jobs"
+rev = "81acb14510be846cf28cd228d9c29a2b8981c886"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:72b2e25e57c5d9174cc1fd67701270f04f598fe5a6c50e261b512652bb42991b"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "job scheduler (selection slot: small programs)"
+notice_present_upstream = false
+
+[[project]]
+name = "odin-http"
+language = "odin"
+url = "https://github.com/laytan/odin-http"
+rev = "5e301bef8fbee138548661a92104cb1529eb5e39"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+exclude = ["openssl/**", "openssl/*/**", "openssl/*/*/**", "openssl/*/*/*/**", "openssl/*/*/*/*/**", "old_nbio/**", "old_nbio/*/**", "old_nbio/*/*/**", "old_nbio/*/*/*/**", "old_nbio/*/*/*/*/**", "comparisons/**", "comparisons/*/**", "comparisons/*/*/**", "comparisons/*/*/*/**", "comparisons/*/*/*/*/**"]
+tree_hash = "sha256:0677c262472b93b3ac36abf85c8389d1b198251b285ebf2466e1961c04bea21e"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "HTTP client and server minus binaries, old code and fixtures (selection slot: application)"
+notice_present_upstream = false
+
+[[project]]
+name = "odin-godot"
+language = "odin"
+url = "https://github.com/dresswithpockets/odin-godot"
+rev = "93395901a76f62a9f2adff76c2eb38a185d91513"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:6a68eb4102e61709a1b4951c18e0003fa3c312581d7ceb95ca036d6ca4a4e27c"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "Godot bindings, FFI-heavy (selection slot: bindings)"
+notice_present_upstream = false
+
+[[project]]
+name = "bazel"
+language = "starlark"
+url = "https://github.com/bazelbuild/bazel"
+rev = "8af51fe6c682f63ac0aaa84130454b5ed28a5aee"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+exclude = ["third_party/**", "third_party/*/**", "third_party/*/*/**", "third_party/*/*/*/**", "third_party/*/*/*/*/**", "third_party/*/*/*/*/*/**", "tools/build_defs/repo/java.bzl"]
+tree_hash = "sha256:630fc499f7dc596d61e344376dbba3c0b398af381527caf42856de04d7002d61"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "build system interpreter host minus vendored third party and tools/build_defs/repo/java.bzl, whose comment names BSD-3-Clause outside the public allowlist (selection slot: build system)"
+notice_present_upstream = false
+
+[[project]]
+name = "rules-go"
+language = "starlark"
+url = "https://github.com/bazelbuild/rules_go"
+rev = "2a638a86dbb3c602b2915b8fec53947a64f96e08"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+exclude = ["third_party/**", "third_party/*/**", "third_party/*/*/**", "tests/bcr/**", "tests/legacy/examples/vendor/**", "tests/legacy/examples/vendor/*/**", "tests/legacy/examples/vendor/*/*/**"]
+tree_hash = "sha256:b8bd900edccf901d7f724ce31793bb1cf19fcfa7d399120b36af079fdac38c8e"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "Go rules incl BCR fixtures minus vendored dirs (selection slot: libraries)"
+notice_present_upstream = false
+
+[[project]]
+name = "bazel-skylib"
+language = "starlark"
+url = "https://github.com/bazelbuild/bazel-skylib"
+rev = "a920cdfe02154b916b493b4ffdd08087f0498fc7"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:b4cebcd408de77e514adcad9c3b810489e58ad5d5057ac5a849a6d01effd4116"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "canonical function library (selection slot: small programs)"
+notice_present_upstream = false
+
+[[project]]
+name = "rules-python"
+language = "starlark"
+url = "https://github.com/bazel-contrib/rules_python"
+rev = "d9c0896d27ccbc2497e865fdd85d372534a03b11"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+exclude = ["examples/wheel/**", "examples/wheel/*/**"]
+tree_hash = "sha256:2163d74baa18dbaa8d1097ab00077ce4c07b56ecd57caefb4ac7e5ae4a8e9083"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "Python rules with gazelle resolver minus wheel fixture (selection slot: libraries)"
+notice_present_upstream = false
+
+[[project]]
+name = "rules-rust"
+language = "starlark"
+url = "https://github.com/bazelbuild/rules_rust"
+rev = "5d99ff2e58d1a0c9387fc4945029df11144bc8a3"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+exclude = ["crate_universe/**", "crate_universe/*/**", "crate_universe/*/*/**", "crate_universe/*/*/*/**", "crate_universe/*/*/*/*/**", "crate_universe/*/*/*/*/*/**"]
+tree_hash = "sha256:3a45e9af19de5902326b27b9359e3b0ffa8d4d1cd4d335948ca164a945a803f5"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "Rust rules minus vendored crate BUILD files (selection slot: libraries)"
 name = "alamofire"
 language = "swift"
 url = "https://github.com/Alamofire/Alamofire"

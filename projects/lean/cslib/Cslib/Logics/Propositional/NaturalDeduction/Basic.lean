@@ -1,0 +1,474 @@
+/-
+Copyright (c) 2025 Thomas Waring. All rights reserved.
+Released under Apache 2.0 license as described in the file LICENSE.
+Authors: Thomas Waring
+-/
+
+module
+
+public import Cslib.Logics.Propositional.Defs
+public import Cslib.Foundations.Logic.InferenceSystem.Defs
+
+/-! # Natural deduction for propositional logic
+
+We define, for intuitionistic logic, deduction trees (a `Type`) and derivability (a `Prop`)
+relative to a set of axioms.
+
+## Main definitions
+
+- `Sequent` : a pair of a context and conclusion.
+- `Derivation` : natural deduction derivation, done in "sequent style", ie with explicit
+hypotheses at each step. Contexts are `Finset`'s of propositions, which avoids explicit contraction
+and exchange, and the axiom rule derives `Γ ⊢ A` for any context `Γ` with `A ∈ Γ`, allowing
+weakening to be a derived rule. The derivation may appeal to hypotheses from the
+`T : Set (Proposition Atom)`.
+- `ND T`, `ND₁ T` : two inference systems, on `Sequent Atom` and `Proposition Atom` respectively,
+corresponding to `Derivation T` and `Derivation T ∅`.
+- `equiv` : `Type`-valued equivalence of propositions.
+- `Equiv` : `Prop`-valued equivalence of propositions.
+
+## Main results
+
+- `Derivation.weaken` : weakening as a derived rule.
+- `Derivation.cut`, `Derivation.subs` : replace a hypothesis in a derivation — the two versions
+differ in the construction of the relevant derivation.
+- `equiv_equivalence` : equivalence of propositions is an equivalence relation.
+
+## Notation
+
+The sequent `⟨Γ, A⟩` is notated `Γ ⊢ A`, so that a derivation using axioms from a set `T` is
+noted `(ND T)⇓(Γ ⊢ A)`. We define also an `InferenceSystem (ND₁ T) (Proposition Atom)`, so that
+`(ND₁ T)⇓A` abbreviates a derivation of `A` in the empty context: `(ND T)⇓(∅ ⊢ A)`.
+
+## Implementation notes
+
+We formalise here a single type of derivations, meaning there is a single collection of inference
+rules (those for intuitionistic logic). The extension to classical logic (indeed any extension of
+intuitionistic logic) is modelled by adding *axioms* --- in this case, classical derivations can
+appeal to axioms of the form `¬¬A → A`, for any proposition `A`. This differs from many on-paper
+presentations, which might, for instance, add instead an inference rule corresponding to proof by
+contraduction. Discussion on the proper way to capture such developments in cslib is ongoing, see
+the following
+[zulip discussion](https://leanprover.zulipchat.com/#narrow/channel/513188-CSLib/topic/Logic/with/585843520).
+
+## References
+
+- [J. Avigad, *Mathematical Logic and Computation*][Avigad2022]
+- [D. Prawitz, *Natural Deduction: A Proof-Theoretical Study*][Prawitz1965]
+- The sequent-style natural deduction presented here doesn't seem to be common, but it is tersely
+presented in §10.4 of
+[A. S. Troelstra, D. van Dalen, *Constructivism in Mathematics*][TroelstraVanDalen1988], and
+in §2.2 of
+[M. H. Sorensen, P. Urzyczyn's *Lectures on the Curry-Howard Isomorphism*][SorensenUrzyczyn2006].
+-/
+
+@[expose] public section
+
+universe u
+
+namespace Cslib.Logic.PL
+
+open Proposition InferenceSystem DerivableIn
+
+namespace NaturalDeduction
+
+variable {Atom : Type u} [DecidableEq Atom]
+
+/-- Contexts are finsets of propositions. -/
+abbrev Ctx (Atom) := Finset (Proposition Atom)
+
+/-- Map a context along a substitution. -/
+@[reducible] -- unfolded so `membership` can discharge side goals using `Finset` lemmas
+def Ctx.subst {Atom Atom' : Type*} [DecidableEq Atom'] (f : Atom → Proposition Atom') :
+    Ctx Atom → Ctx Atom' := Finset.image (·.subst f)
+
+/-- Sequents \{A₁, ..., Aₙ\} ⊢ B. -/
+abbrev Sequent {Atom} := Ctx Atom × Proposition Atom
+
+@[inherit_doc Sequent]
+scoped notation Γ:60 " ⊢ " A => (⟨Γ, A⟩ : Sequent)
+
+/-- A `T`-derivation of \{A₁, ..., Aₙ\} ⊢ B demonstrates B using (undischarged) assumptions
+among Aᵢ, possibly appealing to axioms from `T`. -/
+inductive Derivation (T : Set (Proposition Atom)) : Ctx Atom → Proposition Atom → Type u where
+  /-- Axiom -/
+  | ax {Γ : Ctx Atom} {A : Proposition Atom} (_ : A ∈ T := by membership) : Derivation T Γ A
+  /-- Assumption -/
+  | ass {Γ : Ctx Atom} {A : Proposition Atom} (_ : A ∈ Γ := by membership) : Derivation T Γ A
+  /-- Ex falso quodlibet. -/
+  | efq {Γ : Ctx Atom} (A : Proposition Atom) : Derivation T Γ ⊥ → Derivation T Γ A
+  /-- Conjunction introduction -/
+  | andI {Γ : Ctx Atom} {A B : Proposition Atom} :
+      Derivation T Γ A → Derivation T Γ B → Derivation T Γ (A ∧ B)
+  /-- Conjunction elimination left -/
+  | andE₁ {Γ : Ctx Atom} {A B : Proposition Atom} : Derivation T Γ (A ∧ B) → Derivation T Γ A
+  /-- Conjunction elimination right -/
+  | andE₂ {Γ : Ctx Atom} {A B : Proposition Atom} : Derivation T Γ (A ∧ B) → Derivation T Γ B
+  /-- Disjunction introduction left -/
+  | orI₁ {Γ : Ctx Atom} {A B : Proposition Atom} : Derivation T Γ A → Derivation T Γ (A ∨ B)
+  /-- Disjunction introduction right -/
+  | orI₂ {Γ : Ctx Atom} {A B : Proposition Atom} : Derivation T Γ B → Derivation T Γ (A ∨ B)
+  /-- Disjunction elimination -/
+  | orE {Γ : Ctx Atom} {A B C : Proposition Atom} : Derivation T Γ (A ∨ B) →
+      Derivation T (insert A Γ) C → Derivation T (insert B Γ) C → Derivation T Γ C
+  /-- Implication introduction -/
+  | impI {A B : Proposition Atom} (Γ : Ctx Atom) :
+      Derivation T (insert A Γ) B → Derivation T Γ (A → B)
+  /-- Implication elimination -/
+  | impE {Γ : Ctx Atom} {A B : Proposition Atom} :
+      Derivation T Γ (A → B) → Derivation T Γ A → Derivation T Γ B
+
+/-- Type tag for natural deduction derivations from axioms `T`. -/
+opaque ND (T : Set (Proposition Atom)) : Type := Empty
+
+/-- Inference system for derivations under the axiom set `T`. -/
+instance (T : Set (Proposition Atom)) : InferenceSystem (ND T) (Sequent (Atom := Atom)) where
+  derivation S := Derivation T S.1 S.2
+
+/-- Type tag for natural deduction derivations of single propositions from axioms `T`. -/
+opaque ND₁ (T : Set (Proposition Atom)) : Type := Empty
+
+/-- Inference system for propositions (using the empty context). -/
+instance (T : Set (Proposition Atom)) : InferenceSystem (ND₁ T) (Proposition Atom) where
+  derivation A := Derivation T ∅ A
+
+variable {T T' : Set (Proposition Atom)} {Γ Δ : Ctx Atom} {A B C : Proposition Atom}
+
+theorem Derivation.emptySequent_eq {A : Proposition Atom} : (ND₁ T)⇓A = (ND T)⇓(∅ ⊢ A) := rfl
+
+theorem derivableIn_nd₁_iff_derivableIn_nd_empty
+  {A : Proposition Atom} : DerivableIn (ND₁ T) A ↔ DerivableIn (ND T) (∅ ⊢ A) := by rfl
+
+/-- An equivalence between A and B is a derivation of B from A and vice-versa. -/
+structure equiv (T : Set (Proposition Atom)) (A B : Proposition Atom) where
+  /-- The forward direction of the equivalence. -/
+  mp : (ND T)⇓({A} ⊢ B)
+  /-- The reverse direction of the equivalence. -/
+  mpr : (ND T)⇓({B} ⊢ A)
+
+/-- `A` and `B` are T-equivalent if `T.equiv A B` is nonempty. -/
+def Equiv (T : Set (Proposition Atom)) (A B : Proposition Atom) := Nonempty (equiv T A B)
+
+@[inherit_doc]
+scoped notation A " ≡[" T' "] " B:29 => Equiv T' A B
+
+lemma Equiv.mp (h : A ≡[T] B) : DerivableIn (ND T) ({A} ⊢ B) :=
+  ⟨h.some.mp⟩
+
+lemma Equiv.mpr (h : A ≡[T] B) : DerivableIn (ND T) ({B} ⊢ A) :=
+  ⟨h.some.mpr⟩
+
+theorem equiv_iff : A ≡[T] B ↔ DerivableIn (ND T) ({A} ⊢ B) ∧ DerivableIn (ND T) ({B} ⊢ A) := by
+  constructor
+  · intro h
+    exact ⟨h.mp, h.mpr⟩
+  · intro ⟨⟨D⟩, ⟨E⟩⟩
+    exact ⟨D, E⟩
+
+open Derivation DerivableIn
+
+/-! ### Derived inference rules -/
+
+/-- A derivation of the canonical tautology. -/
+def derivationTop : (ND₁ T)⇓(⊤ : Proposition Atom) := impI ∅ ass
+
+theorem derivableIn_top : DerivableIn (ND₁ T) (⊤ : Proposition Atom) := ⟨derivationTop⟩
+
+lemma derivableIn_of_mem_ax (h : A ∈ T := by membership) : DerivableIn (ND T) (Γ ⊢ A) := ⟨.ax⟩
+
+lemma derivableIn_of_mem_ctx (h : A ∈ Γ := by membership) : DerivableIn (ND T) (Γ ⊢ A) := ⟨.ass⟩
+
+lemma derivableIn_of_bot (h : DerivableIn (ND T) (Γ ⊢ ⊥)) (A : Proposition Atom) :
+    DerivableIn (ND T) (Γ ⊢ A) := ⟨h.some.efq A⟩
+
+lemma derivableIn_and (hA : DerivableIn (ND T) (Γ ⊢ A)) (hB : DerivableIn (ND T) (Γ ⊢ B)) :
+    DerivableIn (ND T) (Γ ⊢ A ∧ B) := ⟨hA.some.andI hB.some⟩
+
+lemma derivableIn_left_of_and (h : DerivableIn (ND T) (Γ ⊢ A ∧ B)) : DerivableIn (ND T) (Γ ⊢ A) :=
+    ⟨h.some.andE₁⟩
+
+lemma derivableIn_right_of_and (h : DerivableIn (ND T) (Γ ⊢ A ∧ B)) : DerivableIn (ND T) (Γ ⊢ B) :=
+    ⟨h.some.andE₂⟩
+
+lemma derivableIn_or_of_left (h : DerivableIn (ND T) (Γ ⊢ A)) : DerivableIn (ND T) (Γ ⊢ A ∨ B) :=
+    ⟨h.some.orI₁⟩
+
+lemma derivableIn_or_of_right (h : DerivableIn (ND T) (Γ ⊢ B)) : DerivableIn (ND T) (Γ ⊢ A ∨ B) :=
+    ⟨h.some.orI₂⟩
+
+lemma derivableIn_of_or (h : DerivableIn (ND T) (Γ ⊢ A ∨ B))
+    (hA : DerivableIn (ND T) (insert A Γ ⊢ C)) (hB : DerivableIn (ND T) (insert B Γ ⊢ C)) :
+    DerivableIn (ND T) (Γ ⊢ C) := ⟨h.some.orE hA.some hB.some⟩
+
+lemma derivableIn_imp (h : DerivableIn (ND T) (insert A Γ ⊢ B)) : DerivableIn (ND T) (Γ ⊢ A → B) :=
+    ⟨h.some.impI⟩
+
+lemma derivableIn_of_imp (h : DerivableIn (ND T) (Γ ⊢ A → B)) (h' : DerivableIn (ND T) (Γ ⊢ A)) :
+    DerivableIn (ND T) (Γ ⊢ B) := ⟨h.some.impE h'.some⟩
+
+/-- Weakening is a derived rule. -/
+def Derivation.weaken {Γ Δ : Ctx Atom} {A : Proposition Atom}
+    (hAx : T ⊆ T' := by intro; membership) (hCtx : Γ ⊆ Δ := by intro; membership) :
+    Derivation T Γ A → Derivation T' Δ A
+  | ax hA => ax
+  | ass hA => ass
+  | efq A D => efq A D.weaken
+  | andI D D' => andI D.weaken D'.weaken
+  | andE₁ D => andE₁ D.weaken
+  | andE₂ D => andE₂ D.weaken
+  | orI₁ D => orI₁ D.weaken
+  | orI₂ D => orI₂ D.weaken
+  | orE D D' D'' => orE D.weaken D'.weaken D''.weaken
+  | @impI _ _ _ A B Γ D => impI _ D.weaken
+  | impE D D' => impE D.weaken D'.weaken
+
+/-- Weakening the axioms only. -/
+def Derivation.weakenAx (hAx : T ⊆ T' := by intro; membership) : (ND T)⇓(Γ ⊢ A) → (ND T')⇓(Γ ⊢ A) :=
+    Derivation.weaken
+
+/-- Weakening the context only. -/
+def Derivation.weakenCtx (hCtx : Γ ⊆ Δ := by intro; membership) : (ND T)⇓(Γ ⊢ A) → (ND T)⇓(Δ ⊢ A) :=
+  Derivation.weaken
+
+/-- Proof irrelevant weakening. -/
+theorem derivableIn_weaken (h : DerivableIn (ND T) (Γ ⊢ A))
+    (hAx : T ⊆ T' := by intro; membership) (hCtx : Γ ⊆ Δ := by intro; membership) :
+    DerivableIn (ND T') (Δ ⊢ A) := ⟨h.some.weaken⟩
+
+/-- Proof irrelevant weakening of the axiom set. -/
+theorem derivableIn_weaken_ax (h : DerivableIn (ND T) (Γ ⊢ A))
+    (hAx : T ⊆ T' := by intro; membership) : DerivableIn (ND T') (Γ ⊢ A) :=
+  derivableIn_weaken h
+
+/-- Proof irrelevant weakening of the context. -/
+theorem derivableIn_weaken_ctx (h : DerivableIn (ND T) (Γ ⊢ A))
+    (hCtx : Γ ⊆ Δ := by intro; membership) : DerivableIn (ND T) (Δ ⊢ A) :=
+  derivableIn_weaken h
+
+/-- Introduction rule for `finiteAnd`. -/
+def Derivation.finiteAndI {n : ℕ} {As : Fin n → Proposition Atom}
+    (Ds : ∀ i : Fin n, (ND T)⇓(Γ ⊢ As i)) : (ND T)⇓(Γ ⊢ ⋀(.ofFn As)) := by
+  induction n with
+  | zero => exact impI Γ ass
+  | succ _ ih => exact List.ofFn_succ ▸ (Ds 0).andI (ih fun i ↦ Ds i.succ)
+
+/-- Elimination rule for `finiteAnd`. -/
+def Derivation.finiteAndE {n : ℕ} {As : Fin n → Proposition Atom}
+    (D : (ND T)⇓(Γ ⊢ ⋀(.ofFn As))) (i : Fin n) : (ND T)⇓(Γ ⊢ As i) := by
+  induction i using Fin.succRec with
+  | zero => exact (List.ofFn_succ ▸ D).andE₁
+  | succ _ _ ih => exact ih (List.ofFn_succ ▸ D).andE₂
+
+/-- Introduction rule for `finiteOr`. -/
+def Derivation.finiteOrI {n : ℕ} {As : Fin n → Proposition Atom} {i : Fin n}
+    (D : (ND T)⇓(Γ ⊢ As i)) : (ND T)⇓(Γ ⊢ ⋁(.ofFn As)) := by
+  induction i using Fin.succRec with
+  | zero => exact List.ofFn_succ ▸ D.orI₁
+  | succ _ _ ih => exact List.ofFn_succ ▸ (ih D).orI₂
+
+/-- Elimination rule for `finiteOr`. -/
+def Derivation.finiteOrE {n : ℕ} {As : Fin n → Proposition Atom}
+    (D : (ND T)⇓(Γ ⊢ ⋁(.ofFn As))) (Es : ∀ i : Fin n, (ND T)⇓(insert (As i) Γ ⊢ B)) :
+    (ND T)⇓(Γ ⊢ B) := by
+  induction n generalizing Γ with
+  | zero => exact (List.ofFn_zero ▸ D).efq B
+  | succ _ ih =>
+    exact (List.ofFn_succ ▸ D).orE (Es 0) <|
+      ih (ass <| Finset.mem_insert_self ..) fun i ↦ (Es i.succ).weakenCtx
+
+lemma derivableIn_finiteAnd {As : List (Proposition Atom)}
+    (h : ∀ A ∈ As, DerivableIn (ND T) (Γ ⊢ A)) : DerivableIn (ND T) (Γ ⊢ ⋀As) := by
+  rw [← As.ofFn_getElem]
+  exact ⟨finiteAndI fun i ↦ (h _ <| As.getElem_mem i.prop).some⟩
+
+lemma derivableIn_of_finiteAnd {As : List (Proposition Atom)} (h : DerivableIn (ND T) (Γ ⊢ ⋀As))
+    (hA : A ∈ As) : DerivableIn (ND T) (Γ ⊢ A) := by
+  rw [← As.ofFn_getElem] at h
+  obtain ⟨i, hi, rfl⟩ := As.getElem_of_mem hA
+  exact ⟨h.some.finiteAndE ⟨i, hi⟩⟩
+
+lemma derivableIn_finiteOr {As : List (Proposition Atom)} (h : DerivableIn (ND T) (Γ ⊢ A))
+    (hA : A ∈ As) : DerivableIn (ND T) (Γ ⊢ ⋁As) := by
+  rw [← As.ofFn_getElem]
+  obtain ⟨i, hi, rfl⟩ := As.getElem_of_mem hA
+  exact ⟨h.some.finiteOrI⟩
+
+lemma derivableIn_of_finiteOr {As : List (Proposition Atom)} (h : DerivableIn (ND T) (Γ ⊢ ⋁As))
+    (hB : ∀ A ∈ As, DerivableIn (ND T) (insert A Γ ⊢ B)) : DerivableIn (ND T) (Γ ⊢ B) := by
+  rw [← As.ofFn_getElem] at h
+  exact ⟨h.some.finiteOrE fun i ↦ (hB _ <| As.getElem_mem i.prop).some⟩
+
+/--
+Implement the cut rule, removing a hypothesis `A` from `E` using a derivation `D`. This is *not*
+substitution, which would replace appeals to `A` in `E` by the whole derivation `D`.
+-/
+def Derivation.cut (D : (ND T)⇓(Γ ⊢ A)) (E : (ND T)⇓(insert A Δ ⊢ B)) : (ND T)⇓((Γ ∪ Δ) ⊢ B) :=
+  impE (A := A) (impI (Γ ∪ Δ) <| E.weakenCtx) D.weakenCtx
+
+/-- Proof irrelevant cut rule. -/
+theorem derivableIn_cut :
+    DerivableIn (ND T) (Γ ⊢ A) → DerivableIn (ND T) ((insert A Δ) ⊢ B) →
+      DerivableIn (ND T) ((Γ ∪ Δ) ⊢ B)
+  | ⟨D⟩, ⟨E⟩ => ⟨D.cut E⟩
+
+/-- Remove unnecessary hypotheses. This can't be computable because it requires picking an order
+on the finset `Δ`. -/
+theorem derivableIn_cut_away (hΔ : ∀ A ∈ Γ', DerivableIn (ND T) (Γ ⊢ A))
+    (hDer : DerivableIn (ND T) ((Γ ∪ Γ') ⊢ B)) : DerivableIn (ND T) (Γ ⊢ B) := by
+  induction Γ' using Finset.induction with
+  | empty => exact derivableIn_weaken_ctx hDer
+  | insert A Δ hA ih =>
+    apply ih
+    · intro A' hA'
+      apply hΔ A' <| Finset.mem_insert_of_mem hA'
+    · apply Finset.union_left_idem Γ Δ ▸ derivableIn_cut (Δ := Γ ∪ Δ) (A := A)
+      all_goals grind
+
+lemma derivableIn_toFinset_union_iff_finiteAnd_insert {As : List (Proposition Atom)} :
+    DerivableIn (ND T) ((As.toFinset ∪ Γ) ⊢ B) ↔ DerivableIn (ND T) (insert ⋀As Γ ⊢ B) := by
+  constructor <;> intro h
+  · refine derivableIn_cut_away ?_ (derivableIn_weaken_ctx (Δ := (insert ⋀As Γ) ∪ As.toFinset) h)
+    intro A hA
+    rw [List.mem_toFinset] at hA
+    exact derivableIn_of_finiteAnd derivableIn_of_mem_ctx hA
+  · refine derivableIn_cut (derivableIn_finiteAnd fun A hA ↦ ?_) h
+    exact derivableIn_of_mem_ctx (by simpa)
+
+/-- A kind of converse to `derivableIn_nd₁_iff_derivableIn_nd_empty`: derivability in `ND` can be
+expressed in terms of `ND₁`. -/
+theorem derivableIn_toFinset_iff_finiteAnd_imp {As : List (Proposition Atom)} :
+    DerivableIn (ND T) (As.toFinset ⊢ B) ↔ DerivableIn (ND₁ T) (⋀As → B) := by
+  rw [← As.toFinset.union_empty, derivableIn_toFinset_union_iff_finiteAnd_insert]
+  exact ⟨fun h ↦ derivableIn_imp h,
+    fun h ↦ derivableIn_of_imp (derivableIn_weaken_ctx h) derivableIn_of_mem_ctx⟩
+
+/-- Substitution of a family of derivations `D` for hypotheses in the context `Γ` of `E`. TODO:
+this implementation is not capture avoiding. -/
+def Derivation.subs {Γ Γ' Δ : Ctx Atom} {B : Proposition Atom}
+    (Ds : ∀ A ∈ Γ', (ND T)⇓(Δ ⊢ A)) :
+      Derivation T Γ B → Derivation T (Γ \ Γ' ∪ Δ) B
+  | ax _ => ax
+  | @ass _ _ _ _ B hB => by
+    by_cases B ∈ Γ'
+    case pos h =>
+      exact (Ds B h).weakenCtx
+    case neg h => exact ass
+  | efq A D => efq A (D.subs Ds)
+  | andI E E' => andI (E.subs Ds) (E'.subs Ds)
+  | andE₁ E => andE₁ <| E.subs Ds
+  | andE₂ E => andE₂ <| E.subs Ds
+  | orI₁ E => orI₁ <| E.subs Ds
+  | orI₂ E => orI₂ <| E.subs Ds
+  | @orE _ _ _ _ C C' _ E E' E'' .. => by
+    apply orE (E.subs Ds)
+    · exact E'.subs Ds |>.weakenCtx
+    · exact E''.subs Ds |>.weakenCtx
+  | @impI _ _ _ A' _ _ E .. => impI _ <| E.subs Ds |>.weakenCtx
+  | impE E E' => impE (E.subs Ds) (E'.subs Ds)
+
+/-- Transport a derivation along a substitution of atoms. -/
+def Derivation.substAtom {Atom Atom' : Type*} [DecidableEq Atom] [DecidableEq Atom']
+    {T : Set (Proposition Atom)} (f : Atom → Proposition Atom') {Γ : Ctx Atom}
+    {B : Proposition Atom} :
+    Derivation T Γ B → Derivation ((·.subst f) '' T) (Γ.subst f) (B.subst f)
+  | ax _ => ax
+  | ass h => ass
+  | efq _ D => efq _ (D.substAtom f)
+  | andI D E => andI (D.substAtom f) (E.substAtom f)
+  | andE₁ D => andE₁ (D.substAtom f)
+  | andE₂ D => andE₂ (D.substAtom f)
+  | orI₁ D => orI₁ (D.substAtom f)
+  | orI₂ D => orI₂ (D.substAtom f)
+  | @orE _ _ _ _ A B C D E E' => orE (D.substAtom f)
+    ((Finset.image_insert (·.subst f) A Γ) ▸ E.substAtom f)
+    ((Finset.image_insert (·.subst f) B Γ) ▸ E'.substAtom f)
+  | @impI _ _ _ A _ Γ D => impI _ <| (Finset.image_insert (·.subst f) A Γ) ▸ (D.substAtom f)
+  | impE D E => impE (D.substAtom f) (E.substAtom f)
+
+theorem derivableIn_subst_atom {Atom Atom' : Type u}
+    [DecidableEq Atom] [DecidableEq Atom'] {T : Set (Proposition Atom)}
+    (f : Atom → Proposition Atom') {Γ : Ctx Atom} {B : Proposition Atom} :
+    DerivableIn (ND T) (Γ ⊢ B) → DerivableIn (ND <| (·.subst f) '' T) ((Γ.subst f) ⊢ (B >>= f))
+  | ⟨D⟩ => ⟨D.substAtom f⟩
+
+/-! ### Properties of equivalence -/
+
+theorem derivable_iff_equiv_top (A : Proposition Atom) :
+    DerivableIn (ND₁ T) A ↔ A ≡[T] ⊤ := by
+  constructor <;> intro h
+  · exact ⟨derivationTop.weakenCtx, (Classical.choice h).weakenCtx⟩
+  · have := derivableIn_cut (derivableIn_top (T := T)) (B := A) (Δ := ∅)
+    rw [← show (∅ : Ctx Atom) = ∅ ∪ ∅ by rfl] at this
+    exact this h.mpr
+
+alias ⟨equiv_top_of_derivableIn, _⟩ := derivable_iff_equiv_top
+
+/-- Change the conclusion along an equivalence. -/
+def mapEquivConclusion (Γ : Ctx Atom) (e : equiv T A B)
+    (D : (ND T)⇓(Γ ⊢ A)) : (ND T)⇓(Γ ⊢ B) :=
+  Γ.union_empty ▸ Derivation.cut (Δ := ∅) D e.mp
+
+/-- Replace a hypothesis along an equivalence. -/
+def mapEquivHypothesis (Γ : Ctx Atom) (e : equiv T A B)
+    (C : Proposition Atom) (D : (ND T)⇓(insert A Γ ⊢ C)) : (ND T)⇓(insert B Γ ⊢ C) := by
+  have : insert B Γ = {B} ∪ Γ := rfl
+  exact this ▸ Derivation.cut e.mpr D
+
+/-- An equivalence of a proposition with itself. -/
+def equiv.refl (A : Proposition Atom) : equiv T A A := ⟨ass, ass⟩
+
+/-- Reverse an equivalence. -/
+def equiv.symm (e : equiv T A B) : equiv T B A :=
+  ⟨e.mpr, e.mp⟩
+
+/-- Compose two equivalences. -/
+def equiv.trans {A B C : Proposition Atom} (eAB : equiv T A B)
+    (eBC : equiv T B C) : equiv T A C :=
+  ⟨mapEquivConclusion _ eBC eAB.mp, mapEquivConclusion _ eAB.symm eBC.mpr⟩
+
+/-- `A` and `B` are equivalent (in `T`) iff they are provable from the same contexts. -/
+theorem equiv_iff_equiv_derivableIn :
+    A ≡[T] B ↔ ∀ Γ : Ctx Atom, DerivableIn (ND T) (Γ ⊢ A) ↔ DerivableIn (ND T) (Γ ⊢ B) := by
+  constructor
+  · intro ⟨e⟩ Γ
+    exact ⟨fun D => mapEquivConclusion Γ e D.some, fun D => mapEquivConclusion Γ e.symm D.some⟩
+  · intro h
+    rw [equiv_iff]
+    constructor
+    · exact (h {A}).mp ⟨ass⟩
+    · exact (h {B}).mpr ⟨ass⟩
+
+/-- `A` and `B` are equivalent (in `T`) iff they have the same strength as hypotheses. -/
+theorem equiv_iff_equiv_derivableIn_hypothesis :
+    A ≡[T] B ↔
+      ∀ (Γ : Ctx Atom) (C : Proposition Atom),
+      DerivableIn (ND T) ((insert A Γ) ⊢ C) ↔ DerivableIn (ND T) ((insert B Γ) ⊢ C) := by
+  constructor
+  · intro ⟨e⟩ Γ C
+    exact ⟨fun D => mapEquivHypothesis Γ e C D.some, fun E => mapEquivHypothesis Γ e.symm C E.some⟩
+  · intro h
+    rw [equiv_iff]
+    constructor
+    · exact (h ∅ B).mpr ⟨ass⟩
+    · exact (h ∅ A).mp ⟨ass⟩
+
+@[refl]
+theorem Equiv.refl (A : Proposition Atom) : A ≡[T] A := ⟨equiv.refl A⟩
+
+theorem Equiv.symm {A B : Proposition Atom} :
+    (A ≡[T] B) → B ≡[T] A
+  | ⟨e⟩ => ⟨e.symm⟩
+
+theorem Equiv.trans {A B C : Proposition Atom} :
+    (A ≡[T] B) → (B ≡[T] C) → A ≡[T] C
+  | ⟨e⟩, ⟨e'⟩ => ⟨e.trans e'⟩
+
+/-- Equivalence is indeed an equivalence relation. -/
+theorem equiv_equivalence (T : Set (Proposition Atom)) : Equivalence (Equiv T (Atom := Atom)) :=
+  ⟨Equiv.refl, Equiv.symm, Equiv.trans⟩
+
+/-- The setoid of propositions under equivalence. -/
+protected def propositionSetoid (T : Set (Proposition Atom)) : Setoid (Proposition Atom) :=
+  ⟨Equiv T, equiv_equivalence T⟩
+
+end Cslib.Logic.PL.NaturalDeduction

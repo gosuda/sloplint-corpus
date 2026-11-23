@@ -1,0 +1,363 @@
+package server
+
+import "core:fmt"
+import "base:intrinsics"
+
+import "core:mem"
+import "core:odin/ast"
+import "core:odin/tokenizer"
+import "core:reflect"
+import "core:strings"
+
+import "src:spall"
+
+new_type :: proc($T: typeid, pos, end: tokenizer.Pos, allocator: mem.Allocator) -> ^T {
+	n, _ := mem.new(T, allocator)
+	n.pos = pos
+	n.end = end
+	n.derived = n
+	base: ^ast.Node = n // dummy check
+	_ = base // "Use" type to make -vet happy
+	when intrinsics.type_has_field(T, "derived_expr") {
+		n.derived_expr = n
+	}
+	when intrinsics.type_has_field(T, "derived_stmt") {
+		n.derived_stmt = n
+	}
+	return n
+}
+
+clone_type :: proc {
+	clone_node,
+	clone_expr,
+	clone_array,
+	clone_dynamic_array,
+	clone_comment_group,
+}
+
+clone_array :: proc(array: $A/[]^$T, allocator: mem.Allocator, unique_strings: ^map[string]string) -> A {
+	if len(array) == 0 {
+		return nil
+	}
+	res := make(A, len(array), allocator)
+	for elem, i in array {
+		res[i] = cast(^T)clone_type(elem, allocator, unique_strings)
+	}
+	return res
+}
+
+clone_dynamic_array :: proc(
+	array: $A/[dynamic]^$T,
+	allocator: mem.Allocator,
+	unique_strings: ^map[string]string,
+) -> A {
+	if len(array) == 0 {
+		return nil
+	}
+	res := make(A, len(array), allocator)
+	for elem, i in array {
+		res[i] = auto_cast clone_type(elem, allocator, unique_strings)
+	}
+	return res
+}
+
+clone_expr :: proc(node: ^ast.Expr, allocator: mem.Allocator, unique_strings: ^map[string]string) -> ^ast.Expr {
+	return cast(^ast.Expr)clone_node(node, allocator, unique_strings)
+}
+
+clone_node :: proc(node: ^ast.Node, allocator: mem.Allocator, unique_strings: ^map[string]string) -> ^ast.Node {
+	if node == nil {
+		return nil
+	}
+
+	spall.trace(#procedure)
+
+	size := size_of(ast.Node)
+	align := align_of(ast.Node)
+	ti := reflect.union_variant_type_info(node.derived)
+	if ti != nil {
+		elem := ti.variant.(^reflect.Type_Info_Pointer).elem
+		size = elem.size
+		align = elem.align
+	}
+
+	#partial switch _ in node.derived {
+	case ^ast.Package, ^ast.File:
+		panic("Cannot clone this node type")
+	}
+
+	res := cast(^ast.Node)(mem.alloc(size, align, allocator) or_else panic("OOM"))
+	src: rawptr = node
+	if node.derived != nil {
+		src = (^rawptr)(&node.derived)^
+	}
+	mem.copy(res, src, size)
+	res_ptr_any: any
+	res_ptr_any.data = &res
+	res_ptr_any.id = ti.id
+
+	if unique_strings != nil && node.pos.file != "" {
+		res.pos.file = clone_string(node.pos.file, allocator, unique_strings)
+	} else {
+		res.pos.file = node.pos.file
+	}
+
+	if unique_strings != nil && node.end.file != "" {
+		res.end.file = clone_string(node.end.file, allocator, unique_strings)
+	} else {
+		res.end.file = node.end.file
+	}
+
+	reflect.set_union_value(res.derived, res_ptr_any)
+
+	// NOTE: These are not needed as we don't actually use `derived_expr` or `derived_stmt` in the codebase
+	//
+	//res_ptr := reflect.deref(res_ptr_any)
+	//
+	//if de := reflect.struct_field_value_by_name(res_ptr, "derived_expr", true); de != nil {
+	//	reflect.set_union_value(de, res_ptr_any)
+	//}
+	//if ds := reflect.struct_field_value_by_name(res_ptr, "derived_stmt", true); ds != nil {
+	//	reflect.set_union_value(ds, res_ptr_any)
+	//}
+
+	if res.derived != nil do #partial switch r in res.derived {
+	case ^ast.Ident:
+		r.name = clone_string(r.name, allocator, unique_strings)
+	case ^ast.Implicit:
+		r.tok.text = clone_string(r.tok.text, allocator, unique_strings)
+	case ^ast.Undef:
+	case ^ast.Basic_Lit:
+		r.tok.text = clone_string(r.tok.text, allocator, unique_strings)
+	case ^ast.Basic_Directive:
+		r.name = clone_string(r.name, allocator, unique_strings)
+	case ^ast.Ellipsis:
+		r.expr = clone_type(r.expr, allocator, unique_strings)
+	case ^ast.Tag_Expr:
+		r.expr = clone_type(r.expr, allocator, unique_strings)
+	case ^ast.Unary_Expr:
+		r.expr = clone_type(r.expr, allocator, unique_strings)
+		r.op.text = clone_string(r.op.text, allocator, unique_strings)
+	case ^ast.Binary_Expr:
+		r.left = clone_type(r.left, allocator, unique_strings)
+		r.right = clone_type(r.right, allocator, unique_strings)
+		//Todo: Replace this with some constant table for opeator text
+		r.op.text = clone_string(r.op.text, allocator, unique_strings)
+	case ^ast.Paren_Expr:
+		r.expr = clone_type(r.expr, allocator, unique_strings)
+	case ^ast.Selector_Expr:
+		r.expr = clone_type(r.expr, allocator, unique_strings)
+		r.field = auto_cast clone_type(r.field, allocator, unique_strings)
+	case ^ast.Selector_Call_Expr:
+		r.expr = clone_type(r.expr, allocator, unique_strings)
+		r.call = auto_cast clone_type(r.call, allocator, unique_strings)
+	case ^ast.Implicit_Selector_Expr:
+		r.field = auto_cast clone_type(r.field, allocator, unique_strings)
+	case ^ast.Slice_Expr:
+		r.expr = clone_type(r.expr, allocator, unique_strings)
+		r.low = clone_type(r.low, allocator, unique_strings)
+		r.high = clone_type(r.high, allocator, unique_strings)
+	case ^ast.Attribute:
+		r.elems = clone_type(r.elems, allocator, unique_strings)
+	case ^ast.Distinct_Type:
+		r.type = clone_type(r.type, allocator, unique_strings)
+	case ^ast.Proc_Type:
+		r.params = auto_cast clone_type(r.params, allocator, unique_strings)
+		r.results = auto_cast clone_type(r.results, allocator, unique_strings)
+		r.calling_convention = clone_calling_convention(r.calling_convention, allocator, unique_strings)
+	case ^ast.Pointer_Type:
+		r.tag = clone_type(r.tag, allocator, unique_strings)
+		r.elem = clone_type(r.elem, allocator, unique_strings)
+	case ^ast.Array_Type:
+		r.len = clone_type(r.len, allocator, unique_strings)
+		r.elem = clone_type(r.elem, allocator, unique_strings)
+		r.tag = clone_type(r.tag, allocator, unique_strings)
+	case ^ast.Dynamic_Array_Type:
+		r.elem = clone_type(r.elem, allocator, unique_strings)
+		r.tag = clone_type(r.tag, allocator, unique_strings)
+	case ^ast.Fixed_Capacity_Dynamic_Array_Type:
+		r.elem = clone_type(r.elem, allocator, unique_strings)
+		r.tag = clone_type(r.tag, allocator, unique_strings)
+		r.capacity = clone_type(r.capacity, allocator, unique_strings)
+	case ^ast.Struct_Type:
+		r.poly_params = auto_cast clone_type(r.poly_params, allocator, unique_strings)
+		r.align = clone_type(r.align, allocator, unique_strings)
+		r.fields = auto_cast clone_type(r.fields, allocator, unique_strings)
+		r.where_clauses = clone_type(r.where_clauses, allocator, unique_strings)
+		r.max_field_align = clone_type(r.max_field_align, allocator, unique_strings)
+		r.min_field_align = clone_type(r.min_field_align, allocator, unique_strings)
+	case ^ast.Field:
+		r.names = clone_type(r.names, allocator, unique_strings)
+		r.type = clone_type(r.type, allocator, unique_strings)
+		r.default_value = clone_type(r.default_value, allocator, unique_strings)
+		r.docs = clone_type(r.docs, allocator, unique_strings)
+		r.comment = clone_type(r.comment, allocator, unique_strings)
+	case ^ast.Field_List:
+		r.list = clone_type(r.list, allocator, unique_strings)
+	case ^ast.Field_Value:
+		r.field = clone_type(r.field, allocator, unique_strings)
+		r.value = clone_type(r.value, allocator, unique_strings)
+	case ^ast.Union_Type:
+		r.poly_params = auto_cast clone_type(r.poly_params, allocator, unique_strings)
+		r.align = clone_type(r.align, allocator, unique_strings)
+		r.variants = clone_type(r.variants, allocator, unique_strings)
+		r.where_clauses = clone_type(r.where_clauses, allocator, unique_strings)
+	case ^ast.Enum_Type:
+		r.base_type = clone_type(r.base_type, allocator, unique_strings)
+		r.fields = clone_type(r.fields, allocator, unique_strings)
+	case ^ast.Bit_Set_Type:
+		r.elem = clone_type(r.elem, allocator, unique_strings)
+		r.underlying = clone_type(r.underlying, allocator, unique_strings)
+	case ^ast.Map_Type:
+		r.key = clone_type(r.key, allocator, unique_strings)
+		r.value = clone_type(r.value, allocator, unique_strings)
+	case ^ast.Call_Expr:
+		r.expr = clone_type(r.expr, allocator, unique_strings)
+		r.args = clone_type(r.args, allocator, unique_strings)
+	case ^ast.Typeid_Type:
+		r.specialization = clone_type(r.specialization, allocator, unique_strings)
+	case ^ast.Ternary_When_Expr:
+		r.x = clone_type(r.x, allocator, unique_strings)
+		r.cond = clone_type(r.cond, allocator, unique_strings)
+		r.y = clone_type(r.y, allocator, unique_strings)
+	case ^ast.Ternary_If_Expr:
+		r.x = clone_type(r.x, allocator, unique_strings)
+		r.cond = clone_type(r.cond, allocator, unique_strings)
+		r.y = clone_type(r.y, allocator, unique_strings)
+	case ^ast.Poly_Type:
+		r.type = auto_cast clone_type(r.type, allocator, unique_strings)
+		r.specialization = clone_type(r.specialization, allocator, unique_strings)
+	case ^ast.Proc_Group:
+		r.args = clone_type(r.args, allocator, unique_strings)
+	case ^ast.Comp_Lit:
+		r.type = clone_type(r.type, allocator, unique_strings)
+		r.elems = clone_type(r.elems, allocator, unique_strings)
+	case ^ast.Proc_Lit:
+		r.type = cast(^ast.Proc_Type)clone_type(cast(^ast.Node)r.type, allocator, unique_strings)
+		r.body = nil
+		r.where_clauses = clone_type(r.where_clauses, allocator, unique_strings)
+	case ^ast.Helper_Type:
+		r.type = clone_type(r.type, allocator, unique_strings)
+	case ^ast.Type_Cast:
+		r.type = clone_type(r.type, allocator, unique_strings)
+		r.expr = clone_type(r.expr, allocator, unique_strings)
+	case ^ast.Deref_Expr:
+		r.expr = clone_type(r.expr, allocator, unique_strings)
+	case ^ast.Index_Expr:
+		r.expr = clone_type(r.expr, allocator, unique_strings)
+		r.index = clone_type(r.index, allocator, unique_strings)
+	case ^ast.Multi_Pointer_Type:
+		r.elem = clone_type(r.elem, allocator, unique_strings)
+	case ^ast.Matrix_Type:
+		r.elem = clone_type(r.elem, allocator, unique_strings)
+		r.column_count = clone_type(r.column_count, allocator, unique_strings)
+		r.row_count = clone_type(r.row_count, allocator, unique_strings)
+	case ^ast.Type_Assertion:
+		r.expr = clone_type(r.expr, allocator, unique_strings)
+		r.type = clone_type(r.type, allocator, unique_strings)
+	case ^ast.Relative_Type:
+		r.tag = clone_type(r.tag, allocator, unique_strings)
+		r.type = clone_type(r.type, allocator, unique_strings)
+	case ^ast.Bit_Field_Type:
+		r.backing_type = clone_type(r.backing_type, allocator, unique_strings)
+		r.fields = clone_type(r.fields, allocator, unique_strings)
+	case ^ast.Bit_Field_Field:
+		r.name = clone_type(r.name, allocator, unique_strings)
+		r.type = clone_type(r.type, allocator, unique_strings)
+		r.bit_size = clone_type(r.bit_size, allocator, unique_strings)
+		r.docs = clone_type(r.docs, allocator, unique_strings)
+		r.comments = clone_type(r.comments, allocator, unique_strings)
+	case ^ast.Or_Else_Expr:
+		r.x = clone_type(r.x, allocator, unique_strings)
+		r.y = clone_type(r.y, allocator, unique_strings)
+	case ^ast.Or_Branch_Expr:
+		r.expr = clone_type(r.expr, allocator, unique_strings)
+		r.label = clone_type(r.label, allocator, unique_strings)
+	case ^ast.Comment_Group:
+		list := make([dynamic]tokenizer.Token, 0, len(r.list), allocator)
+		// Comment strings are freed individually, so they must not be interned.
+		for t in r.list {
+			append(&list, tokenizer.Token{text = clone_string(t.text, allocator, nil), kind = t.kind, pos = tokenizer.Pos{file = clone_string(t.pos.file, allocator, nil), offset = t.pos.offset, line = t.pos.line, column = t.pos.column}})
+		}
+		r.list = list[:]
+	case ^ast.Auto_Cast:
+		r.expr = clone_type(r.expr, allocator, unique_strings)
+	case ^ast.Or_Return_Expr:
+		r.expr = clone_type(r.expr, allocator, unique_strings)
+	case ^ast.Matrix_Index_Expr:
+		r.expr = clone_type(r.expr, allocator, unique_strings)
+		r.row_index = clone_type(r.row_index, allocator, unique_strings)
+		r.column_index = clone_type(r.column_index, allocator, unique_strings)
+	case ^ast.Asm_Template:
+		r.type = auto_cast clone_type(r.type, allocator, unique_strings)
+		r.specs = clone_type(r.specs, allocator, unique_strings)
+		r.clobbers = clone_type(r.clobbers, allocator, unique_strings)
+		r.instructions = clone_type(r.instructions, allocator, unique_strings)
+	case ^ast.Asm_Spec:
+		r.name = auto_cast clone_type(r.name, allocator, unique_strings)
+		r.tied_name = auto_cast clone_type(r.tied_name, allocator, unique_strings)
+		r.type = clone_type(r.type, allocator, unique_strings)
+		r.value = clone_type(r.value, allocator, unique_strings)
+		r.directives = clone_type(r.directives, allocator, unique_strings)
+	case ^ast.Asm_Register:
+		r.name = clone_string(r.name, allocator, unique_strings)
+		r.flag = clone_string(r.flag, allocator, unique_strings)
+	case ^ast.Asm_Clobber:
+		r.name = clone_string(r.name, allocator, unique_strings)
+		r.value = clone_type(r.value, allocator, unique_strings)
+	case ^ast.Asm_Label:
+		r.name = clone_string(r.name, allocator, unique_strings)
+	case ^ast.Asm_Label_Decl:
+		r.label = auto_cast clone_type(r.label, allocator, unique_strings)
+	case ^ast.Asm_Instruction:
+		r.name = auto_cast clone_type(r.name, allocator, unique_strings)
+		r.operands = clone_type(r.operands, allocator, unique_strings)
+	case ^ast.Asm_Memory_Operand:
+		r.segment_override = clone_type(r.segment_override, allocator, unique_strings)
+		r.base = clone_type(r.base, allocator, unique_strings)
+		r.index = clone_type(r.index, allocator, unique_strings)
+		r.scale = clone_type(r.scale, allocator, unique_strings)
+		r.disp = clone_type(r.disp, allocator, unique_strings)
+		r.type = clone_type(r.type, allocator, unique_strings)
+	case ^ast.Asm_Register_Group:
+		r.registers = clone_type(r.registers, allocator, unique_strings)
+		r.type = clone_type(r.type, allocator, unique_strings)
+	case ^ast.Asm_Directive:
+		r.name = clone_string(r.name, allocator, unique_strings)
+		r.operands = clone_type(r.operands, allocator, unique_strings)
+	case:
+	}
+
+	return res
+}
+
+clone_string :: proc(s: string, allocator: mem.Allocator, unique_strings: ^map[string]string) -> string {
+	if unique_strings != nil {
+		return get_index_unique_string(unique_strings, allocator, s)
+	}
+	return strings.clone(s, allocator)
+}
+
+clone_comment_group :: proc(
+	node: ^ast.Comment_Group,
+	allocator: mem.Allocator,
+	unique_strings: ^map[string]string,
+) -> ^ast.Comment_Group {
+	return cast(^ast.Comment_Group)clone_node(node, allocator, unique_strings)
+}
+
+clone_calling_convention :: proc(
+	cc: ast.Proc_Calling_Convention, allocator: mem.Allocator, unique_strings: ^map[string]string,
+) -> ast.Proc_Calling_Convention {
+	if cc == nil {
+		return nil
+	}
+
+	switch v in cc {
+	case string:
+		return clone_string(v, allocator, unique_strings)
+	case ast.Proc_Calling_Convention_Extra:
+		return v
+	}
+	return nil
+}
