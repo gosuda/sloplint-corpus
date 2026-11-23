@@ -1,0 +1,159 @@
+use nu_test_support::prelude::*;
+use nu_utils::consts::LINE_SEPARATOR_STR;
+use std::fs;
+
+#[test]
+fn tee_save_values_to_file(playground: Playground) -> Result {
+    test()
+        .cwd(playground.path())
+        .run("1..5 | tee { save copy.txt }")
+        .expect_value_eq([1, 2, 3, 4, 5])?;
+    assert_eq!(
+        ["1", "2", "3", "4", "5", ""].join(LINE_SEPARATOR_STR),
+        fs::read_to_string(playground.path().join("copy.txt"))?
+    );
+
+    Ok(())
+}
+
+#[test]
+#[deps(TESTBIN_ECHO_ENV)]
+fn tee_save_stdout_to_file(playground: Playground) -> Result {
+    let code = r#"
+        $env.FOO = "teststring"
+        echo_env FOO | tee { save copy.txt }
+    "#;
+
+    test()
+        .cwd(playground.path())
+        .run(code)
+        .expect_value_eq("teststring")?;
+
+    assert_eq!(
+        "teststring\n",
+        fs::read_to_string(playground.path().join("copy.txt"))?
+    );
+
+    Ok(())
+}
+
+#[test]
+#[deps(TESTBIN_ECHO_ENV_STDERR)]
+fn tee_save_stderr_to_file(playground: Playground) -> Result {
+    let code = r#"
+        $env.FOO = "teststring"
+        do { echo_env_stderr FOO }
+        | tee --stderr { save copy.txt }
+        | complete
+        | get stderr
+    "#;
+
+    test()
+        .cwd(playground.path())
+        .run(code)
+        .expect_value_eq("teststring\n")?;
+
+    assert_eq!(
+        "teststring\n",
+        fs::read_to_string(playground.path().join("copy.txt"))?
+    );
+
+    Ok(())
+}
+
+#[test]
+#[deps(NU)]
+fn tee_single_value_streamable() -> Result {
+    let code = "'Hello, world!' | tee { print -e } | print";
+    let result: CompleteResult =
+        test().run_with_data("let code; nu -n -c $code | complete", code)?;
+
+    assert_eq!(result.exit_code, 0);
+    assert_eq!("Hello, world!", result.stdout);
+    // FIXME: note the lack of newline: this is a consequence of converting the string to a stream
+    // for now, but most likely the printer should be checking whether a string stream ends with a
+    // newline and adding it unless no_newline is true
+    assert_eq!("Hello, world!", result.stderr);
+
+    Ok(())
+}
+
+#[test]
+#[deps(NU)]
+fn tee_single_value_non_streamable() -> Result {
+    // Non-streamable values don't have any synchronization point, so we have to wait.
+    let code = "
+        500 | tee { print -e } | print
+        sleep 0.1sec
+    ";
+    let result: CompleteResult =
+        test().run_with_data("let code; nu -n -c $code | complete", code)?;
+
+    assert_eq!(result.exit_code, 0);
+    assert_eq!("500\n", result.stdout);
+    assert_eq!("500\n", result.stderr);
+
+    Ok(())
+}
+
+#[test]
+fn tee_closure_error_on_streamable_value_is_returned() -> Result {
+    let err = test()
+        .run(r#"'ho' | tee { error make {msg: "boom"} }"#)
+        .expect_shell_error()?;
+    assert_eq!(err.to_string(), "boom");
+    Ok(())
+}
+
+#[test]
+fn tee_closure_division_by_zero_on_streamable_value_is_returned() -> Result {
+    let err = test().run("'ho' | tee { 5 / 0 }").expect_shell_error()?;
+    assert!(
+        matches!(err, ShellError::DivisionByZero { .. }),
+        "expected a division by zero error, got {err:?}"
+    );
+    Ok(())
+}
+
+#[test]
+#[deps(TESTBIN_ECHO_ENV)]
+fn tee_closure_error_on_external_output_is_returned() -> Result {
+    let code = r#"
+        $env.FOO = "teststring"
+        echo_env FOO | tee { error make {msg: "boom"} } | collect
+    "#;
+    let err = test().run(code).expect_shell_error()?;
+    assert_eq!(err.to_string(), "boom");
+    Ok(())
+}
+
+#[test]
+fn tee_closure_error_reaches_lines() -> Result {
+    let err = test()
+        .run(r#"'ho' | tee { error make {msg: "boom"} } | lines"#)
+        .expect_shell_error()?;
+    assert_eq!(err.to_string(), "boom");
+    Ok(())
+}
+
+#[test]
+fn tee_closure_error_on_binary_reaches_each() -> Result {
+    let err = test()
+        .run(r#"0x[0102] | tee { error make {msg: "boom"} } | each { $in }"#)
+        .expect_shell_error()?;
+    assert_eq!(err.to_string(), "boom");
+    Ok(())
+}
+
+#[test]
+fn tee_closure_error_reaches_commands_that_read_the_stream() -> Result {
+    for code in [
+        r#"0x[0102] | tee { error make {msg: "boom"} } | last"#,
+        r#"0x[0102] | tee { error make {msg: "boom"} } | chunks 1 | collect"#,
+        r#"0x[0102] | tee { error make {msg: "boom"} } | bytes ends-with 0x[01]"#,
+    ] {
+        let err = test().run(code).expect_shell_error()?;
+        assert_eq!(err.to_string(), "boom", "{code}");
+    }
+    Ok(())
+}

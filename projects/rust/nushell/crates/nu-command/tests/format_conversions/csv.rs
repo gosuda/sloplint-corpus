@@ -1,0 +1,641 @@
+use nu_protocol::Type;
+use nu_test_support::prelude::*;
+
+#[test]
+fn table_to_csv_text_and_from_csv_text_back_into_table() -> Result {
+    let code = "open caco3_plastics.csv | to csv | from csv | first | get origin";
+    test()
+        .cwd("tests/fixtures/formats")
+        .run(code)
+        .expect_value_eq("SPAIN")
+}
+
+#[test]
+fn table_to_csv_text(playground: Playground) -> Result {
+    playground.file(
+        "csv_text_sample.txt",
+        indoc::indoc! {"
+        importer,shipper,tariff_item,name,origin
+        Plasticos Rival,Reverte,2509000000,Calcium carbonate,Spain
+        Tigre Ecuador,OMYA Andina,3824909999,Calcium carbonate,Colombia
+    "},
+    )?;
+
+    let code = r#"
+        open csv_text_sample.txt
+        | lines
+        | str trim
+        | split column "," a b c d origin
+        | last 1
+        | to csv
+        | lines
+        | get 1
+    "#;
+
+    test()
+        .cwd(playground.path())
+        .run(code)
+        .expect_value_eq("Tigre Ecuador,OMYA Andina,3824909999,Calcium carbonate,Colombia")
+}
+
+#[test]
+fn table_to_csv_text_skipping_headers_after_conversion(playground: Playground) -> Result {
+    playground.file(
+        "csv_text_sample.txt",
+        indoc::indoc! {"
+        importer,shipper,tariff_item,name,origin
+        Plasticos Rival,Reverte,2509000000,Calcium carbonate,Spain
+        Tigre Ecuador,OMYA Andina,3824909999,Calcium carbonate,Colombia
+    "},
+    )?;
+
+    let code = r#"
+        open csv_text_sample.txt
+        | lines
+        | str trim
+        | split column "," a b c d origin
+        | last 1
+        | to csv --noheaders
+    "#;
+
+    test()
+        .cwd(playground.path())
+        .run(code)
+        .expect_value_eq("Tigre Ecuador,OMYA Andina,3824909999,Calcium carbonate,Colombia\n")
+}
+
+#[test]
+fn table_to_csv_float_doesnt_become_int() -> Result {
+    let code = "[[a]; [1.0]] | to csv | from csv | get 0.a";
+    let outcome: Value = test().run(code)?;
+    assert!(matches!(outcome, Value::Float { .. }));
+    Ok(())
+}
+
+#[test]
+fn infers_types(playground: Playground) -> Result {
+    playground.file(
+        "los_cuatro_mosqueteros.csv",
+        indoc::indoc! {"
+        first_name,last_name,rusty_luck,d
+        Andrés,Robalino,1,d
+        JT,Turner,1,d
+        Yehuda,Katz,1,d
+        Jason,Gedge,1,d
+    "},
+    )?;
+
+    let code = "
+        open los_cuatro_mosqueteros.csv
+        | where rusty_luck > 0
+        | length
+    ";
+
+    test().cwd(playground.path()).run(code).expect_value_eq(4)
+}
+
+#[test]
+fn from_csv_text_to_table(playground: Playground) -> Result {
+    playground.file(
+        "los_tres_caballeros.txt",
+        indoc::indoc! {"
+        first_name,last_name,rusty_luck
+        Andrés,Robalino,1
+        JT,Turner,1
+        Yehuda,Katz,1
+    "},
+    )?;
+
+    let code = "
+        open los_tres_caballeros.txt
+        | from csv
+        | get rusty_luck
+        | length
+    ";
+
+    test().cwd(playground.path()).run(code).expect_value_eq(3)
+}
+
+#[test]
+fn from_csv_text_with_separator_to_table(playground: Playground) -> Result {
+    playground.file(
+        "los_tres_caballeros.txt",
+        indoc::indoc! {"
+        first_name;last_name;rusty_luck
+        Andrés;Robalino;1
+        JT;Turner;1
+        Yehuda;Katz;1
+    "},
+    )?;
+
+    let code = r#"
+        open los_tres_caballeros.txt
+        | from csv --separator ";"
+        | get rusty_luck
+        | length
+    "#;
+
+    test().cwd(playground.path()).run(code).expect_value_eq(3)
+}
+
+#[test]
+fn from_csv_text_with_tab_separator_to_table(playground: Playground) -> Result {
+    playground.file(
+        "los_tres_caballeros.txt",
+        indoc::indoc! {"
+        first_name	last_name	rusty_luck
+        Andrés	Robalino	1
+        JT	Turner	1
+        Yehuda	Katz	1
+    "},
+    )?;
+
+    let code = "
+        open los_tres_caballeros.txt
+        | from csv --separator (char tab)
+        | get rusty_luck
+        | length
+    ";
+
+    test().cwd(playground.path()).run(code).expect_value_eq(3)
+}
+
+#[test]
+#[ignore = "csv crate has a bug when the last line is a comment: https://github.com/BurntSushi/rust-csv/issues/363"]
+fn from_csv_text_with_comments_to_table(playground: Playground) -> Result {
+    playground.file(
+        "los_tres_caballeros.txt",
+        indoc::indoc! {"
+        # This is a comment
+        first_name,last_name,rusty_luck
+        # This one too
+        Andrés,Robalino,1
+        Jonathan,Turner,1
+        Yehuda,Katz,1
+        # This one also
+    "},
+    )?;
+
+    let code = r##"
+        open los_tres_caballeros.txt
+        | from csv --comment "#"
+        | get rusty_luck
+        | length
+    "##;
+
+    test().cwd(playground.path()).run(code).expect_value_eq(3)
+}
+
+#[test]
+fn from_csv_text_with_custom_quotes_to_table(playground: Playground) -> Result {
+    playground.file(
+        "los_tres_caballeros.txt",
+        indoc::indoc! {"
+        first_name,last_name,rusty_luck
+        'And''rés',Robalino,1
+        Jonathan,Turner,1
+        Yehuda,Katz,1
+    "},
+    )?;
+
+    let code = r#"
+        open los_tres_caballeros.txt
+        | from csv --quote "'"
+        | first
+        | get first_name
+    "#;
+
+    test()
+        .cwd(playground.path())
+        .run(code)
+        .expect_value_eq("And'rés")
+}
+
+#[test]
+fn to_csv_quote_round_trips() -> Result {
+    let code = "[[foo]; ['a,b']] | to csv --quote '|' | from csv --quote '|' | get 0.foo";
+    test().run(code).expect_value_eq("a,b")
+}
+
+#[test]
+fn to_csv_escape_round_trips_data_containing_the_escape_char() -> Result {
+    // Regression test: the writer used to only rewrite the quote byte inside a quoted
+    // field, leaving any escape byte that was already in the data untouched. That made
+    // `to csv --escape` | `from csv --escape` lossy for exactly the data it's meant to
+    // round-trip through.
+    let code = r#"[[foo]; ['a\b']] | to csv --escape '\' | from csv --escape '\' | get 0.foo"#;
+    test().run(code).expect_value_eq(r"a\b")
+}
+
+#[test]
+fn to_csv_escape_round_trips_separator_and_trailing_escape() -> Result {
+    let code =
+        r#"[[foo]; ['C:\dir\,x']] | to csv --escape '\' | from csv --escape '\' | get 0.foo"#;
+    test().run(code).expect_value_eq(r"C:\dir\,x")
+}
+
+#[test]
+fn to_csv_escape_round_trips_trailing_escape_with_second_column() -> Result {
+    let code =
+        r#"[[foo bar]; ['end\' x]] | to csv --escape '\' | from csv --escape '\' | get 0.foo"#;
+    test().run(code).expect_value_eq(r"end\")
+}
+
+#[test]
+fn to_csv_escape_round_trips_header_containing_escape_char() -> Result {
+    // Column names go through the same header write_record call, which needs the same
+    // escaping as data fields.
+    let code = r#"{"a\\b": 1} | to csv --escape '\' | from csv --escape '\' | columns | get 0"#;
+    test().run(code).expect_value_eq(r"a\b")
+}
+
+#[test]
+fn to_csv_escape_round_trips_when_escape_equals_quote() -> Result {
+    // Regression test: escape_delimited_field used to double the escape byte even when it
+    // was also the quote byte, but csv-core's own writer already doubles every quote byte
+    // inside a quoted field, so the two doublings stacked into "a\"\"\"\"b" instead of
+    // "a\"\"b".
+    let code = r#"[[foo]; ['a"b']] | to csv --escape '"' | from csv --escape '"' | get 0.foo"#;
+    test().run(code).expect_value_eq(r#"a"b"#)
+}
+
+#[test]
+fn to_csv_quote_rejects_non_ascii() -> Result {
+    let code = "[[foo]; ['a,b']] | to csv --quote 'é'";
+    let outcome = test().run(code).expect_shell_error()?;
+    match outcome {
+        ShellError::IncorrectValue { msg, .. } => assert_contains("ASCII", msg),
+        err => panic!("expected IncorrectValue, got {err:?}"),
+    }
+    Ok(())
+}
+
+#[test]
+fn to_csv_escape_rejects_non_ascii() -> Result {
+    let code = "[[foo]; ['a,b']] | to csv --escape 'é'";
+    let outcome = test().run(code).expect_shell_error()?;
+    match outcome {
+        ShellError::IncorrectValue { msg, .. } => assert_contains("ASCII", msg),
+        err => panic!("expected IncorrectValue, got {err:?}"),
+    }
+    Ok(())
+}
+
+#[test]
+fn to_csv_quote_equal_to_separator_is_rejected() -> Result {
+    let code = "[[foo bar]; ['a,b' c]] | to csv --quote ','";
+    let outcome = test().run(code).expect_shell_error()?;
+    assert!(matches!(outcome, ShellError::IncompatibleParameters { .. }));
+    Ok(())
+}
+
+#[test]
+fn to_csv_escape_equal_to_separator_is_rejected() -> Result {
+    let code = "[[foo bar]; ['a,b' c]] | to csv --escape ','";
+    let outcome = test().run(code).expect_shell_error()?;
+    assert!(matches!(outcome, ShellError::IncompatibleParameters { .. }));
+    Ok(())
+}
+
+#[test]
+fn to_csv_quote_error_names_the_flag() -> Result {
+    let code = "[[foo]; [1]] | to csv --quote 'ab'";
+    let err = test().run(code).expect_shell_error()?;
+    assert_contains("single character quote", err.to_string());
+    Ok(())
+}
+
+#[test]
+fn to_csv_escape_error_names_the_flag() -> Result {
+    let code = "[[foo]; [1]] | to csv --escape 'ab'";
+    let err = test().run(code).expect_shell_error()?;
+    assert_contains("single character escape", err.to_string());
+    Ok(())
+}
+
+#[test]
+fn streaming_to_csv_escape_round_trips() -> Result {
+    // Exercises the ListStream branch of to_delimited_data (as opposed to a materialized
+    // Value::List/Record), which has its own copy of the writer setup.
+    let code = r#"
+        1..2 | each {|i| {foo: $"a\\($i)b"} }
+        | to csv --escape '\'
+        | from csv --escape '\'
+        | get foo
+        | to nuon
+    "#;
+    test().run(code).expect_value_eq(r#"["a\\1b", "a\\2b"]"#)
+}
+
+#[test]
+fn from_csv_text_with_custom_escapes_to_table(playground: Playground) -> Result {
+    playground.file(
+        "los_tres_caballeros.txt",
+        indoc::indoc! {r#"
+        first_name,last_name,rusty_luck
+        "And\"rés",Robalino,1
+        Jonathan,Turner,1
+        Yehuda,Katz,1
+    "#},
+    )?;
+
+    let code = r#"
+        open los_tres_caballeros.txt
+        | from csv --escape '\'
+        | first
+        | get first_name
+    "#;
+
+    test()
+        .cwd(playground.path())
+        .run(code)
+        .expect_value_eq(r#"And"rés"#)
+}
+
+#[test]
+fn from_csv_text_skipping_headers_to_table(playground: Playground) -> Result {
+    playground.file(
+        "los_tres_amigos.txt",
+        indoc::indoc! {"
+        Andrés,Robalino,1
+        JT,Turner,1
+        Yehuda,Katz,1
+    "},
+    )?;
+
+    let code = "
+        open los_tres_amigos.txt
+        | from csv --noheaders
+        | get column2
+        | length
+    ";
+
+    test().cwd(playground.path()).run(code).expect_value_eq(3)
+}
+
+#[test]
+fn from_csv_text_with_missing_columns_to_table(playground: Playground) -> Result {
+    playground.file(
+        "los_tres_caballeros.txt",
+        indoc::indoc! {"
+        first_name,last_name,rusty_luck
+        Andrés,Robalino
+        Jonathan,Turner,1
+        Yehuda,Katz,1
+    "},
+    )?;
+
+    let code = "
+        open los_tres_caballeros.txt
+        | from csv --flexible
+        | get -o rusty_luck
+        | compact
+        | length
+    ";
+
+    test().cwd(playground.path()).run(code).expect_value_eq(2)
+}
+
+#[test]
+fn from_csv_text_with_multiple_char_separator(playground: Playground) -> Result {
+    playground.file(
+        "los_tres_caballeros.txt",
+        indoc::indoc! {"
+        first_name,last_name,rusty_luck
+        Andrés,Robalino,1
+        Jonathan,Turner,1
+        Yehuda,Katz,1
+    "},
+    )?;
+
+    let code = r#"
+        open los_tres_caballeros.txt
+        | from csv --separator "li"
+    "#;
+
+    let outcome = test().cwd(playground.path()).run(code).expect_error()?;
+    match outcome {
+        ShellError::NonUtf8Custom { msg, .. } => {
+            assert_eq!(msg, "separator should be a single char or a 4-byte unicode");
+            Ok(())
+        }
+        err => Err(err.into()),
+    }
+}
+
+#[test]
+fn from_csv_text_with_wrong_type_separator(playground: Playground) -> Result {
+    playground.file(
+        "los_tres_caballeros.txt",
+        indoc::indoc! {"
+        first_name,last_name,rusty_luck
+        Andrés,Robalino,1
+        Jonathan,Turner,1
+        Yehuda,Katz,1
+    "},
+    )?;
+
+    let code = "
+        open los_tres_caballeros.txt
+        | from csv --separator ('123' | into int)
+    ";
+
+    let outcome = test()
+        .cwd(playground.path())
+        .run(code)
+        .expect_parse_error()?;
+    match outcome {
+        ParseError::TypeMismatch(expected, got, _) => {
+            assert_eq!(expected, Type::String);
+            assert_eq!(got, Type::Int);
+            Ok(())
+        }
+        err => Err(err.into()),
+    }
+}
+
+#[test]
+fn table_with_record_error() -> Result {
+    let code = "
+        [[a b]; [1 2] [3 {a: 1 b: 2}]]
+        | to csv
+    ";
+
+    let outcome = test().run(code).expect_error()?;
+    assert!(matches!(outcome, ShellError::CantConvert { .. }));
+    Ok(())
+}
+
+#[test]
+#[ignore = "\
+    After relaxing type checking of table and `list<oneof<record, ...>>` \
+    this is a runtime error, which is checked by the following test.\
+"]
+fn list_not_table_parse_time_error() -> Result {
+    let code = "
+        [{a: 1 b: 2} {a: 3 b: 4} 1]
+        | to csv
+    ";
+
+    let outcome = test().run(code).expect_parse_error()?;
+    assert!(matches!(outcome, ParseError::InputMismatch { .. }));
+    Ok(())
+}
+
+#[test]
+fn list_not_table_runtime_error() -> Result {
+    let code = "
+        echo [{a: 1 b: 2} {a: 3 b: 4} 1]
+        | to csv
+    ";
+
+    let outcome = test().run(code).expect_shell_error()?;
+    assert!(matches!(
+        outcome,
+        ShellError::OnlySupportsThisInputType { .. }
+    ));
+    Ok(())
+}
+
+#[test]
+fn string_to_csv_error() -> Result {
+    let code = "
+        'qwe' | to csv
+    ";
+
+    let outcome = test().run(code).expect_parse_error()?;
+    assert!(matches!(outcome, ParseError::InputMismatch(..)));
+    Ok(())
+}
+
+#[test]
+fn parses_csv_with_unicode_sep(playground: Playground) -> Result {
+    playground.file(
+        "los_tres_caballeros.txt",
+        indoc::indoc! {"
+        first_name;last_name;rusty_luck
+        Andrés;Robalino;1
+        JT;Turner;1
+        Yehuda;Katz;1
+    "},
+    )?;
+
+    let code = r#"
+        open los_tres_caballeros.txt
+        | from csv --separator "003B"
+        | get rusty_luck
+        | length
+    "#;
+
+    test().cwd(playground.path()).run(code).expect_value_eq(3)
+}
+
+#[test]
+fn parses_csv_with_unicode_x1f_sep(playground: Playground) -> Result {
+    playground.file(
+        "los_tres_caballeros.txt",
+        indoc::indoc! {"
+        first_namelast_namerusty_luck
+        AndrésRobalino1
+        JTTurner1
+        YehudaKatz1
+    "},
+    )?;
+
+    let code = r#"
+        open los_tres_caballeros.txt
+        | from csv --separator "001F"
+        | get rusty_luck
+        | length
+    "#;
+
+    test().cwd(playground.path()).run(code).expect_value_eq(3)
+}
+
+#[test]
+fn from_csv_test_flexible_extra_vals() -> Result {
+    let code = r#"
+      echo "a,b\n1,2,3" | from csv --flexible | first | values | to nuon
+    "#;
+
+    test().run(code).expect_value_eq("[1, 2, 3]")
+}
+
+#[test]
+fn from_csv_test_flexible_missing_vals() -> Result {
+    let code = r#"
+      echo "a,b\n1" | from csv --flexible | first | values | to nuon
+    "#;
+
+    test().run(code).expect_value_eq("[1]")
+}
+
+#[test]
+fn streaming_heterogeneous_table_fails_with_explicit_error() -> Result {
+    // Heterogeneous tables streamed without explicit columns should fail with a clear error
+    // instead of silently dropping columns
+    let code = "
+        1..3 | each {|i|
+            if $i == 1 {
+                {a: $i}
+            } else {
+                {a: $i b: ($i * 10)}
+            }
+        } | to csv
+    ";
+
+    let outcome = test().run(code).expect_shell_error()?;
+    assert!(
+        outcome.to_string().contains("streamed csv schema changed"),
+        "Expected schema drift error, got: {}",
+        outcome
+    );
+    Ok(())
+}
+
+#[test]
+fn streaming_heterogeneous_table_with_explicit_columns_works() -> Result {
+    // Heterogeneous tables with explicit columns should work correctly (fill missing with empty)
+    let code = "
+        1..3 | each {|i|
+            if $i == 1 {
+                {a: $i}
+            } else {
+                {a: $i b: ($i * 10)}
+            }
+        } | to csv --columns [a b]
+    ";
+
+    test().run(code).expect_value_eq("a,b\n1,\n2,20\n3,30\n")
+}
+
+#[test]
+fn materialized_heterogeneous_table_preserved() -> Result {
+    // Materialized (collected) heterogeneous tables should still use old merge_descriptors semantics
+    // which computes union of all columns
+    let code = "
+        1..3 | each {|i|
+            if $i == 1 {
+                {a: $i}
+            } else {
+                {a: $i b: ($i * 10)}
+            }
+        } | collect | to csv
+    ";
+
+    test().run(code).expect_value_eq("a,b\n1,\n2,20\n3,30\n")
+}
+
+#[test]
+fn empty_stream_with_explicit_columns_still_writes_header() -> Result {
+    let code = "
+        1..3
+        | where {|i| $i > 10 }
+        | wrap a
+        | to csv --columns [a]
+        | lines
+        | to nuon
+    ";
+
+    test().run(code).expect_value_eq("[a]")
+}

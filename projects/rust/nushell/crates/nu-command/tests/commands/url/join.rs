@@ -1,0 +1,537 @@
+use nu_test_support::prelude::*;
+
+#[test]
+fn url_join_simple() -> Result {
+    let code = r#"
+            {
+                "scheme": "http",
+                "username": "",
+                "password": "",
+                "host": "localhost",
+                "port": "",
+            } | url join
+        "#;
+
+    test().run(code).expect_value_eq("http://localhost")
+}
+
+#[test]
+fn url_join_with_only_user() -> Result {
+    let code = r#"
+            {
+                "scheme": "http",
+                "username": "usr",
+                "password": "",
+                "host": "localhost",
+                "port": "",
+            } | url join
+        "#;
+
+    test().run(code).expect_value_eq("http://usr@localhost")
+}
+
+#[test]
+fn url_join_with_only_pwd() -> Result {
+    let code = r#"
+            {
+                "scheme": "http",
+                "username": "",
+                "password": "pwd",
+                "host": "localhost",
+                "port": "",
+            } | url join
+        "#;
+
+    test().run(code).expect_value_eq("http://localhost")
+}
+
+#[test]
+fn url_join_with_user_and_pwd() -> Result {
+    let code = r#"
+            {
+                "scheme": "http",
+                "username": "usr",
+                "password": "pwd",
+                "host": "localhost",
+                "port": "",
+            } | url join
+        "#;
+
+    test().run(code).expect_value_eq("http://usr:pwd@localhost")
+}
+
+#[test]
+fn url_join_with_query() -> Result {
+    let code = r#"
+            {
+                "scheme": "http",
+                "username": "usr",
+                "password": "pwd",
+                "host": "localhost",
+                "query": "par_1=aaa&par_2=bbb"
+                "port": "",
+            } | url join
+        "#;
+
+    test()
+        .run(code)
+        .expect_value_eq("http://usr:pwd@localhost?par_1=aaa&par_2=bbb")
+}
+
+#[test]
+fn url_join_with_params() -> Result {
+    let code = r#"
+            {
+                "scheme": "http",
+                "username": "usr",
+                "password": "pwd",
+                "host": "localhost",
+                "params": {
+                    "par_1": "aaa",
+                    "par_2": "bbb"
+                },
+                "port": "1234",
+            } | url join
+        "#;
+
+    test()
+        .run(code)
+        .expect_value_eq("http://usr:pwd@localhost:1234?par_1=aaa&par_2=bbb")
+}
+
+#[test]
+fn url_join_with_same_query_and_params() -> Result {
+    let code = r#"
+            {
+                "scheme": "http",
+                "username": "usr",
+                "password": "pwd",
+                "host": "localhost",
+                "query": "par_1=aaa&par_2=bbb",
+                "params": {
+                    "par_1": "aaa",
+                    "par_2": "bbb"
+                },
+                "port": "1234",
+            } | url join
+        "#;
+
+    test()
+        .run(code)
+        .expect_value_eq("http://usr:pwd@localhost:1234?par_1=aaa&par_2=bbb")
+}
+
+#[test]
+fn url_join_with_params_before_same_query() -> Result {
+    let code = r#"
+            {
+                "scheme": "http",
+                "host": "localhost",
+                "params": {
+                    "par_1": "aaa",
+                    "par_2": "bbb"
+                },
+                "query": "par_1=aaa&par_2=bbb",
+            } | url join
+        "#;
+
+    test()
+        .run(code)
+        .expect_value_eq("http://localhost?par_1=aaa&par_2=bbb")
+}
+
+#[test]
+fn url_join_with_encoded_query_and_params() -> Result {
+    let code = r#"
+            {
+                "scheme": "http",
+                "host": "localhost",
+                "query": "name=a%20b&x=%28y%29",
+                "params": {
+                    "name": "a b",
+                    "x": "(y)"
+                },
+            } | url join
+        "#;
+
+    test()
+        .run(code)
+        .expect_value_eq("http://localhost?name=a%20b&x=%28y%29")
+}
+
+#[rstest::rstest]
+// https://github.com/nushell/nushell/issues/12352
+#[case::encoded_space("https://example.com/search?q=a%20b&lang=en")]
+#[case::quote_in_other_scheme("git+ssh://h/r?ref='v1'")]
+#[case::quote_and_encoded_space("foo://h/p?q=a%20b&r='c'")]
+fn url_parse_then_join_keeps_encoded_query(#[case] url: &str) -> Result {
+    test()
+        .run(format!(r#""{url}" | url parse | url join"#))
+        .expect_value_eq(url)
+}
+
+#[test]
+fn url_join_with_params_before_encoded_query() -> Result {
+    let code = r#"{scheme: http, host: h, params: {a: "b c"}, query: "a=b%20c"} | url join"#;
+
+    test().run(code).expect_value_eq("http://h?a=b%20c")
+}
+
+#[rstest::rstest]
+#[case::query_first(r#"{scheme: http, host: h, query: "?a=1", params: {"?a": "1"}}"#)]
+#[case::params_first(r#"{scheme: http, host: h, params: {"?a": "1"}, query: "?a=1"}"#)]
+fn url_join_with_question_mark_in_query_ignores_field_order(#[case] record: &str) -> Result {
+    test()
+        .run(format!("{record} | url join"))
+        .expect_value_eq("http://h??a=1")
+}
+
+#[test]
+fn url_join_mismatch_shows_question_mark_of_query() -> Result {
+    let code = r#"{scheme: http, host: h, params: {a: "1"}, query: "?a=1"} | url join"#;
+    let err = test().run(code).expect_error()?;
+    match err {
+        ShellError::IncompatibleParameters {
+            left_message,
+            right_message,
+            ..
+        } => {
+            assert_eq!(left_message, "Mismatch, query param is: ??a=1");
+            assert_eq!(right_message, "instead query string from params is: ?a=1");
+            Ok(())
+        }
+        err => Err(err.into()),
+    }
+}
+
+#[rstest::rstest]
+#[case::plus_is_not_a_space(r#"{scheme: http, host: h, params: {a: " "}, query: "a=%2B"}"#)]
+#[case::raw_hash_query_first(r#"{scheme: http, host: h, query: "a=1#x", params: {a: "1#x"}}"#)]
+#[case::raw_hash_params_first(r#"{scheme: http, host: h, params: {a: "1#x"}, query: "a=1#x"}"#)]
+#[case::raw_newline(r#"{scheme: http, host: h, query: "a=1\nb", params: {a: "1\nb"}}"#)]
+#[case::question_mark_key(r#"{scheme: http, host: h, params: {a: "1"}, query: "?a=1"}"#)]
+fn url_join_with_query_that_reads_differently_from_params(#[case] record: &str) -> Result {
+    let err = test().run(format!("{record} | url join")).expect_error()?;
+    match err {
+        ShellError::IncompatibleParameters { .. } => Ok(()),
+        err => Err(err.into()),
+    }
+}
+
+#[test]
+fn url_join_with_different_query_and_params() -> Result {
+    let code = r#"
+            {
+                "scheme": "http",
+                "username": "usr",
+                "password": "pwd",
+                "host": "localhost",
+                "query": "par_1=aaa&par_2=bbb",
+                "params": {
+                    "par_1": "aaab",
+                    "par_2": "bbb"
+                },
+                "port": "1234",
+            } | url join
+        "#;
+
+    let err = test().run(code).expect_error()?;
+    match err {
+        ShellError::IncompatibleParameters {
+            left_message,
+            right_message,
+            ..
+        } => {
+            assert_eq!(
+                left_message,
+                "Mismatch, query string from params is: ?par_1=aaab&par_2=bbb"
+            );
+            assert_eq!(right_message, "instead query is: ?par_1=aaa&par_2=bbb");
+        }
+        err => return Err(err.into()),
+    }
+
+    let code = r#"
+            {
+                "scheme": "http",
+                "username": "usr",
+                "password": "pwd",
+                "host": "localhost",
+                "params": {
+                    "par_1": "aaab",
+                    "par_2": "bbb"
+                },
+                "query": "par_1=aaa&par_2=bbb",
+                "port": "1234",
+            } | url join
+        "#;
+
+    let err = test().run(code).expect_error()?;
+    match err {
+        ShellError::IncompatibleParameters {
+            left_message,
+            right_message,
+            ..
+        } => {
+            assert_eq!(
+                left_message,
+                "Mismatch, query param is: ?par_1=aaa&par_2=bbb"
+            );
+            assert_eq!(
+                right_message,
+                "instead query string from params is: ?par_1=aaab&par_2=bbb"
+            );
+            Ok(())
+        }
+        err => Err(err.into()),
+    }
+}
+
+#[test]
+fn url_join_with_invalid_params() -> Result {
+    let code = r#"
+            {
+                "scheme": "http",
+                "username": "usr",
+                "password": "pwd",
+                "host": "localhost",
+                "params": "aaa",
+                "port": "1234",
+            } | url join
+        "#;
+
+    let err = test().run(code).expect_error()?;
+    match err {
+        ShellError::IncompatibleParametersSingle { msg, .. } => {
+            assert_eq!(msg, "Key params has to be a record or a table");
+            Ok(())
+        }
+        err => Err(err.into()),
+    }
+}
+
+#[test]
+fn url_join_with_port() -> Result {
+    let code = r#"
+            {
+                "scheme": "http",
+                "host": "localhost",
+                "port": "1234",
+            } | url join
+        "#;
+
+    test().run(code).expect_value_eq("http://localhost:1234")?;
+
+    let code = r#"
+            {
+                "scheme": "http",
+                "host": "localhost",
+                "port": 1234,
+            } | url join
+        "#;
+
+    test().run(code).expect_value_eq("http://localhost:1234")
+}
+
+#[test]
+fn url_join_with_invalid_port() -> Result {
+    let code = r#"
+            {
+                "scheme": "http",
+                "host": "localhost",
+                "port": "aaaa",
+            } | url join
+        "#;
+
+    let err = test().run(code).expect_error()?;
+    match err {
+        ShellError::IncompatibleParametersSingle { msg, .. } => {
+            assert_eq!(msg, "Port parameter should represent an unsigned int");
+        }
+        err => return Err(err.into()),
+    }
+
+    let code = r#"
+            {
+                "scheme": "http",
+                "host": "localhost",
+                "port": [],
+            } | url join
+        "#;
+
+    let err = test().run(code).expect_error()?;
+    match err {
+        ShellError::IncompatibleParametersSingle { msg, .. } => {
+            assert_eq!(
+                msg,
+                "Port parameter should be an unsigned int or a string representing it"
+            );
+            Ok(())
+        }
+        err => Err(err.into()),
+    }
+}
+
+#[test]
+fn url_join_with_missing_scheme() -> Result {
+    let code = r#"
+            {
+                "host": "localhost"
+            } | url join
+        "#;
+
+    let err = test().run(code).expect_error()?;
+    match err {
+        ShellError::MissingParameter { param_name, .. } => {
+            assert_eq!(param_name, "scheme");
+            Ok(())
+        }
+        err => Err(err.into()),
+    }
+}
+
+#[test]
+fn url_join_with_missing_host() -> Result {
+    let code = r#"
+            {
+                "scheme": "https"
+            } | url join
+        "#;
+
+    let err = test().run(code).expect_error()?;
+    match err {
+        ShellError::MissingParameter { param_name, .. } => {
+            assert_eq!(param_name, "host");
+            Ok(())
+        }
+        err => Err(err.into()),
+    }
+}
+
+#[test]
+fn url_join_with_fragment() -> Result {
+    let code = r#"
+            {
+                "scheme": "http",
+                "username": "usr",
+                "password": "pwd",
+                "host": "localhost",
+                "fragment": "frag",
+                "port": "1234",
+            } | url join
+        "#;
+
+    test()
+        .run(code)
+        .expect_value_eq("http://usr:pwd@localhost:1234#frag")
+}
+
+#[test]
+fn url_join_with_fragment_and_params() -> Result {
+    let code = r#"
+            {
+                "scheme": "http",
+                "username": "usr",
+                "password": "pwd",
+                "host": "localhost",
+                "params": {
+                    "par_1": "aaa",
+                    "par_2": "bbb"
+                },
+                "port": "1234",
+                "fragment": "frag"
+            } | url join
+        "#;
+
+    test()
+        .run(code)
+        .expect_value_eq("http://usr:pwd@localhost:1234?par_1=aaa&par_2=bbb#frag")
+}
+
+#[test]
+fn url_join_with_empty_params() -> Result {
+    let code = r#"
+        {
+            "scheme": "https",
+            "host": "localhost",
+            "path": "/foo",
+            "params": {}
+        } | url join
+        "#;
+
+    test().run(code).expect_value_eq("https://localhost/foo")
+}
+
+#[test]
+fn url_join_with_list_in_params() -> Result {
+    let code = r#"
+        {
+            "scheme": "http",
+            "username": "usr",
+            "password": "pwd",
+            "host": "localhost",
+            "params": {
+                "par_1": "aaa",
+                "par_2": ["bbb", "ccc"]
+            },
+            "port": "1234",
+        } | url join
+    "#;
+
+    test()
+        .run(code)
+        .expect_value_eq("http://usr:pwd@localhost:1234?par_1=aaa&par_2=bbb&par_2=ccc")
+}
+
+#[test]
+fn url_join_with_params_table() -> Result {
+    let code = r#"
+        {
+            "scheme": "http",
+            "username": "usr",
+            "password": "pwd",
+            "host": "localhost",
+            "params": [
+                ["key", "value"];
+                ["par_1", "aaa"],
+                ["par_2", "bbb"],
+                ["par_1", "ccc"],
+                ["par_2", "ddd"],
+            ],
+            "port": "1234",
+        } | url join
+    "#;
+
+    test()
+        .run(code)
+        .expect_value_eq("http://usr:pwd@localhost:1234?par_1=aaa&par_2=bbb&par_1=ccc&par_2=ddd")
+}
+
+#[test]
+fn url_join_with_params_invalid_table() -> Result {
+    let code = r#"
+        {
+            "scheme": "http",
+            "username": "usr",
+            "password": "pwd",
+            "host": "localhost",
+            "params": (
+                [
+                    { key: foo, value: bar }
+                    "not a record"
+                ]
+            ),
+            "port": "1234",
+        } | url join
+    "#;
+
+    let err = test().run(code).expect_error()?;
+    match err {
+        ShellError::UnsupportedInput { msg, input, .. } => {
+            assert_eq!(msg, "expected a table");
+            assert_eq!(input, "not a table, contains non-record values");
+            Ok(())
+        }
+        err => Err(err.into()),
+    }
+}

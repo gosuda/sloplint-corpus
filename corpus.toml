@@ -2,3 +2,32 @@ schema_version = 1
 
 [corpus]
 mode = "public"
+
+[[project]]
+name = "tokio"
+language = "rust"
+url = "https://github.com/tokio-rs/tokio"
+rev = "675ba8164071a6eee3dd1f3cb4fbdc1d3664396e"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:6920c15caaaaf89f738ddf71e4274a85cf3b9dbc204d3f12a43f4724252039eb"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "mid-size async runtime, library"
+notice_present_upstream = false
+
+[[project]]
+name = "nushell"
+language = "rust"
+url = "https://github.com/nushell/nushell"
+rev = "3dbf0506045e21baf875e868e7bd5bc2822ef946"
+spdx = "MIT"
+storage = "copied"
+paths = ["crates/nu-parser/**", "crates/nu-parser/*/**", "crates/nu-parser/*/*/**", "crates/nu-parser/*/*/*/**", "crates/nu-parser/*/*/*/*/**", "crates/nu-parser/*/*/*/*/*/**", "crates/nu-protocol/**", "crates/nu-protocol/*/**", "crates/nu-protocol/*/*/**", "crates/nu-protocol/*/*/*/**", "crates/nu-protocol/*/*/*/*/**", "crates/nu-protocol/*/*/*/*/*/**", "crates/nu-engine/**", "crates/nu-engine/*/**", "crates/nu-engine/*/*/**", "crates/nu-engine/*/*/*/**", "crates/nu-engine/*/*/*/*/**", "crates/nu-engine/*/*/*/*/*/**", "crates/nu-command/**", "crates/nu-command/*/**", "crates/nu-command/*/*/**", "crates/nu-command/*/*/*/**", "crates/nu-command/*/*/*/*/**", "crates/nu-command/*/*/*/*/*/**", "crates/nu-cli/**", "crates/nu-cli/*/**", "crates/nu-cli/*/*/**", "crates/nu-cli/*/*/*/**", "crates/nu-cli/*/*/*/*/**", "crates/nu-cli/*/*/*/*/*/**"]
+exclude = ["src/reedline_config.rs"]
+tree_hash = "sha256:015329df6f7bf4eea6dadc2d1445946064df8aa3ed6442ae2792c33cfe1d4ca3"
+added_by = "CorpusPopC1"
+added_on = "2026-11-23"
+reason = "mid-size shell/DSL with custom parser, application"
+notice_present_upstream = false

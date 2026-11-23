@@ -1,0 +1,909 @@
+use mockito::{Server, ServerOpts};
+use nu_protocol::shell_error;
+use nu_test_support::prelude::*;
+use std::{thread, time::Duration};
+
+#[test]
+fn http_get_is_success() -> Result {
+    let mut server = Server::new();
+    let _mock = server.mock("GET", "/").with_body("foo").create();
+    test()
+        .run_with_data("http get $in", server.url())
+        .expect_value_eq("foo")
+}
+
+#[test]
+fn http_get_failed_due_to_server_error() -> Result {
+    let mut server = Server::new();
+    let _mock = server.mock("GET", "/").with_status(400).create();
+    let err = test()
+        .run_with_data("http get $in", server.url())
+        .expect_shell_error()?;
+    match err {
+        ShellError::HttpError { msg, .. } => {
+            assert_contains("Bad Request", msg);
+            Ok(())
+        }
+        err => Err(err.into()),
+    }
+}
+
+#[rstest::rstest]
+#[case::with_charset("application/json; charset=utf-8")]
+#[case::problem_json("application/problem+json")]
+#[case::charset_no_space("application/json;charset=UTF-8")]
+fn http_get_failed_due_to_server_error_with_json_body(#[case] content_type: &str) -> Result {
+    let mut server = Server::new();
+    let _mock = server
+        .mock("GET", "/")
+        .with_status(400)
+        .with_header("content-type", content_type)
+        .with_body(r#"{"msg": "boom"}"#)
+        .create();
+    let err = test()
+        .run_with_data("http get $in", server.url())
+        .expect_shell_error()?;
+    match err {
+        ShellError::HttpError { msg, .. } => {
+            assert_contains(r#"{"msg": "boom"}"#, msg);
+            Ok(())
+        }
+        err => Err(err.into()),
+    }
+}
+
+#[test]
+fn http_get_failed_with_empty_json_body_reports_reason() -> Result {
+    let mut server = Server::new();
+    let _mock = server
+        .mock("GET", "/")
+        .with_status(401)
+        .with_header("content-type", "application/json; charset=utf-8")
+        .create();
+    let err = test()
+        .run_with_data("http get $in", server.url())
+        .expect_shell_error()?;
+    match err {
+        ShellError::HttpError { msg, .. } => {
+            assert_eq!(msg, "Unauthorized");
+            Ok(())
+        }
+        err => Err(err.into()),
+    }
+}
+
+#[test]
+fn http_get_with_accept_errors() -> Result {
+    let mut server = Server::new();
+
+    let _mock = server
+        .mock("GET", "/")
+        .with_status(400)
+        .with_body("error body")
+        .create();
+
+    test()
+        .run_with_data("http get -e $in", server.url())
+        .expect_value_eq("error body")
+}
+
+#[test]
+fn http_get_with_accept_errors_and_full_raw_response() -> Result {
+    let mut server = Server::new();
+
+    let _mock = server
+        .mock("GET", "/")
+        .with_status(400)
+        .with_body("error body")
+        .create();
+
+    #[derive(Debug, FromValue)]
+    struct Response {
+        status: u16,
+        body: String,
+    }
+
+    let response: Response = test().run_with_data("http get -e -f $in", server.url())?;
+    assert_eq!(response.status, 400);
+    assert_eq!(response.body, "error body");
+    Ok(())
+}
+
+#[test]
+fn http_get_with_accept_errors_and_full_json_response() -> Result {
+    let mut server = Server::new();
+
+    let _mock = server
+        .mock("GET", "/")
+        .with_status(400)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"msg": "error body"}"#)
+        .create();
+
+    #[derive(Debug, FromValue)]
+    struct Response {
+        status: u16,
+        body: ResponseBody,
+    }
+
+    #[derive(Debug, FromValue)]
+    struct ResponseBody {
+        msg: String,
+    }
+
+    let response: Response = test().run_with_data("http get -e -f $in", server.url())?;
+    assert_eq!(response.status, 400);
+    assert_eq!(response.body.msg, "error body");
+    Ok(())
+}
+
+#[test]
+fn http_get_with_custom_headers_as_records() -> Result {
+    let mut server = Server::new();
+
+    let mock1 = server
+        .mock("GET", "/")
+        .match_header("content-type", "application/json")
+        .with_body(r#"{"hello": "world"}"#)
+        .create();
+
+    let mock2 = server
+        .mock("GET", "/")
+        .match_header("content-type", "text/plain")
+        .with_body("world")
+        .create();
+
+    let _: String = test().run_with_data(
+        "http get -H {content-type: application/json} $in",
+        server.url(),
+    )?;
+    let _: String =
+        test().run_with_data("http get -H {content-type: text/plain} $in", server.url())?;
+
+    mock1.assert();
+    mock2.assert();
+    Ok(())
+}
+
+#[test]
+fn http_get_full_response() -> Result {
+    let mut server = Server::new();
+
+    let _mock = server.mock("GET", "/").with_body("foo").create();
+
+    let outcome: String = test().run_with_data(
+        "http get --full $in --headers [foo bar] | to json",
+        server.url(),
+    )?;
+    let output: serde_json::Value =
+        serde_json::from_str(&outcome).expect("full response should be valid JSON");
+
+    assert_eq!(output["status"], 200);
+    assert_eq!(output["body"], "foo");
+
+    // There's only one request header, we can get it by index
+    assert_eq!(output["headers"]["request"][0]["name"], "foo");
+    assert_eq!(output["headers"]["request"][0]["value"], "bar");
+
+    // ... and multiple response headers, so have to search by name
+    let header = output["headers"]["response"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["name"] == "connection")
+        .unwrap();
+    assert_eq!(header["value"], "close");
+    Ok(())
+}
+
+#[test]
+fn http_get_follows_redirect() -> Result {
+    let mut server = Server::new();
+
+    let _mock = server.mock("GET", "/bar").with_body("bar").create();
+    let _mock = server
+        .mock("GET", "/foo")
+        .with_status(301)
+        .with_header("Location", "/bar")
+        .create();
+
+    test()
+        .run_with_data("let url = $in; http get $'($url)/foo'", server.url())
+        .expect_value_eq("bar")
+}
+
+// IPv6 literals are wrapped in brackets in URLs (e.g. `http://[::1]:8080/`).
+// `url::Url` handles the brackets, but the resolver used to pass the bracketed
+// host to `getaddrinfo`, which cannot resolve it. This exercises the resolver
+// and the `text/plain` extension lookup with a real request to an IPv6 literal.
+#[test]
+fn http_get_ipv6_literal() -> Result {
+    let mut server = Server::new_with_opts(ServerOpts {
+        host: "::1",
+        ..Default::default()
+    });
+
+    let _mock = server
+        .mock("GET", "/a.txt")
+        .with_header("content-type", "text/plain")
+        .with_body("hello")
+        .create();
+
+    let code = format!("http get {url}/a.txt", url = server.url());
+    test().run(code).expect_value_eq("hello")
+}
+
+#[test]
+fn http_get_redirect_mode_manual() -> Result {
+    let mut server = Server::new();
+
+    let _mock = server
+        .mock("GET", "/foo")
+        .with_status(301)
+        .with_body("foo")
+        .with_header("Location", "/bar")
+        .create();
+
+    test()
+        .run_with_data(
+            "let url = $in; http get --redirect-mode manual $'($url)/foo'",
+            server.url(),
+        )
+        .expect_value_eq("foo")
+}
+
+#[test]
+fn http_get_redirect_mode_error() -> Result {
+    let mut server = Server::new();
+
+    let _mock = server
+        .mock("GET", "/foo")
+        .with_status(301)
+        .with_body("foo")
+        .with_header("Location", "/bar")
+        .create();
+
+    let err = test()
+        .run_with_data(
+            "let url = $in; http get --redirect-mode error $'($url)/foo'",
+            server.url(),
+        )
+        .expect_shell_error()?;
+
+    match err {
+        ShellError::NetworkFailure { msg, .. } => {
+            assert_eq!(
+                msg,
+                "Redirect encountered when redirect handling mode was 'error' (301 Moved Permanently)"
+            );
+            Ok(())
+        }
+        err => Err(err.into()),
+    }
+}
+
+// These tests require network access; they use badssl.com which is a Google-affiliated site for testing various SSL errors.
+// Revisit this if these tests prove to be flaky or unstable.
+//
+// These tests are flaky and cause CI to fail somewhat regularly. See PR #12010.
+
+#[test]
+#[ignore = "unreliable test"]
+fn http_get_expired_cert_fails() -> Result {
+    let err = test()
+        .run("http get https://expired.badssl.com/")
+        .expect_shell_error()?;
+    assert!(matches!(err, ShellError::NetworkFailure { .. }));
+    Ok(())
+}
+
+#[test]
+#[ignore = "unreliable test"]
+fn http_get_expired_cert_override() -> Result {
+    let outcome: String = test().run("http get --insecure https://expired.badssl.com/")?;
+    assert_contains("<html>", outcome);
+    Ok(())
+}
+
+#[test]
+#[ignore = "unreliable test"]
+fn http_get_self_signed_fails() -> Result {
+    let err = test()
+        .run("http get https://self-signed.badssl.com/")
+        .expect_shell_error()?;
+    assert!(matches!(err, ShellError::NetworkFailure { .. }));
+    Ok(())
+}
+
+#[test]
+#[ignore = "unreliable test"]
+fn http_get_self_signed_override() -> Result {
+    let outcome: String = test().run("http get --insecure https://self-signed.badssl.com/")?;
+    assert_contains("<html>", outcome);
+    Ok(())
+}
+
+#[test]
+fn http_get_with_invalid_mime_type() -> Result {
+    let mut server = Server::new();
+
+    let _mock = server
+        .mock("GET", "/foo.nuon")
+        .with_status(200)
+        // `what&ever` is not a parseable MIME type
+        .with_header("content-type", "what&ever")
+        .with_body("[1 2 3]")
+        .create();
+
+    // but `from nuon` is a known command in nu, so we take `foo.{ext}` and pass it to `from {ext}`
+    test()
+        .run_with_data("let url = $in; http get $'($url)/foo.nuon'", server.url())
+        .expect_value_eq([1, 2, 3])
+}
+
+#[test]
+fn http_get_with_unknown_mime_type() -> Result {
+    let mut server = Server::new();
+    let _mock = server
+        .mock("GET", "/foo")
+        .with_status(200)
+        // `application/nuon` is not an IANA-registered MIME type
+        .with_header("content-type", "application/nuon")
+        .with_body("[1 2 3]")
+        .create();
+
+    // but `from nuon` is a known command in nu, so we take `{garbage}/{whatever}` and pass it to `from {whatever}`
+    let code = format!("http get {url}/foo", url = server.url());
+
+    test().run(code).expect_value_eq([1, 2, 3])
+}
+
+#[test]
+fn http_get_with_x_prefixed_mime_type() -> Result {
+    let mut server = Server::new();
+    let _mock = server
+        .mock("GET", "/foo")
+        .with_status(200)
+        // `application/x-nuon` is the documented MIME type for nuon in nushell
+        .with_header("content-type", "application/x-nuon")
+        .with_body("[1 2 3]")
+        .create();
+
+    let code = format!("http get {url}/foo", url = server.url());
+
+    test().run(code).expect_value_eq([1, 2, 3])
+}
+
+#[test]
+fn http_get_with_custom_converter() -> Result {
+    let mut server = Server::new();
+    let _mock = server
+        .mock("GET", "/foo")
+        .with_status(200)
+        .with_header("content-type", "application/x-lines")
+        .with_body("a\nb\nc")
+        .create();
+
+    // A custom command converts the response, as it does for `open`.
+    let code = format!(
+        r#"def "from lines" [] {{ lines | length }}; http get {url}/foo"#,
+        url = server.url()
+    );
+
+    test().run(code).expect_value_eq(3)
+}
+
+#[test]
+fn http_get_binary_converter_on_utf8_response() -> Result {
+    let mut server = Server::new();
+    let _mock = server
+        .mock("GET", "/x.msgpack")
+        .with_status(200)
+        .with_header("content-type", "text/plain; charset=utf-8")
+        .with_body([0x01])
+        .create();
+
+    // The charset makes the body a string stream, but `from msgpack` only takes binary.
+    let code = format!("http get {url}/x.msgpack", url = server.url());
+
+    test().run(code).expect_value_eq(1)
+}
+
+#[test]
+fn http_get_timeout() -> Result {
+    let mut server = Server::new();
+    let _mock = server
+        .mock("GET", "/")
+        .with_chunked_body(|w| {
+            // Keep this well above `--max-time 100ms` so the client still times out. Mockito joins
+            // the chunked-body thread on drop, so a multi-second sleep stalls the Test step for
+            // every timeout case (get/post/put/patch/delete/options).
+            thread::sleep(Duration::from_millis(500));
+            w.write_all(b"Delayed response!")
+        })
+        .create();
+
+    let code = format!("http get --max-time 100ms {url}", url = server.url());
+
+    let err = test().run(code).expect_io_error()?;
+    assert!(matches!(
+        err.kind,
+        shell_error::io::ErrorKind::Std(std::io::ErrorKind::TimedOut, ..)
+    ));
+    Ok(())
+}
+
+#[test]
+fn http_get_timeout_with_allow_errors_returns_nothing() -> Result {
+    let mut server = Server::new();
+    let _mock = server
+        .mock("GET", "/")
+        .with_chunked_body(|w| {
+            thread::sleep(Duration::from_secs(10));
+            w.write_all(b"Delayed response!")
+        })
+        .create();
+
+    let code = format!(
+        "http get --allow-errors --max-time 100ms {url} | collect | describe",
+        url = server.url()
+    );
+
+    test().run(code).expect_value_eq("nothing")
+}
+
+#[test]
+fn http_get_header_timeout_with_allow_errors_returns_nothing() -> Result {
+    // Bind a socket that accepts the connection but never sends a response,
+    // so the request times out while waiting for the response headers.
+    let listener =
+        std::net::TcpListener::bind("127.0.0.1:0").expect("could not bind test listener");
+    let addr = listener
+        .local_addr()
+        .expect("could not get test listener address");
+    std::thread::spawn(move || {
+        // Hold the connection open without responding; the client times out.
+        if let Ok((stream, _)) = listener.accept() {
+            std::thread::sleep(Duration::from_secs(10));
+            drop(stream);
+        }
+    });
+
+    let code = format!("http get --allow-errors --max-time 100ms http://{addr} | describe");
+
+    test().run(code).expect_value_eq("nothing")
+}
+
+#[test]
+fn http_get_response_metadata() -> Result {
+    let mut server = Server::new();
+
+    let _mock = server
+        .mock("GET", "/")
+        .with_status(200)
+        .with_header("x-custom-header", "test-value")
+        .with_body("success")
+        .create();
+
+    let code = format!(
+        "http get --raw {url} | metadata | get http_response | get status",
+        url = server.url()
+    );
+
+    test().run(code).expect_value_eq(200)
+}
+
+#[test]
+fn http_get_content_type_metadata() -> Result {
+    let mut server = Server::new();
+
+    let _mock = server
+        .mock("GET", "/")
+        .with_status(200)
+        .with_header("content-type", "application/nuon")
+        .with_body("[1 2 3]")
+        .create();
+
+    let code = "
+        let url = $in
+        http get --raw $url | metadata | $in.content_type
+    ";
+    test()
+        .run_with_data(code, server.url())
+        .expect_value_eq("application/nuon")
+}
+
+#[cfg(unix)]
+#[rstest::rstest]
+#[case::all_proxy("ALL_PROXY")]
+#[case::http_proxy("HTTP_PROXY")]
+#[case::https_proxy("HTTPS_PROXY")]
+#[timeout(std::time::Duration::from_secs(10))]
+#[nu_test_support::test]
+#[serial]
+fn http_get_with_socks5_proxy(#[case] proxy_env: &str) -> Result {
+    use nu_test_support::net::{Address, proxy::Socks5Proxy};
+    use std::net::Ipv4Addr;
+
+    let mut server = Server::new();
+    let _mock = server.mock("GET", "/").with_body("🦆").create();
+
+    let redirect_port = nu_utils::net::reserve_local_addr().unwrap().port();
+    let redirect_addr = Address::IpAddr(Ipv4Addr::LOCALHOST.into(), redirect_port);
+
+    let proxy = Socks5Proxy::builder()
+        .unwrap()
+        .add_redirect(redirect_addr.clone(), server.socket_address().into())
+        .spawn()
+        .unwrap();
+
+    let code = format!("http get --raw {redirect_addr}");
+    let outcome: String = test().env(proxy_env, proxy.uri()).run(code)?;
+
+    assert_eq!(outcome, "🦆");
+    Ok(())
+}
+
+/// `http get` converts a response by its `from <ext>` command too, so an alias there is reported
+/// as `open` and `save` report it, instead of failing with "Can't run alias directly" (#18725).
+#[test]
+fn http_get_with_a_from_alias_reports_it() -> Result {
+    let mut server = Server::new();
+    let _mock = server
+        .mock("GET", "/x.json")
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"a": 1}"#)
+        .create();
+    let url = format!("{}/x.json", server.url());
+    let code = format!(r#"alias "from json" = from json --objects; http get {url}"#);
+    let err = test().run(code).expect_error()?;
+    assert_contains(
+        "Can't convert the response with alias `from json`",
+        err.to_string(),
+    );
+    assert_contains(
+        format!("http ... --raw {url} | from json --objects"),
+        format!("{err:?}"),
+    );
+    assert!(!format!("{err:?}").contains("Can't run alias directly"));
+    Ok(())
+}
+
+/// Test that metadata is preserved when using --allow-errors on a 404 response.
+#[test]
+fn http_get_allow_errors_preserves_metadata_on_404() -> Result {
+    let mut server = Server::new();
+    let _mock = server
+        .mock("GET", "/")
+        .with_status(404)
+        .with_body("not found")
+        .create();
+
+    let code = format!(
+        "http get -e --raw {url} | metadata | get http_response.status",
+        url = server.url()
+    );
+
+    test().run(code).expect_value_eq(404)
+}
+
+/// Test that metadata is preserved when using --allow-errors on a 200 response.
+#[test]
+fn http_get_allow_errors_preserves_metadata_on_200() -> Result {
+    let mut server = Server::new();
+    let _mock = server
+        .mock("GET", "/")
+        .with_status(200)
+        .with_body("success")
+        .create();
+
+    let code = format!(
+        "http get -e --raw {url} | metadata | get http_response.status",
+        url = server.url()
+    );
+
+    test().run(code).expect_value_eq(200)
+}
+
+/// Test that a stalled JSON body under --allow-errors returns partial data (or nothing) instead of erroring.
+#[test]
+fn http_get_stalled_json_body_with_allow_errors() -> Result {
+    let mut server = Server::new();
+    let _mock = server
+        .mock("GET", "/")
+        .with_header("content-type", "application/json")
+        .with_chunked_body(|w| -> Result<(), std::io::Error> {
+            w.write_all(b"{\"partial\": true")?;
+            thread::sleep(Duration::from_secs(10));
+            w.write_all(b", \"more\": \"data\"}")?;
+            Ok(())
+        })
+        .create();
+
+    let code = format!(
+        "http get --allow-errors --max-time 100ms {url} | describe",
+        url = server.url()
+    );
+
+    // Should return nothing (or partial data) instead of timing out
+    let desc: String = test().run(code)?;
+    // Accept either "nothing" or a record/string value (partial data)
+    assert!(desc == "nothing" || !desc.is_empty());
+    Ok(())
+}
+
+/// Test that --full with a stalled request returns a record with status: null and error field.
+#[test]
+fn http_get_full_stalled_request_returns_error_record() -> Result {
+    let listener =
+        std::net::TcpListener::bind("127.0.0.1:0").expect("could not bind test listener");
+    let addr = listener
+        .local_addr()
+        .expect("could not get test listener address");
+    std::thread::spawn(move || {
+        if let Ok((stream, _)) = listener.accept() {
+            std::thread::sleep(Duration::from_secs(10));
+            drop(stream);
+        }
+    });
+
+    let code = format!("http get --allow-errors --full --max-time 100ms http://{addr}");
+
+    let result: nu_protocol::Value = test().run(code)?;
+    let record = result.as_record().expect("should be a record");
+    let status = record.get("status").expect("should have status field");
+    let error = record.get("error").expect("should have error field");
+    assert!(status.is_nothing(), "status should be nothing/null");
+    assert!(error.as_str().unwrap_or("").contains("transport error"));
+    Ok(())
+}
+
+/// Test that non-UTF8 body under --allow-errors still errors (not a transport error).
+#[test]
+fn http_get_non_utf8_body_with_allow_errors_still_errors() -> Result {
+    let mut server = Server::new();
+    // Send invalid UTF-8 bytes
+    let _mock = server
+        .mock("GET", "/")
+        .with_status(200)
+        .with_header("content-type", "text/plain; charset=utf-8")
+        .with_body(vec![0xFF, 0xFE, 0xFD]) // Invalid UTF-8
+        .create();
+
+    let code = format!("http get -e {url}", url = server.url());
+
+    let err = test().run(code).expect_error()?;
+    // Should be a non-UTF8 error, not swallowed by --allow-errors
+    assert!(format!("{err:?}").contains("NonUtf8") || format!("{err:?}").contains("non_utf8"));
+    Ok(())
+}
+/// A custom `def` converter should run correctly under `--allow-errors`.
+/// Before the fix this errored with "can't run custom command with 'run'".
+#[test]
+fn http_get_allow_errors_with_def_converter() -> Result {
+    let mut server = Server::new();
+    let _mock = server
+        .mock("GET", "/x.foo")
+        .with_status(200)
+        .with_header("content-type", "text/plain")
+        .with_body("ok")
+        .create();
+
+    let url = format!("{}/x.foo", server.url());
+    let code = format!(r#"def "from foo" [] {{ str upcase }}; http get -e {url}"#);
+    test().run(code).expect_value_eq("OK")
+}
+
+/// A binary converter should receive bytes under `--allow-errors` even when the
+/// response is served as text/plain; charset=utf-8.
+#[test]
+fn http_get_allow_errors_binary_converter_receives_bytes() -> Result {
+    let mut server = Server::new();
+    let _mock = server
+        .mock("GET", "/x.msgpack")
+        .with_status(200)
+        .with_header("content-type", "text/plain; charset=utf-8")
+        .with_body(vec![0x93, 0x01, 0x02, 0x03])
+        .create();
+
+    let url = format!("{}/x.msgpack", server.url());
+    let code = format!("http get -e {url} | to nuon");
+    test().run(code).expect_value_eq("[1, 2, 3]")
+}
+
+/// An empty or stalled body with a Content-Type header should return nothing
+/// under `--allow-errors`, not an empty string.
+#[test]
+fn http_get_allow_errors_empty_typed_body_returns_nothing() -> Result {
+    let listener =
+        std::net::TcpListener::bind("127.0.0.1:0").expect("could not bind test listener");
+    let addr = listener
+        .local_addr()
+        .expect("could not get test listener address");
+    std::thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            use std::io::Write;
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\n",
+            );
+            std::thread::sleep(Duration::from_secs(10));
+            drop(stream);
+        }
+    });
+
+    let code = format!("http get --allow-errors --max-time 100ms http://{addr} | describe");
+    test().run(code).expect_value_eq("nothing")
+}
+
+/// A stalled body after headers with --full and --allow-errors returns the
+/// full record (status 200, response headers, redirect urls, partial body)
+/// plus the error field, instead of discarding everything for the generic
+/// no-response record.
+#[test]
+fn http_get_allow_errors_full_stalled_typed_body_returns_error_record() -> Result {
+    let listener =
+        std::net::TcpListener::bind("127.0.0.1:0").expect("could not bind test listener");
+    let addr = listener
+        .local_addr()
+        .expect("could not get test listener address");
+    std::thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            use std::io::Write;
+            // 200 + headers + partial body, then stall without closing so the
+            // client times out while reading the body.
+            let _ =
+                stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\npartial ");
+            std::thread::sleep(Duration::from_secs(10));
+            drop(stream);
+        }
+    });
+
+    let code = format!("http get --allow-errors --full --max-time 100ms http://{addr}");
+
+    let result: nu_protocol::Value = test().run(code)?;
+    let record = result.as_record().expect("should be a record");
+    let status = record.get("status").expect("should have status field");
+    let error = record.get("error").expect("should have error field");
+    let body = record.get("body").expect("should have body field");
+    let headers = record.get("headers").expect("should have headers field");
+    let urls = record.get("urls").expect("should have urls field");
+
+    assert_eq!(
+        status.as_int(),
+        Ok(200),
+        "status should be 200, not nothing"
+    );
+    assert!(
+        error
+            .as_str()
+            .map(|s| s.contains("transport error"))
+            .unwrap_or(false),
+        "error should describe the transport error"
+    );
+    assert_eq!(
+        body.as_str(),
+        Ok("partial "),
+        "body should be the partial data"
+    );
+    let urls_list = urls.as_list().expect("urls should be a list");
+    assert!(
+        !urls_list.is_empty()
+            && urls_list.iter().any(|v| v
+                .as_str()
+                .map(|s| s.contains(&addr.to_string()))
+                .unwrap_or(false)),
+        "urls should carry the requested url ({addr})"
+    );
+    let response_headers = headers
+        .as_record()
+        .expect("headers should be a record")
+        .get("response")
+        .expect("should have response headers");
+    assert!(
+        response_headers
+            .as_list()
+            .map(|list| {
+                list.iter().any(|h| {
+                    h.as_record()
+                        .ok()
+                        .and_then(|r| r.get("name"))
+                        .and_then(|n| n.as_str().ok())
+                        == Some("content-type")
+                        && h.as_record()
+                            .ok()
+                            .and_then(|r| r.get("value"))
+                            .and_then(|v| v.as_str().ok())
+                            == Some("text/plain")
+                })
+            })
+            .unwrap_or(false),
+        "response headers should include content-type"
+    );
+    Ok(())
+}
+
+/// A successful `--full` request under `--allow-errors` must NOT gain an
+/// `error` field — the success-path record keeps the usual 4-field shape
+/// (urls, headers, body, status) without `error: null`.
+#[test]
+fn http_get_allow_errors_full_success_has_no_error_field() -> Result {
+    let mut server = Server::new();
+    let _mock = server
+        .mock("GET", "/")
+        .with_status(200)
+        .with_header("content-type", "text/plain")
+        .with_body("ok")
+        .create();
+
+    let code = format!("http get --allow-errors --full {url}", url = server.url());
+
+    let result: nu_protocol::Value = test().run(code)?;
+    let record = result.as_record().expect("should be a record");
+    assert!(
+        record.get("error").is_none(),
+        "successful --full record must not have an error field, got: {record:?}"
+    );
+    let status = record.get("status").expect("should have status field");
+    assert_eq!(status.as_int(), Ok(200));
+    let body = record.get("body").expect("should have body field");
+    assert_eq!(body.as_str(), Ok("ok"));
+    Ok(())
+}
+
+/// Converted (JSON) responses under --allow-errors must preserve http_response
+/// metadata when going through the converter branch (no --raw).
+#[test]
+fn http_get_allow_errors_preserves_metadata_through_converter() -> Result {
+    let mut server = Server::new();
+    let _mock = server
+        .mock("GET", "/")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"a": 1}"#)
+        .create();
+
+    let code = format!(
+        "http get -e {url} | metadata | get http_response.status",
+        url = server.url()
+    );
+
+    test().run(code).expect_value_eq(200)?;
+
+    // The converter clears content_type on purpose; --allow-errors must not
+    // put it back on the converted value.
+    let code = format!(
+        "http get -e {url} | metadata | get content_type? | describe",
+        url = server.url()
+    );
+
+    test().run(code).expect_value_eq("nothing")
+}
+
+/// Piping a `--allow-errors` converted JSON response into `http post` must
+/// error with `type_mismatch`, same as without `-e`, because the converter
+/// cleared `content_type` and `--allow-errors` must not put it back.
+#[test]
+fn http_get_allow_errors_post_echo_type_mismatch() -> Result {
+    let mut json_server = Server::new();
+    let _json_mock = json_server
+        .mock("GET", "/")
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"a": 1}"#)
+        .create();
+
+    let mut echo_server = Server::new();
+    let _echo_mock = echo_server.mock("POST", "/").create();
+
+    let code = format!(
+        "http get -e {json_url} | http post {echo_url}",
+        json_url = json_server.url(),
+        echo_url = echo_server.url(),
+    );
+
+    let err = test().run(code).expect_error()?;
+    assert!(
+        matches!(err, ShellError::TypeMismatch { .. }),
+        "expected type_mismatch, got {err:?}"
+    );
+    Ok(())
+}

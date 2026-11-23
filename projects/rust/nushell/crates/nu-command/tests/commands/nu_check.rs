@@ -1,0 +1,634 @@
+use nu_protocol::{ByteStream, PipelineData, Signals, Span};
+use nu_test_support::playground::Playground;
+use nu_test_support::prelude::*;
+use pretty_assertions::assert_eq;
+
+#[test]
+fn parse_script_success(playground: Playground) -> Result {
+    playground.file(
+        "script.nu",
+        indoc::indoc! {r#"
+            greet "world"
+            
+            def greet [name] {
+            echo "hello" $name
+            }
+        "#},
+    )?;
+
+    test()
+        .cwd(playground.path())
+        .run("nu-check script.nu")
+        .expect_value_eq(true)
+}
+
+#[test]
+fn parse_script_with_wrong_type(playground: Playground) -> Result {
+    playground.file(
+        "script.nu",
+        indoc::indoc! {r#"
+            greet "world"
+            
+            def greet [name] {
+            echo "hello" $name
+            }
+        "#},
+    )?;
+
+    let err = test()
+        .cwd(playground.path())
+        .run("nu-check --debug --as-module script.nu")
+        .expect_shell_error()?;
+    assert_eq!(err.generic_error()?, "Failed to parse content");
+
+    Ok(())
+}
+#[test]
+fn parse_script_failure(playground: Playground) -> Result {
+    playground.file(
+        "script.nu",
+        indoc::indoc! {r#"
+            greet "world"
+            
+            def greet [name {
+            echo "hello" $name
+            }
+        "#},
+    )?;
+
+    let err = test()
+        .cwd(playground.path())
+        .run("nu-check --debug script.nu")
+        .expect_shell_error()?;
+    let msg = err.generic_msg()?;
+    assert!(
+        msg.contains("Unclosed delimiter") || msg.contains("expected `]`"),
+        "unexpected err: {msg}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn parse_module_success(playground: Playground) -> Result {
+    playground.file(
+        "foo.nu",
+        indoc::indoc! {r#"
+            # foo.nu
+            
+            export def hello [name: string] {
+                $"hello ($name)!"
+            }
+            
+            export def hi [where: string] {
+                $"hi ($where)!"
+            }
+        "#},
+    )?;
+
+    test()
+        .cwd(playground.path())
+        .run("nu-check --as-module foo.nu")
+        .expect_value_eq(true)
+}
+
+#[test]
+fn parse_module_with_wrong_type(playground: Playground) -> Result {
+    playground.file(
+        "foo.nu",
+        indoc::indoc! {r#"
+            # foo.nu
+            
+            export def hello [name: string {
+                $"hello ($name)!"
+            }
+            
+            export def hi [where: string] {
+                $"hi ($where)!"
+            }
+        "#},
+    )?;
+
+    let err = test()
+        .cwd(playground.path())
+        .run("nu-check --debug foo.nu")
+        .expect_shell_error()?;
+    assert_eq!(err.generic_error()?, "Failed to parse content");
+
+    Ok(())
+}
+#[test]
+fn parse_module_failure(playground: Playground) -> Result {
+    playground.file(
+        "foo.nu",
+        indoc::indoc! {r#"
+            # foo.nu
+            
+            export def hello [name: string {
+                $"hello ($name)!"
+            }
+            
+            export def hi [where: string] {
+                $"hi ($where)!"
+            }
+        "#},
+    )?;
+
+    let err = test()
+        .cwd(playground.path())
+        .run("nu-check --debug --as-module foo.nu")
+        .expect_shell_error()?;
+    let msg = err.generic_msg()?;
+    assert!(
+        msg.contains("Unclosed delimiter") || msg.contains("expected `]`"),
+        "unexpected err: {msg}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn file_not_exist(playground: Playground) -> Result {
+    let err = test()
+        .cwd(playground.path())
+        .run("nu-check --as-module foo.nu")
+        .expect_io_error()?;
+    assert_eq!(
+        err.kind,
+        nu_engine::command_prelude::ErrorKind::FileNotFound
+    );
+    Ok(())
+}
+
+#[test]
+fn parse_module_success_2(playground: Playground) -> Result {
+    playground.file(
+        "foo.nu",
+        indoc::indoc! {r#"
+            # foo.nu
+            
+            export-env { $env.MYNAME = "Arthur, King of the Britons" }
+        "#},
+    )?;
+
+    test()
+        .cwd(playground.path())
+        .run("nu-check --as-module foo.nu")
+        .expect_value_eq(true)
+}
+
+#[test]
+fn parse_script_success_with_raw_stream() -> Result {
+    let code = r#"
+        greet "world"
+
+        def greet [name] {
+          echo "hello" $name
+        }
+    "#;
+    test().run_with_data("nu-check", code).expect_value_eq(true)
+}
+
+#[test]
+fn parse_module_success_with_raw_stream() -> Result {
+    let code = r#"
+        export def hello [name: string] {
+            $"hello ($name)!"
+        }
+
+        export def hi [where: string] {
+            $"hi ($where)!"
+        }
+    "#;
+    test()
+        .run_with_data("nu-check --as-module", code)
+        .expect_value_eq(true)
+}
+
+#[test]
+fn parse_string_as_script_success() -> Result {
+    let code = "two\nlines";
+    test().run_with_data("nu-check", code).expect_value_eq(true)
+}
+
+#[test]
+fn parse_string_as_script() -> Result {
+    let code = "two\nlines";
+    let err = test()
+        .run_with_data("nu-check --debug --as-module", code)
+        .expect_shell_error()?;
+    assert_eq!(err.generic_error()?, "Failed to parse content");
+    Ok(())
+}
+
+#[test]
+fn parse_module_success_with_internal_stream() -> Result {
+    let code = r#"
+        export def hello [name: string] {
+            $"hello ($name)!"
+        }
+
+        export def hi [where: string] {
+            $"hi ($where)!"
+        }
+    "#;
+
+    test()
+        .run_raw_with_data(
+            "lines | nu-check --as-module",
+            PipelineData::byte_stream(
+                ByteStream::read_string(code.into(), Span::test_data(), Signals::empty()),
+                None,
+            ),
+        )?
+        .body
+        .into_value(Span::test_data())
+        .map_err(Into::into)
+        .expect_value_eq(true)
+}
+
+#[test]
+fn parse_script_success_with_complex_internal_stream() -> Result {
+    let code = r#"
+        #grep for nu
+        def grep-nu [
+            search   #search term
+            entrada?  #file or pipe
+            #
+            #Examples
+            #grep-nu search file.txt
+            #ls **/* | some_filter | grep-nu search
+            #open file.txt | grep-nu search
+        ] {
+            if ($entrada | is-empty) {
+                if ($in | column? name) {
+                    grep -ihHn $search ($in | get name)
+                } else {
+                    ($in | into string) | grep -ihHn $search
+                }
+            } else {
+                grep -ihHn $search $entrada
+            }
+            | lines
+            | parse "{file}:{line}:{match}"
+            | str trim
+            | update match {|f|
+                $f.match
+                | nu-highlight
+            }
+            | rename "source file" "line number"
+        }
+    "#;
+
+    test()
+        .run_raw_with_data(
+            "lines | nu-check",
+            PipelineData::byte_stream(
+                ByteStream::read_string(code.into(), Span::test_data(), Signals::empty()),
+                None,
+            ),
+        )?
+        .body
+        .into_value(Span::test_data())
+        .map_err(Into::into)
+        .expect_value_eq(true)
+}
+
+#[test]
+fn parse_script_failure_with_complex_internal_stream() -> Result {
+    let code = r#"
+        #grep for nu
+        def grep-nu [
+            search   #search term
+            entrada?  #file or pipe
+            #
+            #Examples
+            #grep-nu search file.txt
+            #ls **/* | some_filter | grep-nu search
+            #open file.txt | grep-nu search
+        ]
+            if ($entrada | is-empty) {
+                if ($in | column? name) {
+                    grep -ihHn $search ($in | get name)
+                } else {
+                    ($in | into string) | grep -ihHn $search
+                }
+            } else {
+                grep -ihHn $search $entrada
+            }
+            | lines
+            | parse "{file}:{line}:{match}"
+            | str trim
+            | update match {|f|
+                $f.match
+                | nu-highlight
+            }
+            | rename "source file" "line number"
+        }
+    "#;
+
+    test()
+        .run_raw_with_data(
+            "lines | nu-check",
+            PipelineData::byte_stream(
+                ByteStream::read_string(code.into(), Span::test_data(), Signals::empty()),
+                None,
+            ),
+        )?
+        .body
+        .into_value(Span::test_data())
+        .map_err(Into::into)
+        .expect_value_eq(false)
+}
+
+#[test]
+fn parse_script_success_with_complex_external_stream(playground: Playground) -> Result {
+    playground.file(
+        "grep.nu",
+        indoc::indoc! {r#"
+        #grep for nu
+        def grep-nu [
+          search   #search term
+          entrada?  #file or pipe
+          #
+          #Examples
+          #grep-nu search file.txt
+          #ls **/* | some_filter | grep-nu search
+          #open file.txt | grep-nu search
+        ] {
+          if ($entrada | is-empty) {
+            if ($in | column? name) {
+              grep -ihHn $search ($in | get name)
+            } else {
+              ($in | into string) | grep -ihHn $search
+            }
+          } else {
+              grep -ihHn $search $entrada
+          }
+          | lines
+          | parse "{file}:{line}:{match}"
+          | str trim
+          | update match {|f|
+              $f.match
+              | nu-highlight
+            }
+          | rename "source file" "line number"
+        }
+        
+    "#},
+    )?;
+
+    test()
+        .cwd(playground.path())
+        .run("open grep.nu | nu-check")
+        .expect_value_eq(true)
+}
+
+#[test]
+fn parse_module_success_with_complex_external_stream(playground: Playground) -> Result {
+    playground.file(
+        "grep.nu",
+        indoc::indoc! {r#"
+            #grep for nu
+            def grep-nu [
+            search   #search term
+            entrada?  #file or pipe
+            #
+            #Examples
+            #grep-nu search file.txt
+            #ls **/* | some_filter | grep-nu search
+            #open file.txt | grep-nu search
+            ] {
+            if ($entrada | is-empty) {
+                if ($in | column? name) {
+                grep -ihHn $search ($in | get name)
+                } else {
+                ($in | into string) | grep -ihHn $search
+                }
+            } else {
+                grep -ihHn $search $entrada
+            }
+            | lines
+            | parse "{file}:{line}:{match}"
+            | str trim
+            | update match {|f|
+                $f.match
+                | nu-highlight
+                }
+            | rename "source file" "line number"
+            }
+            
+        "#},
+    )?;
+
+    test()
+        .cwd(playground.path())
+        .run("open grep.nu | nu-check --debug --as-module")
+        .expect_value_eq(true)
+}
+
+#[test]
+fn parse_with_flag_success_for_complex_external_stream(playground: Playground) -> Result {
+    playground.file(
+        "grep.nu",
+        indoc::indoc! {r#"
+            #grep for nu
+            def grep-nu [
+            search   #search term
+            entrada?  #file or pipe
+            #
+            #Examples
+            #grep-nu search file.txt
+            #ls **/* | some_filter | grep-nu search
+            #open file.txt | grep-nu search
+            ] {
+            if ($entrada | is-empty) {
+                if ($in | column? name) {
+                grep -ihHn $search ($in | get name)
+                } else {
+                ($in | into string) | grep -ihHn $search
+                }
+            } else {
+                grep -ihHn $search $entrada
+            }
+            | lines
+            | parse "{file}:{line}:{match}"
+            | str trim
+            | update match {|f|
+                $f.match
+                | nu-highlight
+                }
+            | rename "source file" "line number"
+            }
+            
+        "#},
+    )?;
+
+    test()
+        .cwd(playground.path())
+        .run("open grep.nu | nu-check --debug")
+        .expect_value_eq(true)
+}
+
+#[test]
+fn parse_with_flag_failure_for_complex_external_stream(playground: Playground) -> Result {
+    playground.file(
+        "grep.nu",
+        indoc::indoc! {r#"
+            #grep for nu
+            def grep-nu
+            search   #search term
+            entrada?  #file or pipe
+            #
+            #Examples
+            #grep-nu search file.txt
+            #ls **/* | some_filter | grep-nu search
+            #open file.txt | grep-nu search
+            ] {
+            if ($entrada | is-empty) {
+                if ($in | column? name) {
+                grep -ihHn $search ($in | get name)
+                } else {
+                ($in | into string) | grep -ihHn $search
+                }
+            } else {
+                grep -ihHn $search $entrada
+            }
+            | lines
+            | parse "{file}:{line}:{match}"
+            | str trim
+            | update match {|f|
+                $f.match
+                | nu-highlight
+                }
+            | rename "source file" "line number"
+            }
+            
+        "#},
+    )?;
+
+    let err = test()
+        .cwd(playground.path())
+        .run("open grep.nu | nu-check --debug")
+        .expect_shell_error()?;
+    assert_eq!(err.generic_error()?, "Failed to parse content");
+
+    Ok(())
+}
+
+#[test]
+fn parse_with_flag_failure_for_complex_list_stream(playground: Playground) -> Result {
+    playground.file(
+        "grep.nu",
+        indoc::indoc! {r#"
+            #grep for nu
+            def grep-nu
+            search   #search term
+            entrada?  #file or pipe
+            #
+            #Examples
+            #grep-nu search file.txt
+            #ls **/* | some_filter | grep-nu search
+            #open file.txt | grep-nu search
+            ] {
+            if ($entrada | is-empty) {
+                if ($in | column? name) {
+                grep -ihHn $search ($in | get name)
+                } else {
+                ($in | into string) | grep -ihHn $search
+                }
+            } else {
+                grep -ihHn $search $entrada
+            }
+            | lines
+            | parse "{file}:{line}:{match}"
+            | str trim
+            | update match {|f|
+                $f.match
+                | nu-highlight
+                }
+            | rename "source file" "line number"
+            }
+            
+        "#},
+    )?;
+
+    let err = test()
+        .cwd(playground.path())
+        .run("open grep.nu | lines | nu-check --debug")
+        .expect_shell_error()?;
+    assert_eq!(err.generic_error()?, "Failed to parse content");
+
+    Ok(())
+}
+
+#[test]
+fn parse_script_with_nested_scripts_success(playground: Playground) -> Result {
+    playground.file(
+        "lol/lol.nu",
+        indoc::indoc! {"
+            source-env ../foo.nu
+            use lol_shell.nu
+            overlay use ../lol/lol_shell.nu
+        "},
+    )?;
+    playground.file(
+        "lol/lol_shell.nu",
+        indoc::indoc! {r#"
+            export def ls [] { "lol" }
+        "#},
+    )?;
+    playground.file(
+        "foo.nu",
+        indoc::indoc! {"
+            $env.FOO = 'foo'
+        "},
+    )?;
+
+    test()
+        .cwd(playground.path())
+        .run("nu-check lol/lol.nu")
+        .expect_value_eq(true)
+}
+
+#[test]
+fn nu_check_respects_file_pwd(playground: Playground) -> Result {
+    playground.file(
+        "lol/lol.nu",
+        indoc::indoc! {"
+            $env.RETURN = (nu-check ../foo.nu)
+        "},
+    )?;
+    playground.file(
+        "foo.nu",
+        indoc::indoc! {"
+            echo 'foo'
+        "},
+    )?;
+
+    test()
+        .cwd(playground.path())
+        .run("source-env lol/lol.nu; $env.RETURN")
+        .expect_value_eq(true)
+}
+#[test]
+fn nu_check_module_dir(playground: Playground) -> Result {
+    playground.file(
+        "lol/mod.nu",
+        indoc::indoc! {"
+            export module foo.nu
+            export def main [] { 'lol' }
+        "},
+    )?;
+    playground.file(
+        "lol/foo.nu",
+        indoc::indoc! {"
+            export def main [] { 'lol foo' }
+        "},
+    )?;
+
+    test()
+        .cwd(playground.path())
+        .run("nu-check lol")
+        .expect_value_eq(true)
+}
