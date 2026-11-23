@@ -556,6 +556,27 @@ class TestAddLocal(unittest.TestCase):
         self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
 
     @unittest.skipUnless(HAS_GIT, "needs git")
+    def test_add_duplicate_name_rejected_before_clone(self):
+        upstream, rev = make_local_git_repo(MIT_TEXT)
+        self.addCleanup(shutil.rmtree, upstream, True)
+        root = make_repo(mode="private")
+        self.addCleanup(shutil.rmtree, root, True)
+        first = run_tool(root, "add", "--url", upstream, "--rev", rev,
+                         "--lang", "rust", "--spdx", "NOASSERTION",
+                         "--name", "dup-demo", "--storage", "pinned",
+                         "--paths", "src/**", "--reason", "first")
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        second = run_tool(root, "add", "--url", upstream, "--rev", rev,
+                          "--lang", "rust", "--spdx", "NOASSERTION",
+                          "--name", "dup-demo", "--storage", "pinned",
+                          "--paths", "src/**", "--reason", "second")
+        self.assertNotEqual(second.returncode, 0)
+        self.assertIn("already exists in the manifest", second.stdout)
+        manifest = open(os.path.join(root, "corpus.toml")).read()
+        self.assertEqual(manifest.count('name = "dup-demo"'), 1)
+        self.assertEqual(run_tool(root, "verify", "--offline").returncode, 0)
+
+    @unittest.skipUnless(HAS_GIT, "needs git")
     def test_add_quoted_reason_keeps_manifest_parsable(self):
         upstream, rev = make_local_git_repo(MIT_TEXT)
         self.addCleanup(shutil.rmtree, upstream, True)

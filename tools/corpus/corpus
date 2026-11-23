@@ -710,6 +710,13 @@ def cmd_add(args):
     if not NAME_RE.match(args.name):
         fail("bad name; use [a-z0-9-]")
         return 1
+    existing = set()
+    for entry in data.get("project", []):
+        if isinstance(entry, dict) and isinstance(entry.get("name"), str):
+            existing.add(entry["name"])
+    if args.name in existing:
+        fail("project %s already exists in the manifest" % args.name)
+        return 1
     if args.lang not in EXTENSIONS:
         fail("unknown language %s" % args.lang)
         return 1
