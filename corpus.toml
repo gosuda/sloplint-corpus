@@ -117,3 +117,63 @@ added_by = "CorpusPopC3"
 added_on = "2026-11-23"
 reason = "Framework components (HTTP, console, routing, DI, events, kernel, utils); attributes and union types"
 notice_present_upstream = false
+
+[[project]]
+name = "jekyll"
+language = "ruby"
+url = "https://github.com/jekyll/jekyll"
+rev = "97c3bdc822df9d5bea4c269b29a28de5a5e29d70"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:f7ed52975a0cda7bc895744c687860a9469aea122c6f89118bc230897e050232"
+added_by = "CorpusPopC3"
+added_on = "2026-11-23"
+reason = "Static site generator, liquid-adjacent filters, small class"
+notice_present_upstream = false
+
+[[project]]
+name = "sinatra"
+language = "ruby"
+url = "https://github.com/sinatra/sinatra"
+rev = "2e3f79139154b8bfdaad7ad516f35dcb0e70446a"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:54d2c60c170b8d5f1603cb9b252d07715b7a2413e5c78be11b9ec6fc68f824d8"
+added_by = "CorpusPopC3"
+added_on = "2026-11-23"
+reason = "Route DSL with condition blocks, incl rack-protection subtree"
+notice_present_upstream = false
+
+
+[[project]]
+name = "rubocop"
+language = "ruby"
+url = "https://github.com/rubocop/rubocop"
+rev = "77d0e31cc591fafa765e865fa3dfc83fc0e39302"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+exclude = ["spec/rubocop/cop/style/copyright_spec.rb"]
+tree_hash = "sha256:69f2b518b833784747f69fd783d24d11b78709872d24bdd9ebc4336f4aa653ce"
+added_by = "CorpusPopC3"
+added_on = "2026-11-23"
+reason = "Self-hosting parser stress: pattern DSL and metaprogramming; copyright-cop fixture quotes copyleft text"
+notice_present_upstream = false
+
+[[project]]
+name = "fluentd"
+language = "ruby"
+url = "https://github.com/fluent/fluentd"
+rev = "bae5601e2ee7990c03a5f3fcb66162cf78927d92"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:8ef7591f2b3b71206d9e9c4a0ea84b2ab681a06b650f3b58ccd1ed80e14b15ab"
+added_by = "CorpusPopC3"
+added_on = "2026-11-23"
+reason = "Log collector plugin DSL; only Apache-2.0 Ruby project in lane"
+notice_present_upstream = false
+
+
