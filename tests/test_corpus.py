@@ -879,6 +879,28 @@ class TestAddLocal(unittest.TestCase):
         manifest = open(os.path.join(root, "corpus.toml")).read()
         self.assertNotIn("readmeonly", manifest)
 
+    @unittest.skipUnless(HAS_GIT, "needs git")
+    def test_fetch_proprietary_pinned_needs_consent(self):
+        upstream, rev = make_local_git_repo(MIT_TEXT)
+        self.addCleanup(shutil.rmtree, upstream, True)
+        root = make_repo(mode="private")
+        self.addCleanup(shutil.rmtree, root, True)
+        proc = run_tool(root, "add", "--url", upstream, "--rev", rev,
+                        "--lang", "python",
+                        "--spdx", "LicenseRef-Proprietary",
+                        "--name", "prop", "--storage", "pinned",
+                        "--paths", "src/**", "--reason", "proprietary fixture")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        bare = run_tool(root, "fetch", "--lang", "python")
+        self.assertNotEqual(bare.returncode, 0)
+        self.assertIn("custom license", bare.stdout)
+        self.assertFalse(os.path.exists(
+            os.path.join(root, ".cache", "tree", "python", "prop")))
+        consent = run_tool(root, "fetch", "--lang", "python", "--allow-unlicensed")
+        self.assertEqual(consent.returncode, 0, consent.stdout + consent.stderr)
+        self.assertTrue(os.path.isfile(
+            os.path.join(root, ".cache", "tree", "python", "prop", "src", "lib.rs")))
+
     @unittest.skipUnless(HAS_GIT and HAS_ASKALONO, "needs git and askalono")
     def test_add_copies_every_root_license_file(self):
         upstream = tempfile.mkdtemp(prefix="corpus-upstream-")

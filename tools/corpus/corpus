@@ -1039,9 +1039,18 @@ def cmd_fetch(args):
             sys.stdout.write("PASS fetch --check %s\n" % tag)
         else:
             declared = spdx_ids(project.get("spdx", ""))
+            custom = sorted(item for item in declared
+                            if item.startswith("LicenseRef-")
+                            or item.startswith("DocumentRef-") or ":" in item)
             if ("NOASSERTION" in declared or not declared) and not args.allow_unlicensed:
                 fail("%s: pinned entry has no license; refusing (owner decision c default); "
                      "re-run with --allow-unlicensed for a logged local copy" % tag)
+                failures += 1
+                continue
+            if custom and not args.allow_unlicensed:
+                fail("%s: pinned entry declares custom license %s; refusing without "
+                     "explicit consent; re-run with --allow-unlicensed for a logged "
+                     "local copy" % (tag, custom[0]))
                 failures += 1
                 continue
             dest = cached_pinned_dir(root, language, name)
