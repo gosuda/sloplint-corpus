@@ -219,6 +219,11 @@ class TestGlobs(unittest.TestCase):
         self.assertTrue(corpus.match_subset("src/test3.rs", ["src/test[!12].rs"]))
         self.assertFalse(corpus.match_subset("src/test1.rs", ["src/test[!12].rs"]))
         self.assertTrue(corpus.match_subset("src/a1b.rs", ["src/a[0-9]b.rs"]))
+        self.assertTrue(corpus.match_subset("src/axb.rs", ["src/a[!0-9]b.rs"]))
+        self.assertFalse(corpus.match_subset("src/a/b.rs", ["src/a[!0-9]b.rs"]))
+        self.assertTrue(corpus.match_subset("src/test1.rs", ["src/test[!_]*.rs"]))
+        self.assertFalse(corpus.match_subset("src/test/fixture.rs", ["src/test[!_]*.rs"]))
+        self.assertFalse(corpus.match_subset("src/a/b.rs", ["src/a[xy]b.rs"]))
 
     def test_dot_slash_prefix(self):
         self.assertTrue(corpus.match_subset("src/lib.rs", ["./src/*.rs"]))
