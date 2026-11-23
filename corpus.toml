@@ -235,3 +235,45 @@ added_by = "CorpusPopC2"
 added_on = "2026-11-23"
 reason = "large shell subset (cmdlets plus automation non-engine), current"
 notice_present_upstream = false
+
+[[project]]
+name = "libuv"
+language = "c"
+url = "https://github.com/libuv/libuv"
+rev = "f08538cca14f73e30c89625e473fea3f5f55e300"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:40c151d56c008fc13be35f10470ae189b3defefed53fba20464536533cf6f106"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "medium async IO (platform backends), mature, branch v1.x"
+notice_present_upstream = false
+
+[[project]]
+name = "cjson"
+language = "c"
+url = "https://github.com/DaveGamble/cJSON"
+rev = "6d9f2443ab071f86e5d9b43025a40929ec41c46c"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:97013e821498cc99558f13237e7dd9f4fe4c8646224c5935783d4d1f3fd3fbde"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "tiny JSON library, oldest snapshot (Sept 2026)"
+notice_present_upstream = false
+
+[[project]]
+name = "mimalloc"
+language = "c"
+url = "https://github.com/microsoft/mimalloc"
+rev = "1d8fd85aa3abe719cd9c42c855f1fc27dbccf84d"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:7488859bbc38e25255f60f4184fbc8f3ec8fc284bf30ad69307b288c574c6b56"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "small allocator (segment caches), current, branch main3"
+notice_present_upstream = false
