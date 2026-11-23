@@ -777,6 +777,15 @@ class TestMeasureSeeds(unittest.TestCase):
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("max_parse_error_per_file", proc.stdout)
 
+    def test_measure_missing_project_dir_fails(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        projdir = add_synthetic_project(root, lang="rust", name="gone")
+        shutil.rmtree(projdir)
+        proc = run_tool(root, "measure", "rust")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("is missing projects/rust/gone", proc.stdout)
+
     def test_measure_qualifies_paths_by_project(self):
         root = make_repo()
         self.addCleanup(shutil.rmtree, root, True)

@@ -1038,6 +1038,14 @@ def cmd_measure(args):
         return 1
     projects = [p for p in data.get("project", [])
                 if p.get("language") == language and p.get("storage") == "copied"]
+    missing = [p.get("name", "?") for p in projects
+               if not os.path.isdir(os.path.join(root, "projects", language,
+                                                 p.get("name", "")))]
+    if missing:
+        for name in sorted(missing):
+            fail("project %s: copied entry is missing projects/%s/%s" %
+                 (name, language, name))
+        return 1
     binary = find_sloplint(args.sloplint)
     if binary is None:
         fail("sloplint binary not found (PATH or CORPUS_SLOPLINT); refusing")
@@ -1069,8 +1077,6 @@ def cmd_measure(args):
     wall_ms = 0
     for project in sorted(projects, key=lambda p: p.get("name", "")):
         projdir = os.path.join(root, "projects", language, project["name"])
-        if not os.path.isdir(projdir):
-            continue
         start = time.monotonic()
         try:
             proc = subprocess.run(
