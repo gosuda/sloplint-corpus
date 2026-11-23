@@ -1380,6 +1380,22 @@ class TestMeasureSeeds(unittest.TestCase):
                      if not n.startswith(".corpus-seeds."))
         self.assertEqual(got, [want])
 
+    def test_seeds_priority_names_the_reporting_project(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        add_synthetic_project(root, lang="typescript", name="aaa", files={
+            "bbb/x.ts": "let a = 1;\n"})
+        add_synthetic_project(root, lang="typescript", name="bbb", files={
+            "x.ts": "let b = 22;\n"})
+        write(os.path.join(root, "reports", "typescript.json"),
+              json.dumps({"parse_error_files": ["bbb/x.ts"]}))
+        out = os.path.join(root, "seeds")
+        proc = run_tool(root, "seeds", "typescript", "--out", out, "--max-bytes", "12")
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        got = sorted(n for n in os.listdir(out)
+                     if not n.startswith(".corpus-seeds."))
+        self.assertEqual(got, [corpus.seed_name("bbb", "x.ts")])
+
     def test_seeds_exports_leave_other_scopes_alone(self):
         root = make_repo()
         self.addCleanup(shutil.rmtree, root, True)
