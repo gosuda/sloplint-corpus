@@ -1,0 +1,139 @@
+open Import
+
+module Context_type = struct
+  type t =
+    | Empty
+    | With_sources
+end
+
+module Gen_rules = struct
+  module Build_only_sub_dirs = struct
+    type t = Subdir_set.t Path.Build.Map.t
+
+    let singleton ~dir sub_dirs = Path.Build.Map.singleton dir sub_dirs
+    let union a b = Path.Build.Map.union a b ~f:(fun _ a b -> Some (Subdir_set.union a b))
+  end
+
+  module Rules = struct
+    type nonrec t =
+      { build_dir_only_sub_dirs : Build_only_sub_dirs.t
+      ; directory_targets : Loc.t Path.Build.Map.t
+      ; rules : Rules.t Memo.t
+      }
+
+    let empty =
+      { build_dir_only_sub_dirs = Path.Build.Map.empty
+      ; directory_targets = Path.Build.Map.empty
+      ; rules = Memo.return Rules.empty
+      }
+    ;;
+
+    let create
+          ?(build_dir_only_sub_dirs = empty.build_dir_only_sub_dirs)
+          ?(directory_targets = empty.directory_targets)
+          rules
+      =
+      { build_dir_only_sub_dirs; directory_targets; rules }
+    ;;
+
+    let combine_exn r ({ build_dir_only_sub_dirs; directory_targets; rules } as other) =
+      match phys_equal r empty with
+      | true -> other
+      | false ->
+        (match phys_equal other empty with
+         | true -> r
+         | false ->
+           { build_dir_only_sub_dirs =
+               Build_only_sub_dirs.union r.build_dir_only_sub_dirs build_dir_only_sub_dirs
+           ; directory_targets =
+               Path.Build.Map.union_exn r.directory_targets directory_targets
+           ; rules =
+               (let open Memo.O in
+                let+ r = r.rules
+                and+ r' = rules in
+                Rules.union r r')
+           })
+    ;;
+  end
+
+  type t =
+    | Rules of Rules.t
+    | Unknown_context
+    | Redirect_to_parent of Rules.t
+
+  let no_rules = Rules Rules.empty
+
+  let make ?build_dir_only_sub_dirs ?directory_targets rules =
+    Rules (Rules.create ?build_dir_only_sub_dirs ?directory_targets rules)
+  ;;
+
+  let make_empty ~dir subdirs =
+    Rules
+      { Rules.empty with
+        build_dir_only_sub_dirs = Build_only_sub_dirs.singleton ~dir subdirs
+      }
+  ;;
+
+  let combine x y =
+    match x, y with
+    | Unknown_context, _ | _, Unknown_context -> Unknown_context
+    | Rules x, Rules y -> Rules (Rules.combine_exn x y)
+    | Rules x, Redirect_to_parent y
+    | Redirect_to_parent x, Rules y
+    | Redirect_to_parent x, Redirect_to_parent y ->
+      Redirect_to_parent (Rules.combine_exn x y)
+  ;;
+end
+
+module type Source_tree = sig
+  module Dir : sig
+    type t
+
+    val sub_dir_names : t -> Filename.Array.Set.t
+    val filenames : t -> Filename.Array.Set.t
+  end
+
+  val find_dir : Path.Source.t -> Dir.t option Memo.t
+end
+
+type t =
+  { contexts : Context_type.t Context_name.Map.t Memo.Lazy.t
+  ; rule_generator :
+      Context_name.t -> dir:Path.Build.t -> string list -> Gen_rules.t Memo.t
+  ; sandboxing_preference : Sandbox_mode.t list
+  ; promote_source :
+      chmod:(Permissions.Mode.t -> Permissions.Mode.t)
+      -> delete_dst_if_it_is_a_directory:bool
+      -> src:Path.Build.t
+      -> dst:Path.Source.t
+      -> unit Fiber.t
+  ; implicit_default_alias : Path.Build.t -> unit Action_builder.t option Memo.t
+  ; execution_parameters :
+      Context_name.t -> dir:Path.Build.t -> Execution_parameters.t Memo.t
+  ; source_tree : (module Source_tree)
+  }
+
+let t : t Fdecl.t = Fdecl.create Dyn.opaque
+let get () = Fdecl.get t
+
+let set
+      ~contexts
+      ~promote_source
+      ~sandboxing_preference
+      ~rule_generator
+      ~implicit_default_alias
+      ~execution_parameters
+      ~source_tree
+  =
+  Fdecl.set
+    t
+    { contexts
+    ; rule_generator
+    ; sandboxing_preference =
+        sandboxing_preference @ Sandbox_mode.all_except_patch_back_source_tree
+    ; promote_source
+    ; implicit_default_alias
+    ; execution_parameters
+    ; source_tree
+    }
+;;

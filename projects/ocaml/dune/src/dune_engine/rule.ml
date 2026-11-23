@@ -1,0 +1,142 @@
+open Import
+
+module Info = struct
+  type t =
+    | From_dune_file of Loc.t
+    | Internal
+    | Source_file_copy of Path.Source.t
+
+  let of_loc_opt = function
+    | None -> Internal
+    | Some loc -> From_dune_file loc
+  ;;
+
+  let loc t ~dir =
+    match t with
+    | From_dune_file loc -> loc
+    | Internal ->
+      Loc.in_file
+        (Path.drop_optional_build_context
+           (Path.build (Path.Build.relative dir "_unknown_")))
+    | Source_file_copy p -> Loc.in_file (Path.source p)
+  ;;
+
+  let repr =
+    Repr.variant
+      "rule-info"
+      [ Repr.case "From_dune_file" (Repr.abstract Loc.to_dyn) ~proj:(function
+          | From_dune_file loc -> Some loc
+          | Internal | Source_file_copy _ -> None)
+      ; Repr.case0 "Internal" ~test:(function
+          | Internal -> true
+          | From_dune_file _ | Source_file_copy _ -> false)
+      ; Repr.case "Source_file_copy" Path.Source.repr ~proj:(function
+          | Source_file_copy path -> Some path
+          | From_dune_file _ | Internal -> None)
+      ]
+  ;;
+
+  let to_dyn = Repr.to_dyn repr
+end
+
+module Promote = struct
+  module Lifetime = struct
+    type t =
+      | Unlimited
+      | Until_clean
+  end
+
+  module Into = struct
+    type t =
+      { loc : Loc.t
+      ; dir : string
+      }
+  end
+
+  type t =
+    { lifetime : Lifetime.t
+    ; into : Into.t option
+    ; only : Filename.t Predicate.t option
+    }
+end
+
+module Mode = struct
+  type t =
+    | Standard
+    | Fallback
+    | Promote of Promote.t
+    | Ignore_source_files
+end
+
+module Id = Id.Make ()
+
+module T = struct
+  type t =
+    { id : Id.t
+    ; targets : Targets.Validated.t
+    ; action : Action.Full.t Action_builder.t
+    ; mode : Mode.t
+    ; info : Info.t
+    }
+
+  let compare a b = Id.compare a.id b.id
+  let equal a b = Id.equal a.id b.id
+  let hash t = Id.hash t.id
+  let loc { info; targets; _ } = Info.loc info ~dir:targets.root
+
+  let repr =
+    Repr.record
+      "rule"
+      [ Repr.field "id" (Repr.abstract Id.to_dyn) ~get:(fun t -> t.id)
+      ; Repr.field "info" Info.repr ~get:(fun t -> t.info)
+      ]
+  ;;
+
+  let to_dyn = Repr.to_dyn repr
+end
+
+include T
+include Comparable.Make (T)
+
+let make ?(mode = Mode.Standard) ?(info = Info.Internal) ~targets action =
+  let report_error ?(extra_pp = []) message =
+    match info with
+    | From_dune_file loc ->
+      let pp = [ Pp.text message ] @ extra_pp in
+      User_error.raise ~loc pp
+    | Internal | Source_file_copy _ ->
+      Code_error.raise
+        message
+        [ "info", Info.to_dyn info; "targets", Targets.to_dyn targets ]
+  in
+  let targets =
+    match Targets.validate targets with
+    | Valid targets -> targets
+    | No_targets -> report_error "Rule has no targets specified"
+    | Inconsistent_parent_dir ->
+      (* user written actions have their own validation step that also works
+         with the target inference mechanism *)
+      Code_error.raise
+        "Rule has targets in different directories."
+        [ "targets", Targets.to_dyn targets ]
+    | File_and_directory_target_with_the_same_name path ->
+      report_error
+        (sprintf
+           "%S is declared as both a file and a directory target."
+           (Dpath.describe_target path))
+  in
+  { id = Id.gen (); targets; action; mode; info }
+;;
+
+let set_action t action = { t with action }
+
+module Anonymous_action = struct
+  type t =
+    { action : Action.Full.t Action_builder.t
+    ; loc : Loc.t
+    ; dir : Path.Build.t
+    }
+
+  let loc t = t.loc
+  let make ?(loc = Loc.none) ~dir action = { action; loc; dir }
+end

@@ -1,0 +1,75 @@
+module type S = sig
+  type path
+
+  val open_in : ?binary:bool (* default true *) -> path -> in_channel
+
+  val open_out
+    :  ?binary:bool (* default true *)
+    -> ?perm:Permissions.Mode.t
+    -> path
+    -> out_channel
+
+  val with_file_in : ?binary:bool (* default true *) -> path -> f:(in_channel -> 'a) -> 'a
+
+  val with_file_out
+    :  ?binary:bool (* default true *)
+    -> ?perm:Permissions.Mode.t
+    -> path
+    -> f:(out_channel -> 'a)
+    -> 'a
+
+  val with_lexbuf_from_file : path -> f:(Lexing.lexbuf -> 'a) -> 'a
+  val lines_of_file : path -> string list
+
+  (** Reads zero-separated strings from a file *)
+  val zero_strings_of_file : path -> string list
+
+  val read_file : ?binary:bool -> path -> (string, exn) result
+  val read_file_exn : ?binary:bool -> path -> string
+
+  (** Binary descriptor-based read. Returns [None] if the file exceeds
+      [max_size] or [Sys.max_string_length], or ends before its reported size. *)
+  val read_file_if_small : path -> max_size:int -> (string option, exn) result
+
+  val write_file
+    :  ?binary:bool
+    -> ?perm:Permissions.Mode.t
+    -> path
+    -> string
+    -> (unit, exn) result
+
+  val write_file_exn : ?binary:bool -> ?perm:Permissions.Mode.t -> path -> string -> unit
+  val compare_files : path -> path -> Ordering.t
+  val compare_text_files : path -> path -> Ordering.t
+
+  val write_lines
+    :  ?binary:bool
+    -> ?perm:Permissions.Mode.t
+    -> path
+    -> string list
+    -> unit
+
+  (** [copy_file ~overwrite ?chmod ~src ~dst ()] copies [src] to [dst]. When
+      [overwrite] is [false], it fails if [dst] already exists, otherwise allowing
+      overwrites. [chmod] optionally adjusts the permissions. *)
+  val copy_file
+    :  overwrite:bool
+    -> ?chmod:(Permissions.Mode.t -> Permissions.Mode.t)
+    -> src:path
+    -> dst:path
+    -> unit
+    -> unit
+
+  val setup_copy
+    :  ?chmod:(Permissions.Mode.t -> Permissions.Mode.t)
+    -> src:path
+    -> dst:path
+    -> unit
+    -> in_channel * out_channel
+
+  val file_line : path -> int -> string
+  val file_lines : path -> start:int -> stop:int -> (string * string) list
+
+  (** reads a file and prints its contents to stdout or the specified channel *)
+  val cat : ?binary:bool (* default true *) -> ?dst:out_channel -> path -> unit
+end

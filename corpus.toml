@@ -100,3 +100,62 @@ added_by = "CorpusPopC5"
 added_on = "2026-11-23"
 reason = "tutorial style, beginner idioms (selection slot: small programs)"
 notice_present_upstream = false
+
+[[project]]
+name = "dune"
+language = "ocaml"
+url = "https://github.com/ocaml/dune"
+rev = "b9a1254cf0cefebd68fe0f3bb04cae5184278d60"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+exclude = ["src/lev/**", "src/lev/*/**", "vendor/**", "vendor/*/**", "vendor/*/*/**", "vendor/*/*/*/**", "src/dune_pkg/**", "src/dune_pkg/*/**", "src/dune_pkg/*/*/**", "src/dune_pkg/*/*/*/**", "src/sat/**", "src/sat/*/**", "src/sat/*/*/**", "src/sat/*/*/*/**"]
+tree_hash = "sha256:8fa15b4da0d288f7b0ac4cbb6e3c46f433b3dca906196f3ffc99e79819f61b7f"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "build system minus vendored and LGPL dirs (selection slot: build system)"
+notice_present_upstream = false
+
+[[project]]
+name = "base"
+language = "ocaml"
+url = "https://github.com/janestreet/base"
+rev = "49a861eb32041978d72e369f85f89a4547a50f1f"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:88a7921cfed8ab32307fae06563d0cfebd7ee98ace513036e428e71fe2fedff1"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "core library, idiomatic Jane Street style (selection slot: library)"
+notice_present_upstream = false
+
+[[project]]
+name = "async"
+language = "ocaml"
+url = "https://github.com/janestreet/async"
+rev = "0a9af942b56928a80a568d244edbd100e69b4bb8"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:e8574358e28afad6851bcf86cee734c9d81cf0ea4b32f62be969875941bb80e0"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "async programming idioms (selection slot: library)"
+notice_present_upstream = false
+
+
+[[project]]
+name = "merlin"
+language = "ocaml"
+url = "https://github.com/ocaml/merlin"
+rev = "2f2f53e12a6f195b73149122dc476db8d8211702"
+spdx = "MIT"
+storage = "copied"
+paths = ["src/**", "src/*/**", "src/*/*/**", "src/*/*/*/**", "tests/**", "tests/*/**", "tests/*/*/**", "tests/*/*/*/**", "tests/*/*/*/*/**", "tests/*/*/*/*/*/**"]
+exclude = ["src/ocaml/**", "src/ocaml/*/**", "src/ocaml/*/*/**", "src/ocaml/*/*/*/**", "src/analysis/ocamldoc.ml", "src/analysis/ocamldoc.mli", "src/index-format/granular_map.ml", "src/index-format/granular_map.mli", "src/index-format/granular_set.ml", "src/index-format/granular_set.mli", "tests/test-dirs/server-tests/bench.t/ctxt.ml"]
+tree_hash = "sha256:9cbf0157cd7ef35532388c2a41a2c92697f70b712df0e44378dfe8c2bf9ea826"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "editor tooling minus vendored snapshots, LGPL files and oversize bench fixture (selection slot: tooling)"
+notice_present_upstream = false

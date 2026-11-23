@@ -1,0 +1,76 @@
+(** Parameters that influence rule execution *)
+
+open Import
+open Action_types
+
+(** Such as:
+
+    - should aliases be expanded when sandboxing rules?
+
+    - should actions receive a project-root path via [DUNE_PROJECT_ROOT]?
+
+    These often depend on the version of the Dune language used, which is
+    written in the [dune-project] file. Depending on the execution parameters
+    rather than the whole [dune-project] file means that when some part of the
+    [dune-project] file changes and this part does not have an effect on rule
+    execution, we can skip a bunch of work by not trying to re-execute all the
+    rules. *)
+
+type t
+
+val equal : t -> t -> bool
+val repr : t Repr.t
+val digest : t -> Digest.t
+
+module Action_output_limit : sig
+  (** Maximum size for output (stdout/stderr) of actions, above which the output is
+      truncated. *)
+
+  type t = int
+
+  val default : t
+  val repr : t Repr.t
+end
+
+(** {1 Constructors} *)
+
+(** Set the workspace root directory for the build prefix map, if desired. *)
+module Workspace_root_for_build_prefix_map : sig
+  type t =
+    | Unset (** Do not set the workspace root; only used by external Dune rules *)
+    | Set of string (** [Set root] substitute the root with [root] *)
+
+  val repr : t Repr.t
+end
+
+val builtin_default : t
+val set_action_stdout_on_success : Action_output_on_success.t -> t -> t
+val set_action_stderr_on_success : Action_output_on_success.t -> t -> t
+val set_expand_aliases_in_sandbox : bool -> t -> t
+
+val set_workspace_root_to_build_path_prefix_map
+  :  Workspace_root_for_build_prefix_map.t
+  -> t
+  -> t
+
+val set_action_project_root : Path.Source.t option -> t -> t
+val set_sandbox_actions : bool -> t -> t
+val set_use_sandbox_policy : bool -> t -> t
+
+(** As configured by [init] *)
+val default : t Memo.t
+
+(** {1 Accessors} *)
+
+val expand_aliases_in_sandbox : t -> bool
+val action_stdout_on_success : t -> Action_output_on_success.t
+val action_stderr_on_success : t -> Action_output_on_success.t
+val action_stdout_limit : t -> Action_output_limit.t
+val action_stderr_limit : t -> Action_output_limit.t
+val workspace_root_to_build_path_prefix_map : t -> Workspace_root_for_build_prefix_map.t
+val action_project_root : t -> Path.Source.t option
+val use_sandbox_policy : t -> bool
+
+(** {1 Initialisation} *)
+
+val init : t Memo.t -> unit

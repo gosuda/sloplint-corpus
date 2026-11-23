@@ -1,0 +1,301 @@
+open Import
+open Memo.O
+module Gen_rules = Build_config.Gen_rules
+
+include struct
+  open Dune_pkg
+  module Checksum = Checksum
+  module Rev_store = Rev_store
+  module Pkg = Lock_dir.Pkg
+  module OpamUrl = OpamUrl
+  module Source = Source
+  module Ocamlformat = Ocamlformat
+end
+
+let context_name = Context_name.of_string "_fetch"
+let context = Build_context.create ~name:context_name
+let digest_of_url url = OpamUrl.to_string url |> Digest.string
+
+module Kind = struct
+  type t =
+    | File
+    | Dir
+
+  let all = [ "file", File; "dir", Dir ]
+  let enum = Repr.Enum.make "Kind.t" all
+end
+
+let make_target ~kind (source : Source.t) =
+  let basename = Repr.Enum.to_string Kind.enum kind in
+  let prefix, key =
+    match source.checksum with
+    | None -> "url", digest_of_url (snd source.url) |> Digest.to_string
+    | Some (_, checksum) -> "checksum", Checksum.to_string checksum
+  in
+  Path.Build.relative context.build_dir (String.concat ~sep:"-" [ prefix; key; basename ])
+;;
+
+let resolve_url =
+  (* Before we fetch any git repo, we make sure to convert the URL to fetch the
+     git object directly. The object is used to compute the fetch action digest
+     which is helpful to avoid refetching the same objects. *)
+  let git url =
+    Memo.of_reproducible_fiber
+    @@
+    let open Fiber.O in
+    let+ git_object =
+      let* rev_store = Rev_store.get in
+      OpamUrl.resolve url ~loc:Loc.none rev_store
+      >>| function
+      | Ok (Resolved r) -> (r :> Rev_store.Object.t)
+      | Ok (Unresolved r) -> r
+      | Error m -> raise (User_error.E m)
+    in
+    (* We fetch the object directly to make sure that there are no races
+       between us resolving a branch or tag and then upstream modifying its
+       meaning. *)
+    Dune_pkg.OpamUrl.set_rev url git_object
+  in
+  let memo =
+    Memo.create "resolve-git-url" ~input:(module OpamUrl) ~cutoff:OpamUrl.equal git
+  in
+  fun (url : OpamUrl.t) ->
+    match url.backend with
+    | `git -> Memo.exec memo url
+    | _ -> Memo.return url
+;;
+
+module Spec = struct
+  type ('path, 'target) t =
+    { target : 'target
+    ; url : Loc.t * OpamUrl.t
+    ; checksum : (Loc.t * Checksum.t) option
+    ; kind : Kind.t
+    }
+
+  let name = "source-fetch"
+  let version = 3
+  let runs_process = false
+  let can_run_in_action_runner = false
+  let bimap t _ g = { t with target = g t.target }
+  let is_useful_to_memoize = true
+
+  let encode { target; url = _, url; checksum; kind } _ encode_target : Sexp.t =
+    List
+      ([ encode_target target
+       ; Sexp.Atom (OpamUrl.to_string url)
+       ; Atom (Repr.Enum.to_string Kind.enum kind)
+       ]
+       @ (match OpamUrl.rev url with
+          | None -> []
+          | Some rev -> [ Sexp.Atom rev ])
+       @
+       match checksum with
+       | None -> []
+       | Some (_, checksum) -> [ Atom (Checksum.to_string checksum) ])
+  ;;
+
+  let action { target; url = loc_url, url; checksum; kind } ~ectx:_ ~eenv:_ =
+    let open Fiber.O in
+    let* () = Fiber.return () in
+    let target = Path.build target in
+    (let checksum = Option.map checksum ~f:snd in
+     Dune_pkg.Fetch.fetch
+       ~unpack:
+         (match kind with
+          | File -> false
+          | Dir -> true)
+       ~checksum
+       ~target
+       ~url:(loc_url, url))
+    >>= function
+    | Ok () -> Fiber.return ()
+    | Error (Checksum_mismatch actual_checksum) ->
+      (match checksum with
+       | None ->
+         User_error.raise
+           ~loc:loc_url
+           [ Pp.text "No checksum provided. It should be:"; Checksum.pp actual_checksum ]
+       | Some (loc, _) ->
+         let loc = Dune_pkg.Lock_dir.loc_in_source_tree loc in
+         User_error.raise
+           ~loc
+           [ Pp.text "Invalid checksum, got"; Dune_pkg.Checksum.pp actual_checksum ])
+    | Error (Unavailable message) ->
+      let loc = loc_url in
+      (match message with
+       | None -> User_error.raise ~loc [ Pp.text "Unknown fetch failure" ]
+       | Some { User_message.paragraphs; hints; _ } ->
+         User_error.raise ~loc ~hints paragraphs)
+  ;;
+end
+
+module A = Action_ext.Make (Spec)
+
+let action ~url ~checksum ~target ~kind = A.action { Spec.target; checksum; url; kind }
+
+let add_sources sources (lockdir : Dune_pkg.Lock_dir.t) =
+  let from_lockdir =
+    Dune_pkg.Lock_dir.Packages.to_pkg_list lockdir.packages
+    |> List.fold_left ~init:Path.Build.Map.empty ~f:(fun acc (package : Lock_dir.Pkg.t) ->
+      let sources =
+        let sources = package.info.extra_sources |> List.rev_map ~f:snd in
+        match package.info.source with
+        | None -> sources
+        | Some source -> source :: sources
+      in
+      List.fold_left sources ~init:acc ~f:(fun acc source ->
+        match Source.kind source with
+        | `Directory_or_archive _ -> acc
+        | `Fetch -> Path.Build.Map.set acc (make_target ~kind:Dir source) source))
+  in
+  Path.Build.Map.superpose sources from_lockdir
+;;
+
+let all_sources () =
+  let* init =
+    Memo.List.fold_left
+      Dune_pkg.Dev_tool.all
+      ~init:Path.Build.Map.empty
+      ~f:(fun acc dev_tool ->
+        let dir = Lock_dir.dev_tool_external_lock_dir dev_tool in
+        let exists =
+          (* Note we use [Fpath.exists] here rather than [Fs_memo] because a
+             tool's lockdir may be generated part way through a build. *)
+          Fpath.exists (Path.to_string (Path.external_ dir))
+        in
+        match exists with
+        | false -> Memo.return acc
+        | true -> Lock_dir.of_dev_tool dev_tool >>| add_sources acc)
+  in
+  Per_context.list ()
+  >>= Memo.parallel_map ~f:(fun ctx_name ->
+    Lock_dir.lock_dir_active ctx_name
+    >>= function
+    | false -> Memo.return None
+    | true -> Lock_dir.get ctx_name >>| Result.to_option)
+  >>| List.filter_opt
+  >>| List.fold_left ~init ~f:add_sources
+;;
+
+let gen_rules_for_source (source : Source.t) =
+  let { Source.url = loc_url, url; checksum } = source in
+  let loc_url = Dune_pkg.Lock_dir.loc_in_source_tree loc_url in
+  (* CR-someday rgrinberg: it's possible to share the downloading step between the
+     directory and file actions. Though it's unlikely to be of any use in real
+     world situations. *)
+  let rule =
+    let info = Rule.Info.of_loc_opt (Some loc_url) in
+    fun { Action_builder.With_targets.build; targets } ->
+      Rules.Produce.rule (Rule.make ~info ~targets build)
+  in
+  let make_target = make_target source in
+  let action =
+    let url =
+      let open Action_builder.O in
+      let* () = Action_builder.return () in
+      Action_builder.of_memo (resolve_url url)
+    in
+    fun ~target ~kind ->
+      Action_builder.with_no_targets
+        (let open Action_builder.O in
+         let+ url = url in
+         action ~url:(loc_url, url) ~checksum ~target ~kind
+         |> Action.Full.make ~can_go_in_shared_cache:true)
+  in
+  let dir_rule =
+    let target = make_target ~kind:Dir in
+    action ~target ~kind:Dir
+    |> Action_builder.With_targets.add_directories ~directory_targets:[ target ]
+  in
+  let file_rule =
+    let target = make_target ~kind:File in
+    action ~target ~kind:File |> Action_builder.With_targets.add ~file_targets:[ target ]
+  in
+  let+ () = rule dir_rule
+  and+ () = rule file_rule in
+  ()
+;;
+
+let gen_rules = function
+  | [] ->
+    let+ sources = all_sources () in
+    let directory_targets = Path.Build.Map.map sources ~f:(fun _ -> Loc.none) in
+    let rules =
+      Rules.collect_unit (fun () ->
+        Path.Build.Map.values sources |> Memo.parallel_iter ~f:gen_rules_for_source)
+    in
+    Gen_rules.make rules ~directory_targets
+  | _ -> Memo.return Gen_rules.no_rules
+;;
+
+module Copy = struct
+  module Spec = struct
+    type ('path, 'target) t =
+      { src_dir : 'path
+      ; dst_dir : 'target
+      }
+
+    let name = "copy-dir"
+    let version = 2
+    let runs_process = false
+    let can_run_in_action_runner = false
+    let bimap t f g = { src_dir = f t.src_dir; dst_dir = g t.dst_dir }
+    let is_useful_to_memoize = true
+
+    let encode { src_dir; dst_dir } path target : Sexp.t =
+      List [ path src_dir; target dst_dir ]
+    ;;
+
+    let action { src_dir; dst_dir } ~ectx:_ ~eenv:_ =
+      let open Fiber.O in
+      let+ () = Fiber.return () in
+      Path.mkdir_p (Path.build dst_dir);
+      let dst_dir = Path.build dst_dir in
+      Fpath.traverse
+        ~init:()
+        ~dir:(Path.to_string src_dir)
+        ~on_dir:(fun ~dir fname () ->
+          Path.relative_fname (Path.relative dst_dir dir) fname |> Path.mkdir_p)
+        ~on_file:(fun ~dir fname () ->
+          let src = Path.relative_fname (Path.relative src_dir dir) fname in
+          let dst = Path.relative_fname (Path.relative dst_dir dir) fname in
+          Io.copy_file ~overwrite:true ~src ~dst ())
+        ()
+    ;;
+  end
+
+  module A = Action_ext.Make (Spec)
+
+  let action ~src_dir ~dst_dir = A.action { Spec.dst_dir; src_dir }
+end
+
+let fetch ~target kind (source : Source.t) =
+  let source_kind = Source.kind source in
+  let src =
+    match source_kind with
+    | `Directory_or_archive p -> Path.external_ p
+    | `Fetch -> Path.build (make_target ~kind source)
+  in
+  let open Action_builder.With_targets.O in
+  (* [Action_builder.copy] already adds this dependency for us,
+     so this is only useful for the [Dir] clause *)
+  Dep.file src
+  |> Action_builder.dep
+  |> Action_builder.with_no_targets
+  >>>
+  match kind with
+  | File -> Action_builder.copy ~src ~dst:target
+  | Dir ->
+    let action =
+      match source_kind with
+      | `Fetch -> Copy.action ~src_dir:src ~dst_dir:target
+      | `Directory_or_archive _ ->
+        (* For local sources, we don't need an intermediate step copying to the
+           .fetch context. This would just add pointless additional overhead. *)
+        action ~url:source.url ~checksum:source.checksum ~target ~kind
+    in
+    Action.Full.make ~can_go_in_shared_cache:true action
+    |> Action_builder.With_targets.return
+    |> Action_builder.With_targets.add_directories ~directory_targets:[ target ]
+;;

@@ -1,0 +1,12 @@
+type t = bool
+
+val repr : t Repr.t
+val compare : t -> t -> Ordering.t
+val all : (string * t) list
+
+include Comparator.OPS with type t := t
+
+val to_string : t -> string
+val of_string : string -> t option
+val to_dyn : t -> Dyn.t
+val hash : t -> int

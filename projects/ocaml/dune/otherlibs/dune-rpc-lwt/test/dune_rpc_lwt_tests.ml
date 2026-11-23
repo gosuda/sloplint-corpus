@@ -1,0 +1,234 @@
+(* end to end tests of dune_rpc. Verify that whatever is exposed to the client
+   is usable *)
+
+open Stdune
+open Lwt.Syntax
+open Dune_rpc.V1
+open Dune_rpc_lwt.V1
+
+let _XDG_DATA_HOME = Env.Var.of_string "XDG_DATA_HOME"
+let _XDG_RUNTIME_DIR = Env.Var.of_string "XDG_RUNTIME_DIR"
+
+let xdg_env =
+  let data_dir = Temp.create Dir ~prefix:"lwt" ~suffix:"dune" in
+  let data_dir = Stdune.Path.to_absolute_filename data_dir in
+  Env.initial
+  |> Env.remove ~var:_XDG_RUNTIME_DIR
+  |> Env.add ~var:_XDG_DATA_HOME ~value:data_dir
+;;
+
+let connect ~root_dir =
+  let build_dir = Filename.concat root_dir "_build" in
+  let env var = Env.get xdg_env (Env.Var.of_string var) in
+  let* res = Where.get ~env ~build_dir in
+  match res with
+  | Error e -> Lwt.fail e
+  | Ok None -> Lwt.fail_with (sprintf "unable to establish to connection in %s" build_dir)
+  | Ok (Some where) ->
+    let where =
+      match where with
+      | `Unix addr ->
+        (* this hackery is needed because the temp dir we wrote the socket to is
+           symlinked on a mac *)
+        let addr =
+          match Unix.realpath addr with
+          | s -> s
+          | exception Unix.Unix_error _ -> addr
+        in
+        `Unix
+          (match String.drop_prefix addr ~prefix:(Sys.getcwd () ^ "/") with
+           | None -> addr
+           | Some addr -> Filename.concat "." addr)
+      | _ as s -> s
+    in
+    connect_chan where
+;;
+
+let build_watch ~root_dir =
+  Lwt_process.open_process_none
+    ~env:(Env.to_unix xdg_env |> Array.of_list)
+    ~stdin:`Close
+    ~stderr:`Dev_null
+    ( "dune"
+    , [| "dune"
+       ; "build"
+       ; "--no-print-directory"
+       ; "--root"
+       ; root_dir
+       ; "-w"
+       ; "--file-watcher"
+       ; "manual"
+       ; "@install"
+      |] )
+;;
+
+let run_with_timeout f =
+  Lwt.catch
+    (fun () ->
+       let+ () =
+         Lwt_unix.with_timeout 3.0 (fun () ->
+           let+ _ = f () in
+           ())
+       in
+       print_endline "success")
+    (fun exn ->
+       (match exn with
+        | Lwt_unix.Timeout -> print_endline "timeout"
+        | _ -> ());
+       Lwt.return_unit)
+;;
+
+let initial_cwd = Sys.getcwd ()
+
+let%expect_test "run and connect" =
+  let initialize = Request.Initialize.create ~id:(Request.Id.make (Csexp.Atom "test")) in
+  Sys.chdir initial_cwd;
+  Lwt_main.run
+    (let* root_dir = Lwt_io.create_temp_dir () in
+     Sys.chdir root_dir;
+     let build = build_watch ~root_dir in
+     let rpc =
+       let* () = Lwt_unix.sleep 0.5 in
+       connect ~root_dir
+     in
+     let run_client =
+       let* rpc = rpc in
+       Client.connect rpc initialize ~f:(fun t ->
+         print_endline "started session";
+         let* ping = Client.Versioned.prepare_request t Request.ping in
+         let ping =
+           match ping with
+           | Ok p -> p
+           | Error _ -> assert false
+         in
+         let* res = Client.request t ping () in
+         match res with
+         | Error _ -> failwith "unexpected"
+         | Ok () ->
+           print_endline "received ping. shutting down.";
+           let* shutdown =
+             Client.Versioned.prepare_notification t Notification.shutdown
+           in
+           let shutdown =
+             match shutdown with
+             | Ok s -> s
+             | Error _ -> assert false
+           in
+           Client.notification t shutdown ())
+     in
+     let run_build =
+       let+ res = build#status in
+       match res with
+       | WEXITED i -> printfn "dune build finished with %i" i
+       | _ -> assert false
+     in
+     Lwt.finalize
+       (fun () -> run_with_timeout (fun () -> Lwt.all [ run_client; run_build ]))
+       (fun () ->
+          build#terminate;
+          Lwt.return_unit));
+  [%expect
+    {|
+    started session
+    received ping. shutting down.
+    dune build finished with 0
+    success |}]
+;;
+
+let with_unix_socket_server f =
+  let* dir = Lwt_io.create_temp_dir () in
+  let server = Lwt_unix.socket Unix.PF_UNIX Unix.SOCK_STREAM 0 in
+  Lwt.finalize
+    (fun () ->
+       let socket_path = Filename.concat dir "socket" in
+       let* () = Lwt_unix.bind server (Unix.ADDR_UNIX socket_path) in
+       Lwt_unix.listen server 1;
+       f ~socket_path ~server)
+    (fun () -> Lwt_unix.close server)
+;;
+
+let%expect_test "closing output channel leaves input usable" =
+  Sys.chdir initial_cwd;
+  Lwt_main.run
+    (with_unix_socket_server (fun ~socket_path ~server ->
+       let server_conn =
+         let buffer = Bytes.create 1 in
+         let* client, _ = Lwt_unix.accept server in
+         let* (_ : int) = Lwt_unix.read client buffer 0 1 in
+         Lwt_unix.close client
+       in
+       let* input, output = connect_chan (`Unix socket_path) in
+       let* () = Lwt_io.close output in
+       let* () = server_conn in
+       let* res = Lwt_io.read_char_opt input in
+       printfn "input eof: %b" (Option.is_none res);
+       Lwt_io.close input));
+  [%expect {| input eof: true |}]
+;;
+
+let%expect_test "closing input channel closes output channel" =
+  Sys.chdir initial_cwd;
+  Lwt_main.run
+    (with_unix_socket_server (fun ~socket_path ~server ->
+       let server_conn =
+         let* client, (_ : Unix.sockaddr) = Lwt_unix.accept server in
+         Lwt_unix.close client
+       in
+       let* input, output = connect_chan (`Unix socket_path) in
+       let* () = server_conn in
+       let* eof = Lwt_io.read_char_opt input in
+       printfn "input eof: %b" (Option.is_none eof);
+       let* () = Lwt_io.close input in
+       printfn "output closed: %b" (Lwt_io.is_closed output);
+       Lwt.return_unit));
+  [%expect
+    {|
+    input eof: true
+    output closed: true |}]
+;;
+
+let%expect_test "closing channels after peer reset" =
+  Lwt_main.run
+    (let server = Lwt_unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
+     Lwt.finalize
+       (fun () ->
+          let* () = Lwt_unix.bind server (Unix.ADDR_INET (Unix.inet_addr_loopback, 0)) in
+          Lwt_unix.listen server 1;
+          let port =
+            match Lwt_unix.getsockname server with
+            | Unix.ADDR_INET (_, port) -> port
+            | Unix.ADDR_UNIX _ -> Code_error.raise "expected TCP socket" []
+          in
+          let* chan = connect_chan (`Ip (`Host "127.0.0.1", `Port port)) in
+          let* peer, (_ : Unix.sockaddr) = Lwt_unix.accept server in
+          Lwt_unix.setsockopt_optint peer Unix.SO_LINGER (Some 0);
+          let* () = Lwt_unix.close peer in
+          let input, _ = chan in
+          let* () =
+            Lwt.catch
+              (fun () -> Lwt_io.read_char_opt input |> Lwt.map (fun _ -> ()))
+              (function
+                | Unix.Unix_error (ECONNRESET, _, _) -> Lwt.return_unit
+                | exn -> Lwt.fail exn)
+          in
+          let+ () = Lwt_io.close input in
+          print_endline "closed")
+       (fun () -> Lwt_unix.close server));
+  [%expect {| closed |}]
+;;
+
+module Logger = struct
+  (* A little helper to make the output from the client and server
+     deterministic. Log messages are batched and outputted at the end. *)
+  type t =
+    { mutable messages : string list
+    ; name : string
+    }
+
+  let create ~name = { messages = []; name }
+  let log t fmt = Printf.ksprintf (fun m -> t.messages <- m :: t.messages) fmt
+
+  let print { messages; name } =
+    List.rev messages |> List.iter ~f:(fun msg -> printfn "%s: %s" name msg)
+  ;;
+end

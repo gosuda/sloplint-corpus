@@ -1,0 +1,40 @@
+let traverse ~src ~dst ~on_file ~mkdir ~on_unsupported ?(on_symlink = `Resolve) () =
+  let handle_kind ~src ~dst kind =
+    match (kind : Unix.file_kind) with
+    | S_REG -> on_file ~src ~dst
+    | S_DIR ->
+      mkdir ~src ~dst;
+      let relative path ~dir fname = Path.relative_fname (Path.relative path dir) fname in
+      Fpath.traverse
+        ~dir:(Path.to_string src)
+        ~init:()
+        ~on_file:(fun ~dir fname () ->
+          let src = relative src ~dir fname in
+          let dst = relative dst ~dir fname in
+          on_file ~src ~dst)
+        ~on_dir:(fun ~dir fname () ->
+          let src = relative src ~dir fname in
+          let dst = relative dst ~dir fname in
+          mkdir ~src ~dst)
+        ~on_other:
+          (`Call
+              (fun ~dir fname kind () ->
+                let src = relative src ~dir fname in
+                on_unsupported ~src kind))
+        ~on_symlink:
+          (match on_symlink with
+           | `Resolve -> `Resolve
+           | `Ignore -> `Ignore
+           | `Raise -> `Raise
+           | `Call f ->
+             `Call
+               (fun ~dir fname () ->
+                 let src = relative src ~dir fname in
+                 (), f ~src))
+        ()
+    | kind -> on_unsupported ~src kind
+  in
+  let { Unix.st_kind; _ } = Unix.stat (Path.to_string src) in
+  match (st_kind : Unix.file_kind) with
+  | kind -> handle_kind ~src ~dst kind
+;;

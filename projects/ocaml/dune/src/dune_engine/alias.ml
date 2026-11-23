@@ -1,0 +1,65 @@
+open Import
+
+module Name = struct
+  include Stdune.Alias_name
+
+  let default = of_string "default"
+end
+
+type t =
+  { dir : Path.Build.t
+  ; name : Name.t
+  }
+
+let make name ~dir = { dir; name }
+
+let compare { dir; name } t =
+  match Name.compare name t.name with
+  | Eq -> Path.Build.compare dir t.dir
+  | (Lt | Gt) as ordering -> ordering
+;;
+
+let equal x y = compare x y = Eq
+let hash { dir; name } = Tuple.T2.hash Path.Build.hash Name.hash (dir, name)
+let name t = t.name
+let dir t = t.dir
+
+let repr =
+  Repr.record
+    "alias"
+    [ Repr.field "dir" Path.Build.repr ~get:(fun t -> t.dir)
+    ; Repr.field "name" (Repr.abstract Name.to_dyn) ~get:(fun t -> t.name)
+    ]
+;;
+
+let to_dyn = Repr.to_dyn repr
+let fully_qualified_name t = Path.Build.relative t.dir (Name.to_string t.name)
+
+let get_ctx (path : Path.Build.t) =
+  match Path.Build.extract_first_component path with
+  | None -> None
+  | Some (name, sub) ->
+    (match Context_name.of_string_opt (Filename.to_string name) with
+     | None -> None
+     | Some ctx -> Some (ctx, Path.Source.of_local sub))
+;;
+
+let describe ?(loc = Loc.none) alias =
+  let open Pp.O in
+  let pp =
+    match get_ctx alias.dir with
+    | None ->
+      Pp.textf "invalid-alias %s" (Path.Build.to_string (fully_qualified_name alias))
+    | Some (ctx, dir_in_context) ->
+      let pp =
+        Pp.textf "alias "
+        ++ Pp.verbatim
+             (Path.Source.to_string_maybe_quoted
+                (Path.Source.relative dir_in_context (Name.to_string alias.name)))
+      in
+      if Context_name.is_default ctx
+      then pp
+      else pp ++ Pp.textf " (context %s)" (Context_name.to_string ctx)
+  in
+  if Loc.is_none loc then pp else pp ++ Pp.textf " in %s" (Loc.to_file_colon_line loc)
+;;
