@@ -161,7 +161,7 @@ def spdx_ids(expr):
     cleaned = DOCREF_RE.sub(" ", expr)
     cleaned = re.sub(r"\bWITH\s+[A-Za-z0-9.+-]+", " ", cleaned)
     for token in SPDX_ID_RE.findall(cleaned):
-        if token in ("OR", "AND"):
+        if token in ("OR", "AND", "WITH"):
             continue
         ids.add(token)
     return ids
@@ -230,7 +230,9 @@ def _spdx_parse(tokens):
             pos += 1
             if pos + 1 < len(tokens) and tokens[pos] == "WITH":
                 pos += 1
-                if tokens[pos] in ("OR", "AND", "WITH", "(", ")"):
+                if (tokens[pos] in ("OR", "AND", "WITH", "(", ")")
+                        or ":" in tokens[pos]
+                        or tokens[pos].startswith(("LicenseRef-", "DocumentRef-"))):
                     return None
                 pos += 1
                 return ([name], False, True)
