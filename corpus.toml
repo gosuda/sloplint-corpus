@@ -734,10 +734,11 @@ rev = "a16873f97a1eefd07e14506cb96fcd350c9e62e8"
 spdx = "MIT"
 storage = "copied"
 paths = ["*"]
-tree_hash = "sha256:9ded0a74ae26c721e9c4420eb15cf32cf9343dbb390e4313b37984a95538dd2b"
+exclude = ["benchmarks/lib/common.dart", "packages/riverpod/lib/src/common/env.dart", "packages/riverpod_analyzer_utils/lib/src/type_checker.dart", "packages/riverpod_devtool/lib/src/ui_primitives/borderless_text_field.dart"]
+tree_hash = "sha256:e56bf3879a5d9583f54c431f73197526090271ee1fe2ea0624c2ba7819fe1d56"
 added_by = "CorpusPopC4"
 added_on = "2026-11-23"
-reason = "provider framework, large package set"
+reason = "provider framework, large package set; excludes four Flutter- and Dart-derived files whose headers name a BSD-style license outside the public allowlist"
 notice_present_upstream = false
 
 [[project]]
@@ -762,11 +763,11 @@ rev = "738d2be9d6b6ef3ff3559130c05159ef53336224"
 spdx = "MIT"
 storage = "copied"
 paths = ["build.zig", "lib/std/**", "lib/std/*/**", "lib/std/*/*/**", "lib/std/*/*/*/**", "lib/std/*/*/*/*/**", "lib/std/*/*/*/*/*/**"]
-exclude = ["lib/std/os/**", "lib/std/os/*/**", "lib/std/os/*/*/**", "lib/std/os/*/*/*/**"]
-tree_hash = "sha256:aca074cfe655b9d1d3780e1ce96c2961000f854d0b84c204dfcb74646ce0cc2e"
+exclude = ["lib/std/os/**", "lib/std/os/*/**", "lib/std/os/*/*/**", "lib/std/os/*/*/*/**", "lib/std/math/pow.zig", "lib/std/crypto/ff.zig"]
+tree_hash = "sha256:6f512297e9dbb87e023d3b674e5bdac0bdf81cfaa3ea0502172b4ef97f7894e0"
 added_by = "CorpusPopC4"
 added_on = "2026-11-23"
-reason = "compiler plus stdlib anchor; lib/std subset minus os/ for size"
+reason = "compiler plus stdlib anchor; lib/std subset minus os/ for size, and minus math/pow.zig and crypto/ff.zig, which are ported from BSD-licensed Go code"
 notice_present_upstream = false
 
 [[project]]
@@ -792,11 +793,11 @@ rev = "74241405fe457d6a569a110cffe9d75a1c9a53b7"
 spdx = "MIT"
 storage = "copied"
 paths = ["src/**", "src/*/**", "src/*/*/**", "src/*/*/*/**", "src/*/*/*/*/**", "src/*/*/*/*/*/**"]
-exclude = ["example/**", "example/*/**", "example/*/*/**", "example/*/*/*/**", "pkg/**", "pkg/*/**", "pkg/*/*/**", "pkg/*/*/*/**", "pkg/*/*/*/*/**", "pkg/*/*/*/*/*/**", "test/**", "test/*/**", "test/*/*/**", "test/*/*/*/**", "test/*/*/*/*/**", "src/terminal/x11_color.zig", "src/build/LibVtPackages.zig"]
-tree_hash = "sha256:60629621df2170c6e330a29dd559a64bbec16813bb8e2a24a640ae155f79d423"
+exclude = ["example/**", "example/*/**", "example/*/*/**", "example/*/*/*/**", "pkg/**", "pkg/*/**", "pkg/*/*/**", "pkg/*/*/*/**", "pkg/*/*/*/*/**", "pkg/*/*/*/*/*/**", "test/**", "test/*/**", "test/*/*/**", "test/*/*/*/**", "test/*/*/*/*/**", "src/terminal/x11_color.zig", "src/build/LibVtPackages.zig", "src/input/keycodes.zig"]
+tree_hash = "sha256:da08941b9b7b8afb99d3663d4b654b5a131fabe0fabec5f961089cfbcad1a2b8"
 added_by = "CorpusPopC4"
 added_on = "2026-11-23"
-reason = "terminal emulator; src/ subset; excludes vendored example/pkg/test trees, x11_color.zig, and LibVtPackages.zig whose example JSON names BSD-3-Clause outside the allowlist"
+reason = "terminal emulator; src/ subset; excludes vendored example/pkg/test trees, x11_color.zig, LibVtPackages.zig whose example JSON names BSD-3-Clause outside the allowlist, and input/keycodes.zig, which is based on BSD-licensed Chromium source"
 notice_present_upstream = false
 
 [[project]]
