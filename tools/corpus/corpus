@@ -1352,10 +1352,21 @@ def cmd_seeds(args):
             continue
         planned[seed_name(pname, rel)] = (full, size)
         used += size
-    for stale in sorted(os.listdir(out)):
-        if stale not in planned and os.path.isfile(os.path.join(out, stale)):
-            if re.fullmatch(r".*__[0-9a-f]{12,16}", stale):
-                os.remove(os.path.join(out, stale))
+    ledger = os.path.join(out, ".corpus-seeds." + language + ".json")
+    previous = []
+    if os.path.isfile(ledger):
+        try:
+            with open(ledger, encoding="utf-8") as fh:
+                previous = json.load(fh)
+        except Exception:
+            previous = []
+    if isinstance(previous, list):
+        for stale in previous:
+            if stale in planned or os.path.basename(stale) != stale:
+                continue
+            victim = os.path.join(out, stale)
+            if os.path.isfile(victim) and not os.path.islink(victim):
+                os.remove(victim)
     for flat in sorted(planned):
         full, size = planned[flat]
         with open(full, "rb") as src:
@@ -1363,6 +1374,9 @@ def cmd_seeds(args):
         with open(os.path.join(out, flat), "wb") as dst:
             dst.write(content)
         written += 1
+    with open(ledger, "w", encoding="utf-8") as fh:
+        json.dump(sorted(planned), fh)
+        fh.write("\n")
     sys.stdout.write("PASS seeds %s: %d files, %d bytes -> %s\n" % (language, written, used, out))
     return 0
 

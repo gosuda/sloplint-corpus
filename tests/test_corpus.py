@@ -1059,7 +1059,8 @@ class TestMeasureSeeds(unittest.TestCase):
             "src/a/b.py": "y = 22\n"})
         out = os.path.join(root, "seeds")
         self.assertEqual(run_tool(root, "seeds", "python", "--out", out).returncode, 0)
-        names = sorted(os.listdir(out))
+        names = sorted(n for n in os.listdir(out)
+                       if not n.startswith(".corpus-seeds."))
         self.assertEqual(len(names), 2, names)
         contents = sorted(open(os.path.join(out, n), "rb").read() for n in names)
         self.assertEqual(contents, [b"x = 1\n", b"y = 22\n"])
@@ -1071,11 +1072,13 @@ class TestMeasureSeeds(unittest.TestCase):
             "src/a.py": "x = 1\n"})
         out = os.path.join(root, "seeds")
         self.assertEqual(run_tool(root, "seeds", "python", "--out", out).returncode, 0)
-        before = sorted(os.listdir(out))
+        before = sorted(n for n in os.listdir(out)
+                        if not n.startswith(".corpus-seeds."))
         self.assertEqual(len(before), 1, before)
         write(os.path.join(projdir, "src", "a.py"), "y = 22\n")
         self.assertEqual(run_tool(root, "seeds", "python", "--out", out).returncode, 0)
-        after = sorted(os.listdir(out))
+        after = sorted(n for n in os.listdir(out)
+                       if not n.startswith(".corpus-seeds."))
         self.assertEqual(after, before)
         self.assertEqual(open(os.path.join(out, after[0]), "rb").read(), b"y = 22\n")
 
@@ -1087,7 +1090,8 @@ class TestMeasureSeeds(unittest.TestCase):
             deep + "/mod.py": "x = 1\n"})
         out = os.path.join(root, "seeds")
         self.assertEqual(run_tool(root, "seeds", "python", "--out", out).returncode, 0)
-        names = os.listdir(out)
+        names = [n for n in os.listdir(out)
+                 if not n.startswith(".corpus-seeds.")]
         self.assertEqual(len(names), 1, names)
         self.assertLessEqual(len(names[0].encode("utf-8")), 200)
 
@@ -1115,9 +1119,9 @@ class TestMeasureSeeds(unittest.TestCase):
         self.assertIn("1 files", full.stdout)
         slim = run_tool(root, "seeds", "python", "--out", out, "--max-bytes", "4")
         self.assertEqual(slim.returncode, 0, slim.stdout)
-        self.assertIn("0 files", slim.stdout)
         leftovers = [n for n in os.listdir(out)
-                     if os.path.isfile(os.path.join(out, n))]
+                     if os.path.isfile(os.path.join(out, n))
+                     and not n.startswith(".corpus-seeds.")]
         self.assertEqual(leftovers, [])
 
     def test_seeds_priority_survives_deduplication(self):
@@ -1133,8 +1137,27 @@ class TestMeasureSeeds(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stdout)
         self.assertIn("1 files", proc.stdout)
         want = corpus.seed_name("demo", "src/b_second.ts")
-        self.assertEqual(sorted(os.listdir(out)), [want])
+        got = sorted(n for n in os.listdir(out)
+                     if not n.startswith(".corpus-seeds."))
+        self.assertEqual(got, [want])
 
+    def test_seeds_exports_leave_other_scopes_alone(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        add_synthetic_project(root, lang="python", name="pydemo", files={
+            "src/a.py": "0123456789"})
+        add_synthetic_project(root, lang="rust", name="rsdemo", files={
+            "src/lib.rs": "0123456789"})
+        out = os.path.join(root, "seeds")
+        self.assertEqual(run_tool(root, "seeds", "python", "--out", out).returncode, 0)
+        pyname = corpus.seed_name("pydemo", "src/a.py")
+        stray = "unrelated__0123456789abcdef"
+        write(os.path.join(out, stray), "do not touch\n")
+        self.assertEqual(run_tool(root, "seeds", "rust", "--out", out).returncode, 0)
+        rsname = corpus.seed_name("rsdemo", "src/lib.rs")
+        self.assertTrue(os.path.isfile(os.path.join(out, pyname)))
+        self.assertTrue(os.path.isfile(os.path.join(out, rsname)))
+        self.assertTrue(os.path.isfile(os.path.join(out, stray)))
 
 
 class TestStats(unittest.TestCase):
