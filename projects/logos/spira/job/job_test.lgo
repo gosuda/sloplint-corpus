@@ -1,0 +1,965 @@
+package job_test
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"slices"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/gosuda/spira/job"
+)
+
+func expectPanic(t *testing.T, want string, call func()) {
+	t.Helper()
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatalf("call did not panic, want %q", want)
+		}
+		if got := fmt.Sprint(r); got != want {
+			t.Fatalf("panic = %q, want %q", got, want)
+		}
+	}()
+	call()
+}
+
+func TestEveryRejectsNonPositiveInterval(t *testing.T) {
+	for _, interval := range []time.Duration{0, -time.Second} {
+		expectPanic(t, `job: Every "held": interval must be positive`, func() {
+			var s job.Scheduler
+			s.Every("held", interval, func(ctx context.Context) error { return nil })
+		})
+	}
+}
+
+func TestEveryAfterStartPanics(t *testing.T) {
+	var s job.Scheduler
+	s.Every("first", time.Second, func(ctx context.Context) error { return nil })
+	if err := s.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	expectPanic(t, `job: Every "second": scheduler already started`, func() {
+		s.Every("second", time.Second, func(ctx context.Context) error { return nil })
+	})
+	if err := s.Stop(t.Context()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+}
+
+func TestSchedulerTicksAtLeastThreeTimes(t *testing.T) {
+	var s job.Scheduler
+	ticks := make(chan struct{}, 8)
+	runs := atomic.Int64{}
+	s.Every("ticker", time.Millisecond, func(ctx context.Context) error {
+		runs.Add(1)
+		select {
+		case ticks <- struct{}{}:
+		default:
+		}
+		return nil
+	})
+	if err := s.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	ctx := t.Context()
+	timeout := time.NewTimer(2 * time.Second)
+	defer timeout.Stop()
+	for i := range 3 {
+		select {
+		case <-ticks:
+		case <-timeout.C:
+			t.Fatalf("job ticked %d times, want at least 3", i)
+		case <-ctx.Done():
+			t.Fatalf("test context ended while waiting for tick %d", i)
+		}
+	}
+	if err := s.Stop(t.Context()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if runs.Load() < 3 {
+		t.Fatalf("runs = %d, want at least 3", runs.Load())
+	}
+}
+
+func TestSchedulerLogsJobErrorAndKeepsTicking(t *testing.T) {
+	var buf bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{})))
+	defer slog.SetDefault(previous)
+	var s job.Scheduler
+	ticks := make(chan struct{}, 8)
+	s.Every("failing", time.Millisecond, func(ctx context.Context) error {
+		select {
+		case ticks <- struct{}{}:
+		default:
+		}
+		return errors.New("boom")
+	})
+	if err := s.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	ctx := t.Context()
+	timeout := time.NewTimer(2 * time.Second)
+	defer timeout.Stop()
+	for i := range 2 {
+		select {
+		case <-ticks:
+		case <-timeout.C:
+			t.Fatalf("scheduler stopped after %d ticks despite job errors", i)
+		case <-ctx.Done():
+			t.Fatalf("test context ended while waiting for tick %d", i)
+		}
+	}
+	if err := s.Stop(t.Context()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if !strings.Contains(buf.String(), "failing") {
+		t.Fatalf("log output %q does not name the failing job", buf.String())
+	}
+}
+
+func waitStart(t *testing.T, starts <-chan time.Time, what string) time.Time {
+	t.Helper()
+	select {
+	case at := <-starts:
+		return at
+	case <-time.After(3 * time.Second):
+		t.Fatalf("job never started: %s", what)
+	case <-t.Context().Done():
+		t.Fatalf("test context ended while waiting for %s", what)
+	}
+	return time.Time{}
+}
+
+func TestSchedulerSkipsTicksDuringRun(t *testing.T) {
+	var s job.Scheduler
+	starts := make(chan time.Time, 8)
+	release := make(chan struct{})
+	var released atomic.Bool
+	s.Every("held", 200*time.Millisecond, func(ctx context.Context) error {
+		select {
+		case starts <- time.Now():
+		default:
+		}
+		if !released.Load() {
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+		}
+		return nil
+	})
+	if err := s.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	first := waitStart(t, starts, "the first run")
+	deadline := time.Now().Add(3 * time.Second)
+	for s.Skipped() == 0 && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if s.Skipped() == 0 {
+		t.Fatal("no tick was counted as skipped during the first run")
+	}
+	close(release)
+	released.Store(true)
+	relAt := time.Now()
+	second := waitStart(t, starts, "the second run")
+	if gap := second.Sub(relAt); gap < 50*time.Millisecond {
+		t.Fatalf("second run started %v after release, want at least 50ms; a queued tick would start it at once", gap)
+	}
+	expected := int64(relAt.Sub(first) / (200 * time.Millisecond))
+	if got := int64(s.Skipped()); got < expected-1 || got > expected+1 {
+		t.Fatalf("Skipped = %d, want %d within one (ticks that fell inside the first run)", got, expected)
+	}
+	if err := s.Stop(t.Context()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+}
+
+func TestSchedulerRecoversJobPanic(t *testing.T) {
+	var buf bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{})))
+	defer slog.SetDefault(previous)
+	var s job.Scheduler
+	runs := make(chan struct{}, 8)
+	s.Every("panicky", time.Millisecond, func(ctx context.Context) error {
+		select {
+		case runs <- struct{}{}:
+		default:
+		}
+		panic("kaboom")
+	})
+	if err := s.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	ctx := t.Context()
+	timeout := time.NewTimer(2 * time.Second)
+	defer timeout.Stop()
+	for i := range 2 {
+		select {
+		case <-runs:
+		case <-timeout.C:
+			t.Fatalf("scheduler stopped after %d runs despite job panics", i)
+		case <-ctx.Done():
+			t.Fatalf("test context ended while waiting for run %d", i)
+		}
+	}
+	if err := s.Stop(t.Context()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if !strings.Contains(buf.String(), "panicky") {
+		t.Fatalf("log output %q does not name the panicking job", buf.String())
+	}
+}
+
+func TestQueueBackpressure(t *testing.T) {
+	gate := make(chan struct{})
+	processed := atomic.Int64{}
+	q := job.NewQueue[int](1, 2, func(ctx context.Context, v int) error {
+		<-gate
+		processed.Add(1)
+		return nil
+	})
+	if err := q.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	for i := range 3 {
+		if err := q.Enqueue(t.Context(), i); err != nil {
+			t.Fatalf("Enqueue %d: %v", i, err)
+		}
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	err := q.Enqueue(ctx, 3)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Enqueue on full queue = %v, want context deadline", err)
+	}
+	close(gate)
+	if err := q.Stop(t.Context()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if processed.Load() != 3 {
+		t.Fatalf("processed = %d, want 3", processed.Load())
+	}
+}
+
+func TestQueueDrainsAfterStartContextCancel(t *testing.T) {
+	gate := make(chan struct{})
+	processed := atomic.Int64{}
+	q := job.NewQueue[int](1, 4, func(ctx context.Context, v int) error {
+		<-gate
+		processed.Add(1)
+		return nil
+	})
+	ctx, cancel := context.WithCancel(t.Context())
+	if err := q.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	for i := range 3 {
+		if err := q.Enqueue(ctx, i); err != nil {
+			t.Fatalf("Enqueue %d: %v", i, err)
+		}
+	}
+	cancel()
+	close(gate)
+	if err := q.Stop(t.Context()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if processed.Load() != 3 {
+		t.Fatalf("processed = %d, want 3 after the start context was cancelled before Stop", processed.Load())
+	}
+}
+
+func TestQueueHandlerErrorDoesNotStopQueue(t *testing.T) {
+	attempts := atomic.Int64{}
+	q := job.NewQueue[int](1, 4, func(ctx context.Context, v int) error {
+		attempts.Add(1)
+		if v == 0 {
+			return errors.New("bad item")
+		}
+		return nil
+	})
+	if err := q.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	for i := range 3 {
+		if err := q.Enqueue(t.Context(), i); err != nil {
+			t.Fatalf("Enqueue %d: %v", i, err)
+		}
+	}
+	if err := q.Stop(t.Context()); err != nil {
+		t.Fatalf("Stop = %v, want nil with the handler error contained", err)
+	}
+	if attempts.Load() != 3 {
+		t.Fatalf("attempts = %d, want 3 with the queue running past the failed item", attempts.Load())
+	}
+}
+
+func TestQueueRecoversHandlerPanic(t *testing.T) {
+	attempts := atomic.Int64{}
+	q := job.NewQueue[int](1, 4, func(ctx context.Context, v int) error {
+		attempts.Add(1)
+		if v == 0 {
+			panic("bad item")
+		}
+		return nil
+	})
+	if err := q.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	for i := range 3 {
+		if err := q.Enqueue(t.Context(), i); err != nil {
+			t.Fatalf("Enqueue %d: %v", i, err)
+		}
+	}
+	if err := q.Stop(t.Context()); err != nil {
+		t.Fatalf("Stop = %v, want nil with the handler panic contained", err)
+	}
+	if attempts.Load() != 3 {
+		t.Fatalf("attempts = %d, want 3 with the queue running past the panicking item", attempts.Load())
+	}
+}
+
+func TestNewQueueRejectsBadWorkers(t *testing.T) {
+	expectPanic(t, "job: NewQueue: workers must be at least 1", func() {
+		_ = job.NewQueue[int](0, 1, func(ctx context.Context, v int) error { return nil })
+	})
+}
+
+func TestNewQueueRejectsNegativeCapacity(t *testing.T) {
+	expectPanic(t, "job: NewQueue: capacity must not be negative", func() {
+		_ = job.NewQueue[int](1, -1, func(ctx context.Context, v int) error { return nil })
+	})
+}
+
+func TestQueueStopTimesOutWhenHandlerNeverReturns(t *testing.T) {
+	ended := atomic.Bool{}
+	q := job.NewQueue[int](1, 2, func(ctx context.Context, v int) error {
+		<-ctx.Done()
+		ended.Store(true)
+		return nil
+	})
+	if err := q.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := q.Enqueue(t.Context(), 1); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	stopCtx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	err := q.Stop(stopCtx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Stop = %v, want context deadline", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for !ended.Load() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !ended.Load() {
+		t.Fatal("handler context did not end after Stop timed out")
+	}
+}
+
+func TestEnqueueAfterStopFails(t *testing.T) {
+	q := job.NewQueue[int](1, 2, func(ctx context.Context, v int) error { return nil })
+	if err := q.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := q.Stop(t.Context()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	err := q.Enqueue(ctx, 7)
+	if err == nil {
+		t.Fatal("Enqueue after Stop returned nil, want an error")
+	}
+	if !errors.Is(err, job.ErrQueueClosed) {
+		t.Fatalf("Enqueue after Stop = %v, want queue_closed", err)
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		t.Fatalf("Enqueue after Stop blocked until %v, want an immediate queue-closed error", err)
+	}
+}
+
+func TestStartTwiceFails(t *testing.T) {
+	var s job.Scheduler
+	if err := s.Start(t.Context()); err != nil {
+		t.Fatalf("scheduler Start: %v", err)
+	}
+	if err := s.Start(t.Context()); !errors.Is(err, job.ErrSchedulerStarted) {
+		t.Fatalf("second scheduler Start = %v, want scheduler_already_started", err)
+	}
+	if err := s.Stop(t.Context()); err != nil {
+		t.Fatalf("scheduler Stop: %v", err)
+	}
+	q := job.NewQueue[int](1, 2, func(ctx context.Context, v int) error { return nil })
+	if err := q.Start(t.Context()); err != nil {
+		t.Fatalf("queue Start: %v", err)
+	}
+	if err := q.Start(t.Context()); !errors.Is(err, job.ErrQueueStarted) {
+		t.Fatalf("second queue Start = %v, want queue_already_started", err)
+	}
+	if err := q.Stop(t.Context()); err != nil {
+		t.Fatalf("queue Stop: %v", err)
+	}
+}
+
+func TestChunkWriteFailureStopsRun(t *testing.T) {
+	boom := errors.New("boom")
+	var written []int
+	calls := 0
+	c := job.Chunk[int, int]{
+		Read: func(ctx context.Context, yield func(int, error) bool) {
+			for i := range 5 {
+				if !yield(i, nil) {
+					return
+				}
+			}
+		},
+		Process: func(in int) (int, error) {
+			return in * 2, nil
+		},
+		Write: func(ctx context.Context, items const []int) error {
+			calls++
+			if calls == 2 {
+				return boom
+			}
+			written = append(written, items...)
+			return nil
+		},
+		Size: 2,
+	}
+	_, err := c.Run(t.Context())
+	if err == nil {
+		t.Fatal("Run error = nil, want boom")
+		return
+	}
+	if !errors.Is(err, job.ErrChunkFailed) {
+		t.Fatalf("Run error = %v, want chunk_failed", err)
+		return
+	}
+	if !errors.Is(err, boom) {
+		t.Fatalf("Run error = %v, want boom", err)
+		return
+	}
+	ce, ok := errors.AsType[*job.ChunkError](err)
+	if !ok {
+		t.Fatalf("Run error %T carries no chunk stats", err)
+		return
+	}
+	if ce.Stats.Items != 2 || ce.Stats.Chunks != 1 {
+		t.Fatalf("ChunkError stats = %+v, want Items=2 Chunks=1 for the chunks written before the failure", ce.Stats)
+	}
+	if got := err.Error(); got != "job.chunk_failed: The chunk job failed.: job: chunk failed after 2 items in 1 chunks: boom" {
+		t.Fatalf("Run error text = %q, want the chunk-failed form", got)
+	}
+	if !slices.Equal(written, []int{0, 2}) {
+		t.Fatalf("written = %v, want [0 2] with the run stopped at the failed chunk", written)
+	}
+}
+
+func TestChunkSuccessStats(t *testing.T) {
+	var written []int
+	c := job.Chunk[int, int]{
+		Read: func(ctx context.Context, yield func(int, error) bool) {
+			for i := range 5 {
+				if !yield(i, nil) {
+					return
+				}
+			}
+		},
+		Process: func(in int) (int, error) {
+			return in * 2, nil
+		},
+		Write: func(ctx context.Context, items const []int) error {
+			written = append(written, items...)
+			return nil
+		},
+		Size: 2,
+	}
+	stats, err := c.Run(t.Context())
+	if err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+		return
+	}
+	if stats.Items != 5 || stats.Chunks != 3 {
+		t.Fatalf("stats = %+v, want Items=5 Chunks=3", stats)
+	}
+	if !slices.Equal(written, []int{0, 2, 4, 6, 8}) {
+		t.Fatalf("written = %v, want [0 2 4 6 8]", written)
+	}
+}
+
+func TestChunkReadError(t *testing.T) {
+	boom := errors.New("read boom")
+	read := func(ctx context.Context, yield func(int, error) bool) {
+		yield(1, nil)
+		yield(0, boom)
+	}
+	c := job.Chunk[int, int]{
+		Read:    read,
+		Process: func(in int) (int, error) { return in, nil },
+		Write: func(ctx context.Context, items const []int) error {
+			return nil
+		},
+		Size: 10,
+	}
+	_, err := c.Run(t.Context())
+	if err == nil {
+		t.Fatal("Run error = nil, want read boom")
+		return
+	}
+	if !errors.Is(err, boom) {
+		t.Fatalf("Run error = %v, want read boom", err)
+		return
+	}
+	ce, ok := errors.AsType[*job.ChunkError](err)
+	if !ok {
+		t.Fatalf("Run error %T carries no chunk stats", err)
+		return
+	}
+	if ce.Stats.Items != 0 || ce.Stats.Chunks != 0 {
+		t.Fatalf("ChunkError stats = %+v, want zero items before the read error", ce.Stats)
+	}
+}
+
+func TestChunkPassesItsContextToRead(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	readSawContextEnd := false
+	writes := 0
+	c := job.Chunk[int, int]{
+		Read: func(ctx context.Context, yield func(int, error) bool) {
+			if !yield(1, nil) {
+				return
+			}
+			select {
+			case <-ctx.Done():
+				readSawContextEnd = true
+			case <-time.After(2 * time.Second):
+			}
+		},
+		Process: func(in int) (int, error) {
+			cancel()
+			return in, nil
+		},
+		Write: func(ctx context.Context, items const []int) error {
+			writes++
+			return nil
+		},
+		Size: 10,
+	}
+	_, err := c.Run(ctx)
+	if !readSawContextEnd {
+		t.Fatal("Read did not see the end of the context that Run got")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run error = %v, want context canceled", err)
+	}
+	if writes != 0 {
+		t.Fatalf("Write ran %d times after the context ended, want 0", writes)
+	}
+}
+
+func TestChunkStopsBeforeNextItemAfterContextEnds(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	processed := 0
+	c := job.Chunk[int, int]{
+		Read: func(ctx context.Context, yield func(int, error) bool) {
+			for i := range 3 {
+				if !yield(i, nil) {
+					return
+				}
+			}
+		},
+		Process: func(in int) (int, error) {
+			processed++
+			cancel()
+			return in, nil
+		},
+		Write: func(ctx context.Context, items const []int) error {
+			return nil
+		},
+		Size: 10,
+	}
+	_, err := c.Run(ctx)
+	if processed != 1 {
+		t.Fatalf("Process ran %d times, want 1: Run must stop before the next item after the context ends", processed)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run error = %v, want context canceled", err)
+	}
+}
+
+func TestChunkReportsAContextThatEndsWhileReadWaits(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	c := job.Chunk[int, int]{
+		Read: func(ctx context.Context, yield func(int, error) bool) {
+			if !yield(1, nil) || !yield(2, nil) {
+				return
+			}
+			select {
+			case <-ctx.Done():
+			case <-time.After(2 * time.Second):
+			}
+		},
+		Process: func(in int) (int, error) { return in, nil },
+		Write: func(ctx context.Context, items const []int) error {
+			cancel()
+			return nil
+		},
+		Size: 2,
+	}
+	_, err := c.Run(ctx)
+	failed := &job.ChunkError{}
+	if !errors.As(err, &failed) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run error = %v, want a ChunkError that wraps context canceled", err)
+		return
+	}
+	if failed.Stats != (job.Stats{Items: 2, Chunks: 1}) {
+		t.Fatalf("ChunkError.Stats = %+v, want the one accepted batch of 2 items", failed.Stats)
+	}
+}
+
+func TestQueueStopRacingStartLeavesNoLiveRun(t *testing.T) {
+	race := func(i int) error {
+		q := job.NewQueue[int](8, 4, func(ctx context.Context, v int) error { return nil })
+		started := make(chan error, 1)
+		stopped := make(chan error, 1)
+		if err := func() error {
+			go group (t.Context()) {
+				go {
+					started <- q.Start(t.Context())
+				}
+				go {
+					stopped <- q.Stop(t.Context())
+				}
+			}
+			return nil
+		}(); err != nil {
+			return err
+		}
+		var startErr, stopErr error
+		select {
+		case startErr = <-started:
+		case <-t.Context().Done():
+			t.Fatal("test context ended waiting for Start")
+		}
+		select {
+		case stopErr = <-stopped:
+		case <-t.Context().Done():
+			t.Fatal("test context ended waiting for Stop")
+		}
+		if stopErr != nil {
+			return fmt.Errorf("Stop: %w", stopErr)
+		}
+		if startErr != nil && !errors.Is(startErr, job.ErrQueueStopped) {
+			return fmt.Errorf("Start: %w", startErr)
+		}
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+		if err := q.Enqueue(ctx, 1); err == nil {
+			return fmt.Errorf("queue accepted an item after the race")
+		}
+		return nil
+	}
+	for i := range 1000 {
+		if err := race(i); err != nil {
+			t.Fatalf("race %d: %v", i, err)
+		}
+	}
+}
+
+func TestSchedulerKeepsABusyMarkAgainstARunnerOfAnEarlierStart(t *testing.T) {
+	var s job.Scheduler
+	ticks := make(chan time.Time)
+	job.SetTicker(&s, func(d time.Duration) <-chan time.Time { return ticks })
+	runs := make(chan struct{}, 4)
+	s.Every("held", time.Second, func(ctx context.Context) error {
+		select {
+		case runs <- struct{}{}:
+		case <-ctx.Done():
+		}
+		return nil
+	})
+	if err := s.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := s.Stop(t.Context()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if err := s.Start(t.Context()); err != nil {
+		t.Fatalf("restart Start: %v", err)
+	}
+	if !job.MarkEntryBusy(&s, "held") {
+		t.Fatal("MarkEntryBusy did not find the job")
+	}
+	job.ReleaseAsEarlierStart(&s, "held")
+	for range 3 {
+		sendTick(t, ticks)
+	}
+	if got := s.Skipped(); got < 2 {
+		t.Fatalf("Skipped = %d after three ticks, want the first two skipped: the later Start holds the job", got)
+	}
+	select {
+	case <-runs:
+		t.Fatal("the job ran although the later Start held its busy mark")
+	default:
+	}
+	if err := s.Stop(t.Context()); err != nil {
+		t.Fatalf("final Stop: %v", err)
+	}
+}
+
+func sendTick(t *testing.T, ticks chan time.Time) {
+	t.Helper()
+	select {
+	case ticks <- time.Time{}:
+	case <-t.Context().Done():
+		t.Fatal("test context ended sending a tick")
+	}
+}
+
+func waitRun(t *testing.T, runs chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-runs:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("job did not run: %s", what)
+	case <-t.Context().Done():
+		t.Fatalf("test context ended waiting for %s", what)
+	}
+}
+
+func TestSchedulerRunsJobOnNextTickAfterRunnerCancelledBeforeTick(t *testing.T) {
+	var s job.Scheduler
+	ticks := make(chan time.Time)
+	job.SetTicker(&s, func(d time.Duration) <-chan time.Time { return ticks })
+	runs := make(chan struct{}, 4)
+	s.Every("held", time.Second, func(ctx context.Context) error {
+		select {
+		case runs <- struct{}{}:
+		case <-ctx.Done():
+		}
+		return nil
+	})
+	ctl, cancel := context.WithCancel(context.Background())
+	if err := s.Start(ctl); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if !job.MarkEntryBusy(&s, "held") {
+		t.Fatal("MarkEntryBusy did not find the job")
+	}
+	cancel()
+	if err := s.Stop(t.Context()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if err := s.Start(t.Context()); err != nil {
+		t.Fatalf("restart Start: %v", err)
+	}
+	sendTick(t, ticks)
+	waitRun(t, runs, "the run after the restart")
+	if got := s.Skipped(); got != 0 {
+		t.Fatalf("Skipped = %d, want 0 after the restart", got)
+	}
+	if err := s.Stop(t.Context()); err != nil {
+		t.Fatalf("final Stop: %v", err)
+	}
+}
+
+func holdFirstRun(entered chan struct{}, release chan struct{}, calls *atomic.Int64) func(ctx context.Context) error {
+	return func(ctx context.Context) error {
+		calls.Add(1)
+		select {
+		case entered <- struct{}{}:
+		case <-ctx.Done():
+		}
+		if calls.Load() == 1 {
+			select {
+			case <-release:
+			case <-time.After(30 * time.Second):
+			}
+		}
+		return nil
+	}
+}
+
+func mustStart(t *testing.T, s *job.Scheduler) {
+	t.Helper()
+	if err := s.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+}
+
+func mustStop(t *testing.T, s *job.Scheduler) {
+	t.Helper()
+	if err := s.Stop(t.Context()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+}
+
+func TestSchedulerSkipsWhileAnEarlierStartStillRuns(t *testing.T) {
+	var s job.Scheduler
+	ticks := make(chan time.Time)
+	job.SetTicker(&s, func(d time.Duration) <-chan time.Time { return ticks })
+	entered := make(chan struct{}, 4)
+	release := make(chan struct{})
+	var calls atomic.Int64
+	s.Every("held", time.Second, holdFirstRun(entered, release, &calls))
+	mustStart(t, &s)
+	sendTick(t, ticks)
+	waitRun(t, entered, "the first run to start")
+	stopCtx, stopCancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer stopCancel()
+	if err := s.Stop(stopCtx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Stop error = %v, want the deadline while the run is still active", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	mustStart(t, &s)
+	sendTick(t, ticks)
+	time.Sleep(100 * time.Millisecond)
+	if got := s.Skipped(); got != 1 {
+		t.Fatalf("Skipped = %d after one tick on the restart, want 1: the earlier run still holds the job", got)
+	}
+	select {
+	case <-entered:
+		t.Fatal("the job ran on the restart while the earlier run was still active")
+	default:
+	}
+	close(release)
+	time.Sleep(100 * time.Millisecond)
+	sendTick(t, ticks)
+	waitRun(t, entered, "the run after the earlier run finished")
+	mustStop(t, &s)
+}
+
+type cancelledContext struct{}
+
+func (cancelledContext) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (cancelledContext) Done() <-chan struct{}      { return make(chan struct{}) }
+func (cancelledContext) Err() error                 { return context.Canceled }
+func (cancelledContext) Value(key any) any          { return nil }
+
+func awaitRun(t *testing.T, runs chan struct{}) bool {
+	t.Helper()
+	waitCtx, waitCancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer waitCancel()
+	select {
+	case <-runs:
+		return true
+	case <-waitCtx.Done():
+		return false
+	}
+}
+
+func restartRunsJob(t *testing.T, s *job.Scheduler, ticks chan time.Time, runs chan struct{}) {
+	t.Helper()
+	mustStart(t, s)
+	ran := false
+	for range 3 {
+		sendTick(t, ticks)
+		if awaitRun(t, runs) {
+			ran = true
+			break
+		}
+	}
+	if !ran {
+		t.Fatal("the job did not run after a restart: a cancelled pump leaked its busy mark")
+	}
+	mustStop(t, s)
+}
+
+func TestSchedulerDoesNotLeakABusyMarkFromACancelledPump(t *testing.T) {
+	var s job.Scheduler
+	ticks := make(chan time.Time)
+	job.SetTicker(&s, func(d time.Duration) <-chan time.Time { return ticks })
+	runs := make(chan struct{}, 8)
+	s.Every("held", time.Second, func(ctx context.Context) error {
+		select {
+		case runs <- struct{}{}:
+		default:
+		}
+		return nil
+	})
+	mustStart(t, &s)
+	mustStop(t, &s)
+	if !job.DeliverTick(&s, "held", cancelledContext{}, 1) {
+		t.Fatal("DeliverTick did not find the job")
+	}
+	restartRunsJob(t, &s, ticks, runs)
+}
+
+type flipClaimContext struct {
+	calls atomic.Int64
+	dones atomic.Int64
+	done chan struct{}
+}
+
+func (c *flipClaimContext) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (c *flipClaimContext) Done() <-chan struct{} {
+	if c.dones.Add(1) == 1 {
+		return make(chan struct{})
+	}
+	return c.done
+}
+func (c *flipClaimContext) Err() error {
+	if c.calls.Add(1) == 1 {
+		return nil
+	}
+	return context.Canceled
+}
+func (c *flipClaimContext) Value(key any) any { return nil }
+
+func TestSchedulerReclaimsTickSentBeforeCancel(t *testing.T) {
+	var s job.Scheduler
+	ticks := make(chan time.Time)
+	job.SetTicker(&s, func(d time.Duration) <-chan time.Time { return ticks })
+	runs := make(chan struct{}, 8)
+	s.Every("held", time.Second, func(ctx context.Context) error {
+		select {
+		case runs <- struct{}{}:
+		default:
+		}
+		return nil
+	})
+	mustStart(t, &s)
+	mustStop(t, &s)
+	ctx := &flipClaimContext{done: make(chan struct{})}
+	if !job.DeliverTick(&s, "held", ctx, 1) {
+		t.Fatal("DeliverTick did not find the job")
+	}
+	restartRunsJob(t, &s, ticks, runs)
+}
+
+func TestSchedulerReleasesClaimWhenCancelWinsBeforeSend(t *testing.T) {
+	var s job.Scheduler
+	ticks := make(chan time.Time)
+	job.SetTicker(&s, func(d time.Duration) <-chan time.Time { return ticks })
+	runs := make(chan struct{}, 8)
+	s.Every("held", time.Second, func(ctx context.Context) error {
+		select {
+		case runs <- struct{}{}:
+		default:
+		}
+		return nil
+	})
+	mustStart(t, &s)
+	mustStop(t, &s)
+	done := make(chan struct{})
+	close(done)
+	ctx := &flipClaimContext{done: done}
+	if !job.DeliverTickBlocked(&s, "held", ctx, 1) {
+		t.Fatal("DeliverTickBlocked did not find the job")
+	}
+	restartRunsJob(t, &s, ticks, runs)
+}

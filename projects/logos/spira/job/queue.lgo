@@ -1,0 +1,248 @@
+package job
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+
+	"logos/rt"
+	"logos/sync"
+)
+
+type queueRun[T any] struct {
+	items      chan T
+	stop       chan struct{}
+	join       *joinState
+	cancel     context.CancelFunc
+	joinCancel context.CancelFunc
+}
+
+type queueLife[T any] struct {
+	started bool
+	stopped bool
+	open    bool
+	run     *queueRun[T]?
+	sending int64
+}
+
+type Queue[T any] struct {
+	workers  int
+	capacity int
+	handle   func(ctx context.Context, item T) error
+	wake     sync.Locked[chan struct{}]
+	life     sync.Locked[queueLife[T]]
+}
+
+func NewQueue[T any](workers int, capacity int, handle func(ctx context.Context, item T) error) *Queue[T] {
+	if workers < 1 {
+		panic("job: NewQueue: workers must be at least 1")
+	}
+	if capacity < 0 {
+		panic("job: NewQueue: capacity must not be negative")
+	}
+	q := &Queue[T]{workers: workers, capacity: capacity, handle: handle}
+	q.wake.WithLock(func(w *chan struct{}) {
+		*w = make(chan struct{})
+	})
+	return q
+}
+
+func (q *Queue[T]) Start(ctx context.Context) error {
+	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	var startErr error
+	q.life.WithLock(func(l *queueLife[T]) {
+		if l.stopped {
+			startErr = ErrQueueStopped.Err()
+			return
+		}
+		if l.started {
+			startErr = ErrQueueStarted.Err()
+			return
+		}
+		l.started = true
+		l.open = true
+		items := make(chan T, q.capacity)
+		stop := make(chan struct{})
+		js := &joinState{done: make(chan struct{})}
+		joinCtx, joinCancel := context.WithCancel(context.Background())
+		g, _ := rt.NewGroup(runCtx, 0)
+		for range q.workers {
+			g.Go(func(gctx context.Context) error {
+				return q.worker(gctx, items, stop)
+			})
+		}
+		context.AfterFunc(joinCtx, func() {
+			js.err.WithLock(func(e *error) {
+				*e = g.Wait()
+			})
+			close(js.done)
+		})
+		l.run = &queueRun[T]{
+			items:      items,
+			stop:       stop,
+			join:       js,
+			cancel:     cancel,
+			joinCancel: joinCancel,
+		}
+		q.wake.WithLock(func(w *chan struct{}) {
+			*w = make(chan struct{})
+		})
+	})
+	if startErr != nil {
+		cancel()
+		return startErr
+	}
+	return nil
+}
+
+func (q *Queue[T]) takeRun() *queueRun[T]? {
+	var r *queueRun[T]?
+	q.life.WithLock(func(l *queueLife[T]) {
+		l.stopped = true
+		if !l.started {
+			return
+		}
+		l.started = false
+		l.open = false
+		r = l.run
+		l.run = nil
+	})
+	return r
+}
+
+func (q *Queue[T]) activeRun() *queueRun[T]? {
+	var r *queueRun[T]?
+	q.life.WithLock(func(l *queueLife[T]) {
+		if l.open && l.run != nil {
+			r = l.run
+		}
+	})
+	return r
+}
+
+func (q *Queue[T]) Stop(ctx context.Context) error {
+	run := q.takeRun()
+	if run == nil {
+		return nil
+	}
+	close(run.stop)
+	run.joinCancel()
+	defer run.cancel()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-run.join.done:
+	}
+	var err error
+	run.join.err.WithLock(func(e *error) {
+		err = *e
+	})
+	return err
+}
+
+func (q *Queue[T]) Enqueue(ctx context.Context, item T) error {
+	q.life.WithLock(func(l *queueLife[T]) {
+		l.sending++
+	})
+	defer func() {
+		wake := false
+		q.life.WithLock(func(l *queueLife[T]) {
+			l.sending--
+			wake = l.sending == 0
+		})
+		if wake {
+			q.broadcast()
+		}
+	}()
+	run := q.activeRun()
+	if run != nil {
+		select {
+		case run.items <- item:
+			return nil
+		case <-run.stop:
+			return ErrQueueClosed.Err()
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return ErrQueueClosed.Err()
+}
+
+func (q *Queue[T]) broadcast() {
+	q.wake.WithLock(func(w *chan struct{}) {
+		close(*w)
+		*w = make(chan struct{})
+	})
+}
+
+func (q *Queue[T]) waitCh() chan struct{} {
+	var w chan struct{}
+	q.wake.WithLock(func(x *chan struct{}) {
+		w = *x
+	})
+	return w
+}
+
+func (q *Queue[T]) sendingNow() int64 {
+	var n int64
+	q.life.WithLock(func(l *queueLife[T]) {
+		n = l.sending
+	})
+	return n
+}
+
+func (q *Queue[T]) worker(ctx context.Context, items chan T, stop <-chan struct{}) error {
+	for {
+		select {
+		case <-stop:
+			return q.drain(ctx, items)
+		case item := <-items:
+			q.handleItem(ctx, item)
+		case <-ctx.Done():
+			return nil
+		}
+	}
+}
+
+func (q *Queue[T]) handleItem(ctx context.Context, item T) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("job: handle panicked", "panic", fmt.Sprint(r))
+		}
+	}()
+	if err := q.handle(ctx, item); err != nil {
+		slog.Warn("job: handle failed", "error", err)
+	}
+}
+
+func (q *Queue[T]) drain(ctx context.Context, items chan T) error {
+	for {
+		if q.takeItem(ctx, items) {
+			return nil
+		}
+	}
+}
+
+func (q *Queue[T]) takeItem(ctx context.Context, items chan T) bool {
+	select {
+	case item := <-items:
+		q.handleItem(ctx, item)
+		return false
+	case <-ctx.Done():
+		return true
+	default:
+	}
+	w := q.waitCh()
+	if q.sendingNow() == 0 {
+		return true
+	}
+	select {
+	case item := <-items:
+		q.handleItem(ctx, item)
+		return false
+	case <-w:
+		return false
+	case <-ctx.Done():
+		return true
+	}
+}

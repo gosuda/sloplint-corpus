@@ -1,0 +1,785 @@
+package gateway_test
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"logos/rt"
+
+	"github.com/gosuda/spira/gateway"
+	"github.com/gosuda/spira/resilience"
+)
+
+func deadUpstream(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("dead listen: %v", err)
+		return ""
+	}
+	g, _ := rt.NewGroup(t.Context(), 1)
+	t.Cleanup(func() {
+		if cerr := ln.Close(); cerr != nil {
+			t.Errorf("dead close: %v", cerr)
+		}
+		if gerr := g.Wait(); gerr != nil {
+			t.Errorf("dead group: %v", gerr)
+		}
+	})
+	g.Go(func(_ context.Context) error {
+		for {
+			c, aerr := ln.Accept()
+			if aerr != nil {
+				return nil
+			}
+			if cerr := c.Close(); cerr != nil {
+				return cerr
+			}
+		}
+	})
+	return "http://" + ln.Addr().String()
+}
+
+func wantProblem(t *testing.T, resp *http.Response, what string) string {
+	t.Helper()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("%s status=%d want 502", what, resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/problem+json" {
+		t.Fatalf("%s content type=%q want application/problem+json", what, ct)
+	}
+	body := readBody(t, resp)
+	if !strings.Contains(body, "Bad Gateway") {
+		t.Fatalf("%s body %q lacks the problem title", what, body)
+	}
+	return body
+}
+
+func guardClose(c chan struct{}) {
+	select {
+	case <-c:
+	default:
+		close(c)
+	}
+}
+
+func errNote(ctx context.Context, notes chan<- string, note string) error {
+	select {
+	case notes <- note:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return nil
+}
+
+func TestDeadUpstreamFailsOverForGetAndNeverReplaysPost(t *testing.T) {
+	grd := newRequestGuard(t)
+	hc := grd.httpClient(t)
+	dead := deadUpstream(t)
+	var hits atomic.Int64
+	live := countingUpstream(t, grd, &hits)
+	gw := serveGateway(t, []gateway.Route{{PathPrefix: "/shop", To: []string{dead, live.URL}}}, plainPolicy())
+
+	presp, err := hc.Post(gw.URL+"/shop/order", "text/plain", strings.NewReader("x=1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := wantProblem(t, presp, "POST over a dead upstream")
+	if strings.Contains(body, dead) || strings.Contains(body, live.URL) {
+		t.Fatalf("problem body %q names an upstream address", body)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("the live upstream saw %d requests, want 0: a request with a body is never replayed\n%s", hits.Load(), grd.report())
+	}
+
+	for i := range 2 {
+		resp, err := hc.Get(gw.URL + "/shop/x")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET %d status=%d want 200 through the live upstream", i, resp.StatusCode)
+		}
+		readBody(t, resp)
+	}
+	if hits.Load() != 2 {
+		t.Fatalf("the live upstream saw %d requests, want 2: one GET starts at it and one fails over to it\n%s", hits.Load(), grd.report())
+	}
+}
+
+func TestOpenBreakerSkipsItsUpstreamAndKeepsTheLiveOne(t *testing.T) {
+	grd := newRequestGuard(t)
+	hc := grd.httpClient(t)
+	var sick atomic.Int64
+	sickUp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !grd.admit(r) {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		sick.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(sickUp.Close)
+	var hits atomic.Int64
+	live := countingUpstream(t, grd, &hits)
+	brk := resilience.Breaker{Window: 2, FailureRate: 0.5, OpenFor: time.Hour}
+	gw := serveGateway(t, []gateway.Route{{PathPrefix: "/shop", To: []string{sickUp.URL, live.URL}}}, resilience.Policy{Timeout: 2 * time.Second, Breaker: &brk})
+	for i := range 6 {
+		resp, err := hc.Get(gw.URL + "/shop/x")
+		if err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("request %d status=%d want 200", i, resp.StatusCode)
+		}
+		readBody(t, resp)
+	}
+	if sick.Load() != 2 {
+		t.Fatalf("the failing upstream saw %d requests, want 2 before its own breaker opened\n%s", sick.Load(), grd.report())
+	}
+	if hits.Load() != 6 {
+		t.Fatalf("the live upstream saw %d requests, want all 6: every answer came from it\n%s", hits.Load(), grd.report())
+	}
+}
+
+func TestBreakerRecoversThroughProbeWithSharedClock(t *testing.T) {
+	grd := newRequestGuard(t)
+	hc := grd.httpClient(t)
+	var hits atomic.Int64
+	var now atomic.Int64
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !grd.admit(r) {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if hits.Add(1) <= 2 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(up.Close)
+	clock := func() time.Time { return time.Unix(0, now.Load()) }
+	brk := resilience.Breaker{Window: 2, FailureRate: 0.5, OpenFor: time.Hour, Now: clock}
+	gw := serveGateway(t, []gateway.Route{{PathPrefix: "/shop", To: []string{up.URL}}}, resilience.Policy{Timeout: time.Second, Breaker: &brk})
+	for i := range 3 {
+		resp, err := hc.Get(gw.URL + "/shop/x")
+		if err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+		wantProblem(t, resp, "while the breaker is open")
+	}
+	if hits.Load() != 2 {
+		t.Fatalf("the upstream saw %d requests, want 2 before the breaker opened\n%s", hits.Load(), grd.report())
+	}
+	now.Add(int64(2 * time.Hour))
+	resp, err := hc.Get(gw.URL + "/shop/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("probe status=%d want 200 after the open window passed on the shared clock", resp.StatusCode)
+	}
+	readBody(t, resp)
+	if hits.Load() != 3 {
+		t.Fatalf("the upstream saw %d requests, want 3 including the probe\n%s", hits.Load(), grd.report())
+	}
+}
+
+func TestAllUpstreamsDeadAnswersProblemWithoutLeaking(t *testing.T) {
+	dead := deadUpstream(t)
+	gw := serveGateway(t, []gateway.Route{{PathPrefix: "/shop", To: []string{dead, dead + "/alt"}}}, plainPolicy())
+	resp, err := http.Get(gw.URL + "/shop/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := wantProblem(t, resp, "all upstreams dead")
+	if strings.Contains(body, dead) {
+		t.Fatalf("problem body %q names the dead upstream address", body)
+	}
+}
+
+func TestClientErrorsAndInternalErrorsPassThroughWithoutOpeningBreaker(t *testing.T) {
+	grd := newRequestGuard(t)
+	hc := grd.httpClient(t)
+	var hits atomic.Int64
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !grd.admit(r) {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		hits.Add(1)
+		if strings.HasSuffix(r.URL.Path, "missing") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(up.Close)
+	brk := resilience.Breaker{Window: 2, FailureRate: 0.5, OpenFor: time.Hour}
+	gw := serveGateway(t, []gateway.Route{{PathPrefix: "/shop", To: []string{up.URL}}}, resilience.Policy{Timeout: time.Second, Breaker: &brk})
+	for i := range 6 {
+		resp, err := hc.Get(gw.URL + "/shop/missing")
+		if err != nil {
+			t.Fatalf("404 request %d: %v", i, err)
+		}
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("404 request %d status=%d want 404 passed through", i, resp.StatusCode)
+		}
+		readBody(t, resp)
+	}
+	for i := range 6 {
+		resp, err := hc.Get(gw.URL + "/shop/boom")
+		if err != nil {
+			t.Fatalf("500 request %d: %v", i, err)
+		}
+		if resp.StatusCode != http.StatusInternalServerError {
+			t.Fatalf("500 request %d status=%d want 500 passed through", i, resp.StatusCode)
+		}
+		readBody(t, resp)
+	}
+	if hits.Load() != 12 {
+		t.Fatalf("the upstream saw %d requests, want 12: 4xx and 500 never open the breaker\n%s", hits.Load(), grd.report())
+	}
+}
+
+func TestServiceUnavailableCountsAsFailedAndAnswersProblem(t *testing.T) {
+	grd := newRequestGuard(t)
+	hc := grd.httpClient(t)
+	var hits atomic.Int64
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !grd.admit(r) {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		hits.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(up.Close)
+	brk := resilience.Breaker{Window: 2, FailureRate: 0.5, OpenFor: time.Hour}
+	gw := serveGateway(t, []gateway.Route{{PathPrefix: "/shop", To: []string{up.URL}}}, resilience.Policy{Timeout: time.Second, Breaker: &brk})
+	for i := range 5 {
+		resp, err := hc.Get(gw.URL + "/shop/x")
+		if err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+		wantProblem(t, resp, "a 503 upstream")
+	}
+	if hits.Load() != 2 {
+		t.Fatalf("the upstream saw %d requests, want 2: a 503 counts as failed and opens the breaker\n%s", hits.Load(), grd.report())
+	}
+}
+
+func TestTimeoutBeforeHeadersCountsAsFailed(t *testing.T) {
+	block := make(chan struct{})
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-block
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer guardClose(block)
+	t.Cleanup(up.Close)
+	gw := serveGateway(t, []gateway.Route{{PathPrefix: "/shop", To: []string{up.URL}}}, resilience.Policy{Timeout: 40 * time.Millisecond})
+	start := time.Now()
+	bounded := &http.Client{Timeout: 2 * time.Second}
+	resp, err := bounded.Get(gw.URL + "/shop/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantProblem(t, resp, "an upstream that never sends headers")
+	if wait := time.Since(start); wait > 2*time.Second {
+		t.Fatalf("the client waited %v, the policy timeout did not bound it", wait)
+	}
+	close(block)
+}
+
+func streamingUpstream(t *testing.T, release chan struct{}) *httptest.Server {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "8")
+		if _, err := w.Write([]byte("first")); err != nil {
+			t.Errorf("upstream write first chunk: %v", err)
+		}
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		select {
+		case <-release:
+		case <-r.Context().Done():
+			return
+		}
+		if _, err := w.Write([]byte("end")); err != nil {
+			t.Errorf("upstream write last chunk: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestFirstChunkStreamsBeforeUpstreamFinishes(t *testing.T) {
+	release := make(chan struct{})
+	t.Cleanup(func() { guardClose(release) })
+	up := streamingUpstream(t, release)
+	gw := serveGateway(t, []gateway.Route{{PathPrefix: "/shop", To: []string{up.URL}}}, plainPolicy())
+	resp, err := http.Get(gw.URL + "/shop/stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := make(chan string, 1)
+	g, _ := rt.NewGroup(t.Context(), 1)
+	g.Go(func(ctx context.Context) error {
+		buf := make([]byte, 5)
+		note := ""
+		if _, rerr := io.ReadFull(resp.Body, buf); rerr != nil {
+			note = "read error: " + rerr.Error()
+		} else {
+			note = string(buf)
+		}
+		return errNote(ctx, first, note)
+	})
+	select {
+	case s := <-first:
+		if s != "first" {
+			t.Fatalf("first chunk=%q want first", s)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the first chunk did not reach the client before the upstream finished")
+	}
+	close(release)
+	rest, rerr := io.ReadAll(resp.Body)
+	if rerr != nil {
+		t.Fatalf("client read rest: %v", rerr)
+	}
+	if cerr := resp.Body.Close(); cerr != nil {
+		t.Errorf("client close body: %v", cerr)
+	}
+	if string(rest) != "end" {
+		t.Fatalf("rest=%q want end", string(rest))
+	}
+	if werr := g.Wait(); werr != nil {
+		t.Fatalf("reader group: %v", werr)
+	}
+}
+
+func gatingUpstream(t *testing.T, grd *requestGuard, entered chan struct{}, exited chan struct{}) *httptest.Server {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !grd.admit(r) {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		select {
+		case entered <- struct{}{}:
+		case <-r.Context().Done():
+			return
+		}
+		<-r.Context().Done()
+		select {
+		case exited <- struct{}{}:
+		default:
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestClientCancelReachesUpstream(t *testing.T) {
+	grd := newRequestGuard(t)
+	hc := grd.httpClient(t)
+	entered := make(chan struct{}, 1)
+	exited := make(chan struct{}, 1)
+	up := gatingUpstream(t, grd, entered, exited)
+	gw := serveGateway(t, []gateway.Route{{PathPrefix: "/shop", To: []string{up.URL}}}, plainPolicy())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, gw.URL+"/shop/x", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	g, _ := rt.NewGroup(t.Context(), 1)
+	g.Go(func(gctx context.Context) error {
+		cresp, cerr := hc.Do(req)
+		if cerr == nil {
+			if ccerr := cresp.Body.Close(); ccerr != nil {
+				return ccerr
+			}
+		}
+		select {
+		case done <- cerr:
+		case <-gctx.Done():
+		}
+		return nil
+	})
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the upstream never saw the request")
+	}
+	cancel()
+	select {
+	case <-exited:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the upstream request context did not end when the client went away")
+	}
+	if cerr := g.Wait(); cerr != nil {
+		t.Fatalf("client group: %v", cerr)
+	}
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("the canceled client saw no error")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the client call never returned")
+	}
+}
+
+func TestTimeoutCauseNamesTheHeaderWait(t *testing.T) {
+	block := make(chan struct{})
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-block
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer guardClose(block)
+	t.Cleanup(up.Close)
+	logs := &lockedBuffer{}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	gw := serveGateway(t, []gateway.Route{{PathPrefix: "/shop", To: []string{up.URL}}}, resilience.Policy{Timeout: 40 * time.Millisecond})
+	bounded := &http.Client{Timeout: 2 * time.Second}
+	resp, err := bounded.Get(gw.URL + "/shop/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantProblem(t, resp, "an upstream that misses the header timeout")
+	close(block)
+	if line := logs.String(); !strings.Contains(line, "gateway: upstream headers exceeded") {
+		t.Fatalf("log %q does not name the header wait as the failure cause", line)
+	}
+}
+
+func slowTailUpstream(t *testing.T, gap time.Duration) *httptest.Server {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "8")
+		if _, err := w.Write([]byte("head")); err != nil {
+			t.Errorf("upstream write head: %v", err)
+		}
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		select {
+		case <-time.After(gap):
+		case <-r.Context().Done():
+			return
+		}
+		if _, err := w.Write([]byte("tail")); err != nil {
+			t.Errorf("upstream write tail: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestBodyOutlivesTheHeaderTimeout(t *testing.T) {
+	up := slowTailUpstream(t, 400*time.Millisecond)
+	gw := serveGateway(t, []gateway.Route{{PathPrefix: "/shop", To: []string{up.URL}}}, resilience.Policy{Timeout: 100 * time.Millisecond})
+	resp, err := http.Get(gw.URL + "/shop/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d want 200", resp.StatusCode)
+	}
+	data := readBody(t, resp)
+	if data != "headtail" {
+		t.Fatalf("body=%q want headtail: the header timeout must not end the body read", data)
+	}
+}
+
+func TestSharedRefusalBodyServesEveryConcurrentClient(t *testing.T) {
+	dead := deadUpstream(t)
+	gw := serveGateway(t, []gateway.Route{{PathPrefix: "/shop", To: []string{dead, dead + "/alt"}}}, plainPolicy())
+	g, _ := rt.NewGroup(t.Context(), 8)
+	for range 8 {
+		g.Go(func(_ context.Context) error {
+			resp, err := http.Get(gw.URL + "/shop/x")
+			if err != nil {
+				return err
+			}
+			data, rerr := io.ReadAll(resp.Body)
+			cerr := resp.Body.Close()
+			if resp.StatusCode != http.StatusBadGateway {
+				return fmt.Errorf("status=%d want 502", resp.StatusCode)
+			}
+			if rerr != nil {
+				return fmt.Errorf("read body: %w", rerr)
+			}
+			if cerr != nil {
+				return fmt.Errorf("close body: %w", cerr)
+			}
+			if !strings.Contains(string(data), "Bad Gateway") {
+				return fmt.Errorf("body %q lacks the problem title", data)
+			}
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		t.Fatalf("a concurrent client got a broken refusal: %v", err)
+	}
+}
+
+func TestBodylessPostFailsOverLikeAGet(t *testing.T) {
+	grd := newRequestGuard(t)
+	hc := grd.httpClient(t)
+	dead := deadUpstream(t)
+	var hits atomic.Int64
+	live := countingUpstream(t, grd, &hits)
+	gw := serveGateway(t, []gateway.Route{{PathPrefix: "/shop", To: []string{dead, live.URL}}}, plainPolicy())
+	resp, err := hc.Post(gw.URL+"/shop/order", "text/plain", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d want 200 through the live upstream", resp.StatusCode)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("the live upstream saw %d requests, want 1: a bodyless POST may be replayed\n%s", hits.Load(), grd.report())
+	}
+}
+
+func TestMountLeavesARetryPolicyUntouched(t *testing.T) {
+	grd := newRequestGuard(t)
+	hc := grd.httpClient(t)
+	var hits atomic.Int64
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !grd.admit(r) {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		hits.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(up.Close)
+	gw := serveGateway(t, []gateway.Route{{PathPrefix: "/shop", To: []string{up.URL}}}, resilience.Policy{Timeout: time.Second, Retry: resilience.Retry{Attempts: 3, Base: time.Millisecond, Max: 2 * time.Millisecond}})
+	presp, err := hc.Post(gw.URL+"/shop/order", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantProblem(t, presp, "a POST against a 503 upstream")
+	if hits.Load() != 1 {
+		t.Fatalf("the upstream saw %d requests, want 1: Mount must not apply Policy.Retry to a POST\n%s", hits.Load(), grd.report())
+	}
+}
+
+func TestNilBreakerPolicyAddsNoBreaker(t *testing.T) {
+	grd := newRequestGuard(t)
+	hc := grd.httpClient(t)
+	var hits atomic.Int64
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !grd.admit(r) {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		hits.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(up.Close)
+	gw := serveGateway(t, []gateway.Route{{PathPrefix: "/shop", To: []string{up.URL}}}, resilience.Policy{Timeout: time.Second})
+	for i := range 30 {
+		resp, err := hc.Get(gw.URL + "/shop/x")
+		if err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+		wantProblem(t, resp, "a 503 upstream with no breaker")
+	}
+	if hits.Load() != 30 {
+		t.Fatalf("the upstream saw %d requests, want 30: a nil breaker must leave every request admitted\n%s", hits.Load(), grd.report())
+	}
+}
+
+func TestHeadersLateComparesCompletionAgainstDeadline(t *testing.T) {
+	deadline := time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)
+	if gateway.HeadersLateForTest(deadline.Add(-time.Millisecond), deadline) {
+		t.Fatal("a completion before the deadline counts as late")
+	}
+	if gateway.HeadersLateForTest(deadline, deadline) {
+		t.Fatal("a completion at the deadline counts as late")
+	}
+	if !gateway.HeadersLateForTest(deadline.Add(time.Millisecond), deadline) {
+		t.Fatal("a completion after the deadline does not count as late")
+	}
+}
+
+func waitForRefusalLog(t *testing.T, logs *lockedBuffer) {
+	t.Helper()
+	limit := time.Now().Add(10 * time.Second)
+	for {
+		if strings.Contains(logs.String(), "gateway: no upstream served the route") {
+			return
+		}
+		if time.Now().After(limit) {
+			t.Fatal("the gateway never logged the refused route")
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestClientCancelNeverReportsAHeaderTimeout(t *testing.T) {
+	entered := make(chan struct{}, 1)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case entered <- struct{}{}:
+		case <-r.Context().Done():
+			return
+		}
+		<-r.Context().Done()
+	}))
+	t.Cleanup(up.Close)
+	logs := &lockedBuffer{}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	gw := serveGateway(t, []gateway.Route{{PathPrefix: "/shop", To: []string{up.URL}}}, resilience.Policy{Timeout: time.Minute})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, gw.URL+"/shop/x", nil)
+	if err != nil {
+		t.Fatal(err)
+		return
+	}
+	done := make(chan error, 1)
+	g, _ := rt.NewGroup(t.Context(), 1)
+	g.Go(func(gctx context.Context) error {
+		_, derr := http.DefaultClient.Do(req)
+		select {
+		case done <- derr:
+		case <-gctx.Done():
+		}
+		return nil
+	})
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the upstream never saw the request")
+	}
+	cancel()
+	select {
+	case derr := <-done:
+		if derr == nil {
+			t.Fatal("the canceled client saw no error")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the client call never returned after cancel")
+	}
+	if gerr := g.Wait(); gerr != nil {
+		t.Fatalf("client group: %v", gerr)
+	}
+	waitForRefusalLog(t, logs)
+	if line := logs.String(); strings.Contains(line, "gateway: upstream headers exceeded") {
+		t.Fatalf("log %q reports a header timeout for a canceled client", line)
+	}
+}
+
+// streamChunks is a request body of unknown length: it offers no size up
+// front, so the relay must prove emptiness by reading instead of trusting a
+// header.
+type streamChunks struct {
+	rest  []byte
+	step  int
+	lag   time.Duration
+	slept bool
+}
+
+func (c *streamChunks) Read(p []byte) (int, error) {
+	if !c.slept {
+		c.slept = true
+		if c.lag > 0 {
+			time.Sleep(c.lag)
+		}
+	}
+	if len(c.rest) == 0 {
+		return 0, io.EOF
+	}
+	n := len(p)
+	if c.step < n {
+		n = c.step
+	}
+	if len(c.rest) < n {
+		n = len(c.rest)
+	}
+	copy(p, c.rest[:n])
+	c.rest = c.rest[n:]
+	return n, nil
+}
+
+// stalledBody never yields a byte until its context ends. It proves that the
+// relay bounds the empty-proof wait instead of hanging on a stalled stream.
+type stalledBody struct {
+	ctx context.Context
+}
+
+func (b stalledBody) Read(_ []byte) (int, error) {
+	<-b.ctx.Done()
+	return 0, b.ctx.Err()
+}
+
+func TestUnknownLengthEmptyBodyFailsOver(t *testing.T) {
+	grd := newRequestGuard(t)
+	hc := grd.httpClient(t)
+	dead := deadUpstream(t)
+	var hits atomic.Int64
+	live := countingUpstream(t, grd, &hits)
+	gw := serveGateway(t, []gateway.Route{{PathPrefix: "/shop", To: []string{dead, live.URL}}}, plainPolicy())
+	resp, err := hc.Post(gw.URL+"/shop/order", "text/plain", &streamChunks{rest: []byte{}, step: 1})
+	if err != nil {
+		t.Fatal(err)
+		return
+	}
+	readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d want 200 through the live upstream: an empty body of unknown length replays", resp.StatusCode)
+		return
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("the live upstream saw %d requests, want 1\n%s", hits.Load(), grd.report())
+		return
+	}
+}
+
+func TestUnknownLengthNonemptyBodyIsPreserved(t *testing.T) {
+	grd := newRequestGuard(t)
+	hc := grd.httpClient(t)
+	notes := make(chan upstreamNote, 16)
+	live := echoUpstream(t, grd, notes)
+	gw := serveGateway(t, []gateway.Route{{PathPrefix: "/shop", To: []string{live.URL}}}, plainPolicy())
+	resp, err := hc.Post(gw.URL+"/shop/order", "text/plain", &streamChunks{rest: []byte("hello-stream"), step: 2})
+	if err != nil {
+		t.Fatal(err)
+		return
+	}
+	readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d want 200", resp.StatusCode)
+		return
+	}
+	select {
+	case note := <-notes:
+		if note.Body != "hello-stream" {
+			t.Fatalf("upstream saw body %q want %q: the pushed-back byte was lost", note.Body, "hello-stream")
+			return
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the upstream never saw the request")
+		return
+	}
+}

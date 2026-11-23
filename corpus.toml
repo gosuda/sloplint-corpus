@@ -4,6 +4,399 @@ schema_version = 1
 mode = "public"
 
 [[project]]
+name = "spira"
+language = "logos"
+url = "https://github.com/gosuda/spira"
+rev = "b35a253039a539d1c710d4fb759244a37d429b82"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["*.lgo"]
+tree_hash = "sha256:2988cf79498d7448a73d82971886aea4b8e835e8627a02fdda2aaca8f8354eed"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "own LoGOs application covering every language feature; full-program syntax and app-idiom spread"
+notice_present_upstream = true
+
+[[project]]
+name = "sloplint"
+language = "logos"
+url = "https://github.com/gosuda/sloplint"
+rev = "d9d257c83580879f5b742ef7d78a3df202b317f4"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["*.lgo"]
+tree_hash = "sha256:d1cff44ea2303e2c689f440648c8b0a6c893d9bdc06bc22bb422cc73781cbfc7"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "own linter .lgo test fixtures including parse-error edge cases"
+notice_present_upstream = false
+
+[[project]]
+name = "quint-llm-kit"
+language = "quint"
+url = "https://github.com/quint-co/quint-llm-kit"
+rev = "cc75369f741af7d490936f82002c2d28e3b3d78d"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["*.qnt"]
+tree_hash = "sha256:5444f57a3f961c12f3318d87e061ac5b1b2a64c3e09fecd62dd1d0b163aba940"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "largest third-party Quint suite; mostly mcp-servers fixture-style specs, era and style spread"
+notice_present_upstream = false
+
+[[project]]
+name = "choreo"
+language = "quint"
+url = "https://github.com/quint-co/choreo"
+rev = "000cf4eed315187dc6f216a148781cff7dde6521"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["*.qnt"]
+tree_hash = "sha256:28d2bee7f46e9ceb30e99c566d5339d60a4debe9096b5d5089c2d725697e3ab1"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "choreography protocol specs over Quint; application-style contracts"
+notice_present_upstream = false
+
+[[project]]
+name = "tla-examples-in-quint"
+language = "quint"
+url = "https://github.com/hibariya/tla-examples-in-quint"
+rev = "2e714431d0ba387eccd849f93d195c3343f827b8"
+spdx = "MIT"
+storage = "copied"
+paths = ["*.qnt"]
+tree_hash = "sha256:667032a51c291c2d6d4d06a6285f7637b391c6a256adc474aae7eed0a62d95e1"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "TLA ports rewritten in Quint; translator-path syntax diversity"
+notice_present_upstream = false
+
+[[project]]
+name = "kogen-spec"
+language = "quint"
+url = "https://github.com/KogenAI/kogen-spec"
+rev = "8e28fcf7bb48aef673a18a2268d3613ea8a8ba2a"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["*.qnt"]
+tree_hash = "sha256:45e57b51da6e9a0efffd6701b5105967f2569517dbc760ba60cdceae45792641"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "archived formal spec; era and style spread for small suites"
+notice_present_upstream = false
+
+[[project]]
+name = "vibe-verify"
+language = "quint"
+url = "https://github.com/jpablo/vibe-verify"
+rev = "4384e5658f8ba76cff5f1e19ec8e8ac8ee07daf5"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["*.qnt"]
+tree_hash = "sha256:d97e2576ff1553ffcc4719ad6135558559b2441f44d1fee9e70b17d77a0e7166"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "small verification examples; short-file and tutorial syntax"
+notice_present_upstream = false
+
+[[project]]
+name = "metatron"
+language = "quint"
+url = "https://github.com/rahulmutt/metatron"
+rev = "a7df3756f7fc171be35494e953f23bf743d96764"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["*.qnt"]
+tree_hash = "sha256:75529b82d9b48aa497ca28701eb5450f2411bcd3fe3d320a1c966c22834c6310"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "archived Quint suite; era spread for small projects"
+notice_present_upstream = false
+
+[[project]]
+name = "quint-specification-journey"
+language = "quint"
+url = "https://github.com/nsengupta/quint-specification-journey"
+rev = "d8bccc8b44c1203d79d9022ea6969585b947fa1d"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["*.qnt"]
+tree_hash = "sha256:9ec30c2eaf86b5f743113d35354819367dfdc4d96b6f1e10020be3bf72929025"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "specification-journey tutorial files; beginner-syntax spread"
+notice_present_upstream = false
+
+[[project]]
+name = "community-modules"
+language = "tlaplus"
+url = "https://github.com/tlaplus/CommunityModules"
+rev = "cbf7a667423a3768aa3c87fe622faf7db1baa2e7"
+spdx = "MIT"
+storage = "copied"
+paths = ["modules/*.tla", "modules/*/*.tla", "tests/*.tla", "tests/*/*.tla", ".smoke/*.tla", ".smoke/*/*.tla"]
+tree_hash = "sha256:6cf5f9920d8e02093bd723473b01fb3a2ce6e1bedef6987531029688a1945606"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "community modules plus unit and smoke tests; library and test-fixture spread"
+notice_present_upstream = false
+
+
+[[project]]
+name = "tlaplus"
+language = "tlaplus"
+url = "https://github.com/tlaplus/tlaplus"
+rev = "bc1b506bdcad80bb518bf3776a9161c34ff0fc4c"
+spdx = "MIT"
+storage = "copied"
+paths = ["general/*.tla", "general/*/*.tla", "general/*/*/*.tla", "general/*/*/*/*.tla", "tlatools/*.tla", "tlatools/*/*.tla", "tlatools/*/*/*.tla", "tlatools/*/*/*/*.tla", "tlatools/*/*/*/*/*.tla", "tlatools/*/*/*/*/*/*.tla"]
+exclude = ["*.toolbox/*.tla", "*.toolbox/*/*.tla", "*.toolbox/*/*/*.tla", "tlatools/org.lamport.tlatools/test-model/Bug156/TE.tla"]
+tree_hash = "sha256:9fcde0a72cbae3ea6ce6e1512f5becf56633c8ef6a934a6be41cd3aab7fc4670"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "TLC regression suite and general specs; model-checker edge cases and bug archives; generated toolbox copies and one 2.9 MB generated Trace Explorer file excluded"
+notice_present_upstream = false
+
+[[project]]
+name = "tla-plus"
+language = "tlaplus"
+url = "https://github.com/pingcap/tla-plus"
+rev = "5649f86df14c73b0ab8773dda3802bc1937ace8d"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["*.tla"]
+exclude = ["Raft/Raft.tla"]
+tree_hash = "sha256:72cd8b426fd13e3cd32a80f202d3078f33959af7ad30826e997e306eb91b1a07"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "industrial Percolator/transaction specs"
+notice_present_upstream = false
+
+[[project]]
+name = "azure-cosmos-tla"
+language = "tlaplus"
+url = "https://github.com/Azure/azure-cosmos-tla"
+rev = "a8357c9c0a8d0ed710c68a64bc3a9ed0dc860a8a"
+spdx = "MIT"
+storage = "copied"
+paths = ["*.tla"]
+tree_hash = "sha256:8c1606e20135ed9830ebad4062b0922f7a979de661b5511dbe997c8b8b9bc6ce"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "industrial Cosmos DB spec, 2022 era"
+notice_present_upstream = false
+
+[[project]]
+name = "kafka-tlaplus"
+language = "tlaplus"
+url = "https://github.com/Vanlightly/kafka-tlaplus"
+rev = "823615e8a0962d0160c11d9affb2576c56b7c054"
+spdx = "MIT"
+storage = "copied"
+paths = ["*.tla"]
+tree_hash = "sha256:6cd83db9b8b06e1903ea5299f1b1a88f0947614b7eeda64460c3a7cc3c4852f4"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "industrial Kafka replication and transaction specs"
+notice_present_upstream = false
+
+[[project]]
+name = "tla-linearizability"
+language = "tlaplus"
+url = "https://github.com/lorin/tla-linearizability"
+rev = "4a5e1b2dd296f6b70f16aded1a1706ef62b74a9d"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["*.tla"]
+tree_hash = "sha256:51b40b20d07bcaf691d9e16eeff06df14505ae0fc741fb58c61584a3b1488f6d"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "classic linearizability spec, 2022 era"
+notice_present_upstream = false
+
+[[project]]
+name = "pluscal"
+language = "tlaplus"
+url = "https://github.com/belaban/pluscal"
+rev = "1c7430f2ee2b8099b5d14db6bf1341e698a0cfba"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["*.tla"]
+tree_hash = "sha256:c43201807915de0aaf53d04e1f73807c8ef0531eba2a508924264bd9e944d1b7"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "PlusCal algorithm-language sources, 2017 era"
+notice_present_upstream = false
+
+[[project]]
+name = "sloplint-tla-fixtures"
+language = "tlaplus"
+url = "https://github.com/gosuda/sloplint"
+rev = "d9d257c83580879f5b742ef7d78a3df202b317f4"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["crates/sloplint/tests/fixtures/*/*/*.tla"]
+tree_hash = "sha256:fc3445977f5c21fea20a61750394c42fbffbbb38ffd44f861b0d1f29d6b66483"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "own linter TLA fixtures incl near-miss edge cases; vendored tree-sitter copy excluded by subset scope"
+notice_present_upstream = false
+
+[[project]]
+name = "alloy-models"
+language = "alloy"
+url = "https://github.com/AlloyTools/models"
+rev = "886447d3369a9036aa4c3b49a82d7c557ab2e5f9"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["*.als"]
+tree_hash = "sha256:9273ea810b0664c3665e6c00bf7a5fd9e1c4eb8e0f17f999a86ad8052e148ae1"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "algorithm, protocol and puzzle models incl software-abstractions-book"
+notice_present_upstream = false
+
+[[project]]
+name = "git-for-data"
+language = "alloy"
+url = "https://github.com/BauplanLabs/git_for_data"
+rev = "18b23f841625500f9d985c62b2626833da482b1f"
+spdx = "MIT"
+storage = "copied"
+paths = ["*.als"]
+tree_hash = "sha256:4fd85b3ac8bd9f2164e778291e8698f06cb191c6782611da02925c24e4658a90"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "git data-model specs"
+notice_present_upstream = false
+
+[[project]]
+name = "mualloy"
+language = "alloy"
+url = "https://github.com/kaiyuanw/MuAlloy"
+rev = "1083004d6968e92ada75e52f21dcf8bf61a80b26"
+spdx = "MIT"
+storage = "copied"
+paths = ["*.als"]
+tree_hash = "sha256:3a028b9becccff689f13cffe5d85f6d579d91526af3b5c6c8293517a51dfb127"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "mutation-testing dialect models"
+notice_present_upstream = false
+
+[[project]]
+name = "sloplint-alloy-fixtures"
+language = "alloy"
+url = "https://github.com/gosuda/sloplint"
+rev = "d9d257c83580879f5b742ef7d78a3df202b317f4"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["crates/sloplint/tests/fixtures/*/*/*.als"]
+tree_hash = "sha256:b99f2f58dd6f7d24587f40bc54cb71612457748ccf8369e921d5acb77a14d2b5"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "own linter Alloy fixtures incl near-miss edge cases; vendored copies out of subset scope"
+notice_present_upstream = false
+
+[[project]]
+name = "evm-dafny"
+language = "dafny"
+url = "https://github.com/Consensys/evm-dafny"
+rev = "e2e52e86d6623d48d0849f5ce1664f88c8f0e547"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["*.dfy"]
+tree_hash = "sha256:ac17715fcd53823735a3564d04d49b4d788704829157e8bd06d3cd7dbb6dd305"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "EVM-in-Dafny systems proofs; EVM bytecode semantics spread"
+notice_present_upstream = false
+
+[[project]]
+name = "dafnybench"
+language = "dafny"
+url = "https://github.com/sun-wendy/DafnyBench"
+rev = "0cd28feed9cd0179b07fdb9d002f8c39063658e4"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["*.dfy"]
+exclude = ["DafnyBench/dataset/ground_truth/Dafny-VMC_tmp_tmpzgqv0i1u_src_Math_Helper.dfy", "DafnyBench/dataset/ground_truth/libraries_tmp_tmp9gegwhqj_examples_MutableMap_MutableMapDafny.dfy", "DafnyBench/dataset/hints_removed/Dafny-VMC_tmp_tmpzgqv0i1u_src_Math_Helper_no_hints.dfy", "DafnyBench/dataset/hints_removed/libraries_tmp_tmp9gegwhqj_examples_MutableMap_MutableMapDafny_no_hints.dfy"]
+tree_hash = "sha256:231c50e5d23273b96a56e9110244ea2ecc9c4fa31ec6bf5178b270814a3e5907"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "large benchmark suite; machine-generated tmp names noted, dedupe at measure time; 4 files carrying MIT headers excluded, declared spdx is Apache-2.0"
+notice_present_upstream = false
+
+[[project]]
+name = "b3"
+language = "dafny"
+url = "https://github.com/dafny-lang/b3"
+rev = "b24a2b2d6101df900e67d3bb151c4e85af4cd16d"
+spdx = "MIT"
+storage = "copied"
+paths = ["*.dfy"]
+tree_hash = "sha256:1d64c9fe1dd49be8d2d892a6bcd9f1bab45473c8d2fa7ca288212991803590a3"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "small-language test programs"
+notice_present_upstream = false
+
+[[project]]
+name = "veri-titan"
+language = "dafny"
+url = "https://github.com/secure-foundations/veri-titan"
+rev = "1c0e64fd6728b20a0e123c4f77d925436a6f32c5"
+spdx = "MIT"
+storage = "copied"
+paths = ["*.dfy"]
+tree_hash = "sha256:28023078bd64397fd576326da0ae67ce09454b1e450cde2122d6e1bd8b3fede6"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "verified crypto titan code"
+notice_present_upstream = false
+
+[[project]]
+name = "humaneval-dafny"
+language = "dafny"
+url = "https://github.com/JetBrains-Research/HumanEval-Dafny"
+rev = "69c950c138d83ef13f92c59e00af472cd18f1f79"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["*.dfy"]
+tree_hash = "sha256:bd98962d504a1c3c832d8d892aaeffc484611ae229872540dfd32e2310c2058b"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "benchmark task programs"
+notice_present_upstream = false
+
+[[project]]
+name = "daisy-nfsd"
+language = "dafny"
+url = "https://github.com/mit-pdos/daisy-nfsd"
+rev = "68530c3b62abe31ce280e71a2b0d40026a70e5ee"
+spdx = "MIT"
+storage = "copied"
+paths = ["*.dfy"]
+tree_hash = "sha256:923a34f266aa35f0cf2ff73d7a2f8bd5a64ef144e33e7f4114931e796a43dac1"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "verified NFS filesystem code"
+notice_present_upstream = false
+
+[[project]]
+name = "clover"
+language = "dafny"
+url = "https://github.com/ChuyueSun/Clover"
+rev = "02144bec1bbf8d38951ef2df6f0c2870965a214e"
+spdx = "MIT"
+storage = "copied"
+paths = ["*.dfy"]
+tree_hash = "sha256:15f80372de5c074429d1567829a7f182279deb70ffb07c920cb214bc9d43826d"
+added_by = "CorpusPopC6"
+added_on = "2026-11-23"
+reason = "verifier benchmark suite; dataset and clover_mbpp spread"
 name = "tokio"
 language = "rust"
 url = "https://github.com/tokio-rs/tokio"

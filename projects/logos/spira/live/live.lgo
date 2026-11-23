@@ -1,0 +1,168 @@
+package live
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"strings"
+	"time"
+
+	"github.com/gosuda/spira/view"
+	"github.com/gosuda/spira/web"
+)
+
+const heartbeatEvery = 15 * time.Second
+
+type Event struct {
+	Name string
+	Body view.Node
+}
+
+func NewEvent(name string, body view.Node) (Event, error) {
+	if badName(name) {
+		return Event{}, ErrInvalidEventName.Wrap(errors.New("live: event name holds a line break"))
+	}
+	return Event{Name: name, Body: body}, nil
+}
+
+func Events(ctx *web.Context, events <-chan Event) web.Reply {
+	reqCtx := ctx.Ctx()
+	return web.Stream{
+		ContentType: "text/event-stream",
+		Write:       func(w io.Writer) error { return writeEvents(reqCtx, w, events) },
+	}
+}
+
+func writeEvents(ctx context.Context, w io.Writer, events <-chan Event) error {
+	if err := beat(ctx, w); err != nil {
+		return err
+	}
+	ticker := time.NewTicker(heartbeatEvery)
+	defer ticker.Stop()
+	s := stream{w: w, beats: ticker.C}
+	for {
+		keep, err := s.oneRound(ctx, events)
+		if err != nil {
+			return err
+		}
+		if !keep {
+			return nil
+		}
+	}
+}
+
+type stream struct {
+	w     io.Writer
+	beats <-chan time.Time
+}
+
+func (s stream) oneRound(ctx context.Context, events <-chan Event) (bool, error) {
+	select {
+	case <-ctx.Done():
+		return false, nil
+	case <-s.beats:
+		if err := beat(ctx, s.w); err != nil {
+			return false, err
+		}
+		return true, nil
+	case ev, ok := <-events:
+		if stop, serr := s.relay(ctx, ok, ev); serr != nil {
+			return false, serr
+		} else if stop {
+			return false, nil
+		}
+		return true, nil
+	}
+}
+
+func (s stream) relay(ctx context.Context, open bool, ev Event) (bool, error) {
+	if !open {
+		return true, nil
+	}
+	if err := s.writeMessage(ctx, ev); err != nil {
+		return true, endIfDone(ctx, err)
+	}
+	return false, nil
+}
+
+func beat(ctx context.Context, w io.Writer) error {
+	if err := writeHeartbeat(w); err != nil {
+		return endIfDone(ctx, ErrWriteFailed.Wrap(fmt.Errorf("live: heartbeat: %w", err)))
+	}
+	return nil
+}
+
+func writeHeartbeat(w io.Writer) error {
+	if _, err := io.WriteString(w, ": live\n\n"); err != nil {
+		return fmt.Errorf("live: write heartbeat: %w", err)
+	}
+	return nil
+}
+
+func (s stream) writeMessage(ctx context.Context, ev Event) error {
+	if badName(ev.Name) {
+		return ErrInvalidEventName.Wrap(errors.New("live: event name holds a line break"))
+	}
+	var body strings.Builder
+	if err := s.render(ctx, &body, ev); err != nil {
+		return err
+	}
+	var msg strings.Builder
+	msg.WriteString($"event: {ev.Name}\n")
+	for _, line := range strings.Split(newlines(body.String()), "\n") {
+		msg.WriteString($"data: {line}\n")
+	}
+	msg.WriteString("\n")
+	if _, err := io.WriteString(s.w, msg.String()); err != nil {
+		return ErrWriteFailed.Wrap(fmt.Errorf("live: write event: %w", err))
+	}
+	return nil
+}
+
+func (s stream) render(ctx context.Context, body *strings.Builder, ev Event) error {
+	rendered := make(chan struct{})
+	go group (ctx) {
+		go renderBody(ctx, body, ev, rendered)
+		go s.beatUntil(ctx, rendered)
+	}
+	return nil
+}
+
+func renderBody(ctx context.Context, body *strings.Builder, ev Event, rendered chan<- struct{}) error {
+	defer close(rendered)
+	if err := view.Render(ctx, body, ev.Body); err != nil {
+		return ErrRenderFailed.Wrap(fmt.Errorf("live: render event: %w", err))
+	}
+	return nil
+}
+
+func (s stream) beatUntil(ctx context.Context, rendered <-chan struct{}) error {
+	for {
+		select {
+		case <-rendered:
+			return nil
+		case <-ctx.Done():
+			return nil
+		case <-s.beats:
+			if err := beat(ctx, s.w); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func newlines(s string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", "\n"), "\r", "\n")
+}
+
+func badName(name string) bool {
+	return strings.ContainsAny(name, "\n\r")
+}
+
+func endIfDone(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return nil
+	}
+	return err
+}

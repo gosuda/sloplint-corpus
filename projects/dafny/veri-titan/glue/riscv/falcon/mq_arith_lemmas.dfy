@@ -1,0 +1,323 @@
+include "../../../spec/arch/riscv/machine.s.dfy"
+include "../../../spec/bvop/bv32_op.s.dfy"
+include "../../../spec/arch/riscv/vale.i.dfy"
+
+include "../../../misc/DivModNeg.dfy"
+include "../../../spec/crypto/falcon512.i.dfy"
+
+module mq_arith_lemmas {
+    import opened Seq
+    import opened Power
+    import opened Power2
+    import opened DivMod
+    import opened Mul
+    import opened DivModNeg
+    import opened integers
+    import opened bv32_op_s
+    import opened rv_machine
+    import opened rv_vale
+    import opened mem
+    import flat
+
+    import opened falcon_512_i
+
+    lemma lemma_rs_by_31(x: int32)
+        ensures x >= 0 ==> int32_rs(x, 31) == 0;
+        ensures x < 0 ==> int32_rs(x, 31) == -1;
+    {
+        assert integers.BASE_31 == Power2.Pow2(31) by { Power2.Lemma2To64(); }
+
+        if x >= 0 {
+            assert x / Power2.Pow2(31) == 0 by {
+                DivMod.LemmaBasicDivAuto();
+            }
+        } else {
+            assert x / Power2.Pow2(31) == -1 by {
+                DivModNeg.LemmaDivBounded(x, integers.BASE_31);
+            }
+        }
+    }
+
+    lemma cond_set_Q_lemma(a: uint32, b: uint32)
+        requires b == uint32_and(uint32_srai(a, 31), Q);
+        ensures b == if to_int32(a) >= 0 then 0 else Q;
+    {
+        if to_int32(a) >= 0 {
+            calc == {
+                b;
+                uint32_and(uint32_srai(a, 31), Q);
+                uint32_and(to_uint32(int32_rs(to_int32(a), 31)), Q);
+                {
+                    lemma_rs_by_31(to_int32(a));
+                    assert int32_rs(to_int32(a), 31) == 0;          
+                }
+                uint32_and(to_uint32(0), Q);
+                uint32_and(0, Q);
+                {
+                    lemma_and_with_constants(Q);
+                }
+                0;
+            }
+        } else {
+            calc == {
+                b;
+                uint32_and(uint32_srai(a, 31), Q);
+                uint32_and(to_uint32(int32_rs(to_int32(a), 31)), Q);
+                {
+                    lemma_rs_by_31(to_int32(a));
+                    assert int32_rs(to_int32(a), 31) == -1;
+                }
+                uint32_and(to_uint32(-1), Q);
+                {
+                    lemma_and_with_constants(Q);
+                }
+                Q;
+            }
+        }
+    }
+
+    lemma lemma_uint32_and_Q(x: uint32)
+        ensures x == 0 ==> uint32_and(x, Q) == 0;
+        ensures to_int32(x) == -1 ==> uint32_and(x, Q) == Q;
+    {
+        reveal_and();
+        if to_int32(x) == - 1{
+            assert x == 4294967295;
+            assert uint32_and(4294967295, Q) == Q;
+        }
+    }
+
+    lemma lemma_positive_rs(x: uint32, shift: nat)
+      requires x >= 0;
+      requires x < BASE_31;
+      ensures to_uint32(int32_rs(x, shift)) == int32_rs(x, shift)
+    {
+        assert to_int32(x) == x;
+        assert int32_rs(to_int32(x), shift) >= 0 by { DivMod.LemmaDivBasicsAuto(); }
+    }
+
+    lemma lemma_shiftmul3(a: nat, b: nat, ab: nat, ab3: nat)
+        requires a < Q;
+        requires b < Q;
+        requires ab == uint32_mul(a, b)
+        requires ab3 == uint32_add(uint32_ls(ab, 1), ab);
+        ensures ab3 == 3 * a * b;
+        ensures ab3 == 3 * ab;
+        ensures ab == a * b;
+        ensures ab <= (Q-1) * (Q-1);
+    {
+        reveal dw_lh();
+        Mul.LemmaMulNonnegative(a, b);
+        Mul.LemmaMulUpperBound(a, Q-1, b, Q-1);
+        DivMod.LemmaSmallMod(a * b, BASE_32);
+
+        assert a * b == ab;
+        assert ab3 == 3 * ab by { ls1_lemma(ab); }
+        assert ab3 == 3 * a * b by { Mul.LemmaMulIsAssociativeAuto(); }
+    }
+
+    lemma lemma_12289(v: uint32, v3: uint32, w: uint32)
+      requires v < BASE_16;
+      requires v3 == 3 * v;
+      requires w == uint32_add(uint32_ls(v3, 12), v);
+      ensures w == Q * v;
+      ensures w <= Q * (BASE_16 - 1);
+    {
+        var lsv3 := uint32_ls(v3, 12);
+        assert lsv3 == (3 * v * Power2.Pow2(12)) % BASE_32 by { Mul.LemmaMulIsAssociativeAuto(); }
+
+        var lsv3_int := lsv3 as int;
+        
+        gbassert IsModEquivalent(w, 12289 * v, BASE_32) by {
+            assert IsModEquivalent(lsv3_int, 3 * v * 4096, BASE_32) by {
+                Power2.Lemma2To64();
+            }
+            assert IsModEquivalent(w, lsv3_int + v, BASE_32);
+        }
+    }
+
+    lemma lemma_zw_shift(w: uint32, xy: uint32, z:uint32)
+        requires w <= Q * (BASE_16 - 1);
+        requires xy <= (Q-1) * (Q-1);
+        requires z == uint32_rs(uint32_add(w, xy), 16);
+        ensures z == uint32_rs(w + xy, 16);
+        ensures z < 2 * Q; 
+    {
+        var wxy := uint32_add(w, xy);
+        assert wxy == w + xy;
+
+        assert z == uint32_rs(wxy, 16);
+
+        assert Power2.Pow2(16) == 65536 by {
+            Power2.Lemma2To64();
+        }
+
+        assert z == (wxy / 65536) % BASE_32;
+
+        assert wxy <= Q * (BASE_16 - 1) + (Q-1) * (Q-1);
+        assert z == (wxy / 65536) by {
+            DivMod.LemmaDivNonincreasing(wxy, 65536);
+            DivMod.LemmaDivPosIsPos(wxy, 65536);
+            DivMod.LemmaSmallMod((wxy / 65536), BASE_32);
+        }
+        
+        assert z <= (Q * (BASE_16 - 1) + (Q-1) * (Q-1)) / 65536 by {
+            DivMod.LemmaDivIsOrdered(wxy, Q * (BASE_16 - 1) + (Q-1) * (Q-1), 65536);
+        }
+
+        assert (Q * (BASE_16 - 1) + (Q-1) * (Q-1)) == 956354559;
+
+        assert z <= 14592;
+
+        assert 14592 < 2 * Q;
+    }
+
+    lemma lemma_Q0Ixy_correct(x: nat, y: nat, xy: uint32, xy3: uint32, Q0Ixy: nat)
+        requires x < Q;
+        requires y < Q;
+        requires xy < Q * Q;
+        requires xy as nat == x * y;
+        requires xy3 as nat == 3 * x * y;
+        requires Q0Ixy == uint32_sub(uint32_ls(xy3, 12), xy);
+        ensures IsModEquivalent(Q0Ixy, 12287 * x * y, BASE_32);
+        ensures IsModEquivalent(12287 * x * y, 12287 * xy, BASE_32);
+    {
+        var sh := uint32_ls(xy3, 12);
+        assert sh == (xy3 * Power2.Pow2(12)) % BASE_32;
+
+        var sh_int := sh as int;
+        var xy_int := xy as int;
+        
+        gbassert IsModEquivalent(Q0Ixy, 12287 * x * y, BASE_32) by {
+            assert xy3 == 3 * x * y;
+            assert xy_int == x * y;
+            assert IsModEquivalent(sh_int, xy3 * 4096, BASE_32) by { Power2.Lemma2To64(); }
+            assert IsModEquivalent(Q0Ixy, sh_int - xy_int, BASE_32);
+        }
+
+        gbassert IsModEquivalent(12287 * x * y, 12287 * xy_int, BASE_32) by {
+            assert xy_int == x * y;
+        }
+    }
+
+    lemma lemma_shiftadd3(Q0Ixy:uint32, v: uint32, v3: nat)
+        requires v == uint32_rs(uint32_ls(Q0Ixy, 16), 16);
+        requires v3 == uint32_add(uint32_ls(v, 1), v);
+        ensures IsModEquivalent(v, Q0Ixy, BASE_16);
+        ensures v < BASE_16; 
+        ensures v3 == 3 * v;
+    {
+        assert Power2.Pow2(16) == 65536 by {
+            Power2.Lemma2To64();
+        }
+
+        var lsx := uint32_ls(Q0Ixy, 16);
+        assert lsx == (Q0Ixy * 65536) % BASE_32;
+        
+        assert v == (lsx / 65536) % BASE_32;
+        assert v < BASE_32;
+        assert v == (lsx / 65536) by {
+            DivMod.LemmaDivNonincreasing(lsx, 65536);
+            DivMod.LemmaDivPosIsPos(lsx, 65536);
+            DivMod.LemmaSmallMod((lsx / 65536), BASE_32);
+        }
+        assert v < BASE_16 by {
+            Power2.Lemma2To64();
+            DivMod.LemmaDivIsOrdered(lsx, BASE_32, BASE_16);
+        }
+
+        assert v3 == v * 3 by { ls1_lemma(v); }
+
+        assert IsModEquivalent(v * BASE_16, Q0Ixy * BASE_16, BASE_32) 
+        by { Power2.Lemma2To64(); }
+        assert BASE_16 * BASE_16 == BASE_32;// by { }
+
+        calc {
+            (v * BASE_16) % BASE_32;
+                { LemmaModBreakdown(v * BASE_16, BASE_16, BASE_16); }
+            BASE_16 * (((v * BASE_16) / BASE_16) % BASE_16) + (v * BASE_16) % BASE_16;
+                { LemmaModMultiplesBasic(v, BASE_16); }
+            BASE_16 * (((v * BASE_16) / BASE_16) % BASE_16);
+                { LemmaDivMultiplesVanish(v, BASE_16); }
+            BASE_16 * (v % BASE_16);
+        }
+
+        calc {
+            (Q0Ixy * BASE_16) % BASE_32;
+                { LemmaModBreakdown(Q0Ixy * BASE_16, BASE_16, BASE_16); }
+            BASE_16 * (((Q0Ixy * BASE_16) / BASE_16) % BASE_16) + (Q0Ixy * BASE_16) % BASE_16;
+                { LemmaModMultiplesBasic(Q0Ixy, BASE_16); }
+            BASE_16 * (((Q0Ixy * BASE_16) / BASE_16) % BASE_16);
+                { LemmaDivMultiplesVanish(Q0Ixy, BASE_16); }
+            BASE_16 * (Q0Ixy % BASE_16);
+        }
+
+        assert BASE_16 * (v % BASE_16) == BASE_16 * (Q0Ixy % BASE_16);
+        assert (BASE_16 * (v % BASE_16))/BASE_16 == (BASE_16 * (Q0Ixy % BASE_16))/BASE_16;
+        assert v % BASE_16 == Q0Ixy % BASE_16 by {
+            LemmaDivMultiplesVanish(v % BASE_16, BASE_16);
+            LemmaDivMultiplesVanish(Q0Ixy % BASE_16, BASE_16);
+        }
+    }
+
+    lemma lemma_and_with_constants(x: uint32)
+        ensures uint32_and(0, x) == 0;
+        ensures uint32_and(0xffff_ffff, x) == x;
+    {
+        reveal_and();
+    }
+
+    lemma lemma_montymul_correct(x: nat, y: nat, xy: uint32, Q0Ixy:nat, v: nat, w: uint32, z: uint32, rr: uint32)
+        requires x < Q;
+        requires y < Q;
+        requires xy == x * y;
+        requires IsModEquivalent(Q0Ixy, 12287 * x * y, BASE_32);
+        requires IsModEquivalent(v, Q0Ixy, BASE_16);
+        requires v < BASE_16;
+        requires w == Q * v;
+        requires w as nat + xy as nat < BASE_32;
+        requires z == uint32_rs(w + xy, 16);
+        requires z < 2 * Q;
+        requires rr == z % Q;
+        ensures IsModEquivalent(rr * 4091, x * y, Q);
+        ensures rr == MQP.montmul(x, y);
+    {
+        gbassert IsModEquivalent(v, 12287 * x * y, BASE_16) by {
+            assert IsModEquivalent(Q0Ixy, 12287 * x * y, BASE_32);
+            assert IsModEquivalent(v, Q0Ixy, BASE_16);
+            assert BASE_16 == 65536;
+            assert BASE_32 == 0x1_0000_0000;
+        }
+
+        gbassert IsModEquivalent(w + xy, 0, BASE_16) by {
+            assert IsModEquivalent(v, 12287 * x * y, BASE_16);
+            assert Q == 12289;
+            assert BASE_16 == 65536;
+            assert w == Q * v;
+            assert xy == x * y;
+        }
+
+        DivMod.LemmaFundamentalDivMod(w + xy, BASE_16);
+        Power2.Lemma2To64();
+        assert z * BASE_16 == w + xy;
+
+        var R_INV := R_INV;
+
+        MQ.Nth_root_lemma();
+
+        gbassert IsModEquivalent(rr, x * y * R_INV, Q) by {
+            assert IsModEquivalent(v, 12287 * x * y, BASE_16);
+            assert Q == 12289;
+            assert BASE_16 == 65536;
+            assert IsModEquivalent(4091, BASE_16, Q);
+            assert w == Q * v;
+            assert xy == x * y;
+            assert z * BASE_16 == (w + xy);
+            assert IsModEquivalent(w + xy, 0, BASE_16);
+            assert IsModEquivalent(rr, z, Q);
+            assert IsModEquivalent(1, R_INV * BASE_16, Q);
+        }
+
+        assert rr == MQP.montmul(x, y);
+    }
+}

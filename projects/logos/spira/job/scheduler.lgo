@@ -1,0 +1,243 @@
+package job
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"logos/rt"
+	"logos/sync"
+)
+
+type jobEntry struct {
+	name      string
+	interval  time.Duration
+	run       func(ctx context.Context) error
+	claimedBy uint64
+}
+
+type joinState struct {
+	done chan struct{}
+	err  sync.Locked[error]
+}
+
+type schedRun struct {
+	join       *joinState
+	cancel     context.CancelFunc
+	joinCancel context.CancelFunc
+}
+
+type schedLife struct {
+	started bool
+	starts  uint64
+	run     *schedRun?
+	skipped uint64
+}
+
+type Scheduler struct {
+	jobs []jobEntry
+	life sync.Locked[schedLife]
+	tick func(time.Duration) <-chan time.Time
+}
+
+func (s *Scheduler) Every(name string, interval time.Duration, run func(ctx context.Context) error) {
+	s.life.WithLock(func(l *schedLife) {
+		if l.started {
+			panic(fmt.Sprintf("job: Every %q: scheduler already started", name))
+		}
+		if interval <= 0 {
+			panic(fmt.Sprintf("job: Every %q: interval must be positive", name))
+		}
+		s.jobs = append(s.jobs, jobEntry{name: name, interval: interval, run: run})
+	})
+}
+
+func (s *Scheduler) Skipped() uint64 {
+	var n uint64
+	s.life.WithLock(func(l *schedLife) {
+		n = l.skipped
+	})
+	return n
+}
+
+func (s *Scheduler) Start(ctx context.Context) error {
+	runCtx, cancel := context.WithCancel(ctx)
+	var startErr error
+	s.life.WithLock(func(l *schedLife) {
+		if l.started {
+			startErr = ErrSchedulerStarted.Err()
+			return
+		}
+		l.started = true
+		l.starts++
+		g, _ := rt.NewGroup(runCtx, 0)
+		for i := range s.jobs {
+			s.spawn(g, &s.jobs[i], l.starts)
+		}
+		js := &joinState{done: make(chan struct{})}
+		joinCtx, joinCancel := context.WithCancel(context.Background())
+		context.AfterFunc(joinCtx, func() {
+			js.err.WithLock(func(e *error) {
+				*e = g.Wait()
+			})
+			close(js.done)
+		})
+		l.run = &schedRun{join: js, cancel: cancel, joinCancel: joinCancel}
+	})
+	if startErr != nil {
+		cancel()
+		return startErr
+	}
+	return nil
+}
+
+func (s *Scheduler) takeRun() *schedRun? {
+	var r *schedRun?
+	s.life.WithLock(func(l *schedLife) {
+		if !l.started {
+			return
+		}
+		l.started = false
+		r = l.run
+		l.run = nil
+	})
+	return r
+}
+
+func (s *Scheduler) Stop(ctx context.Context) error {
+	run := s.takeRun()
+	if run == nil {
+		return nil
+	}
+	run.cancel()
+	run.joinCancel()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-run.join.done:
+	}
+	var err error
+	run.join.err.WithLock(func(e *error) {
+		err = *e
+	})
+	return err
+}
+
+type jobLoop struct {
+	entry *jobEntry
+	tick  chan struct{}
+	start uint64
+}
+
+func (s *Scheduler) spawn(g *rt.Group, j *jobEntry, start uint64) {
+	loop := jobLoop{entry: j, tick: make(chan struct{}, 1), start: start}
+	g.Go(func(ctx context.Context) error {
+		return s.pump(ctx, loop)
+	})
+	g.Go(func(ctx context.Context) error {
+		return s.runner(ctx, loop)
+	})
+}
+
+func (s *Scheduler) pump(ctx context.Context, loop jobLoop) error {
+	ticks := s.tick
+	if ticks == nil {
+		ticker := time.NewTicker(loop.entry.interval)
+		defer ticker.Stop()
+		ticks = func(time.Duration) <-chan time.Time { return ticker.C }
+	}
+	source := ticks(loop.entry.interval)
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-source:
+			if !s.deliver(ctx, loop) {
+				return nil
+			}
+		}
+	}
+}
+
+type claimState int
+
+const (
+	claimBusy claimState = iota
+	claimClaimed
+	claimCancelled
+)
+
+func (s *Scheduler) deliver(ctx context.Context, loop jobLoop) bool {
+	switch s.claim(ctx, loop) {
+	case claimCancelled:
+		return false
+	case claimBusy:
+		s.life.WithLock(func(l *schedLife) {
+			l.skipped++
+		})
+		return true
+	}
+	select {
+	case loop.tick <- struct{}{}:
+		if ctx.Err() == nil {
+			return true
+		}
+		select {
+		case <-loop.tick:
+			s.release(loop)
+		default:
+		}
+		return false
+	case <-ctx.Done():
+		s.release(loop)
+		return false
+	}
+}
+
+func (s *Scheduler) claim(ctx context.Context, loop jobLoop) claimState {
+	state := claimBusy
+	s.life.WithLock(func(l *schedLife) {
+		if ctx.Err() != nil {
+			state = claimCancelled
+			return
+		}
+		if loop.entry.claimedBy == 0 {
+			loop.entry.claimedBy = loop.start
+			state = claimClaimed
+		}
+	})
+	return state
+}
+
+func (s *Scheduler) release(loop jobLoop) {
+	s.life.WithLock(func(l *schedLife) {
+		if loop.entry.claimedBy == loop.start {
+			loop.entry.claimedBy = 0
+		}
+	})
+}
+
+func (s *Scheduler) runner(ctx context.Context, loop jobLoop) error {
+	defer s.release(loop)
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-loop.tick:
+		}
+		s.runOnce(ctx, loop.entry)
+		s.release(loop)
+	}
+}
+
+func (s *Scheduler) runOnce(ctx context.Context, j *jobEntry) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("job: run panicked", "job", j.name, "panic", fmt.Sprint(r))
+		}
+	}()
+	if err := j.run(ctx); err != nil {
+		slog.Warn("job: run failed", "job", j.name, "error", err)
+	}
+}
