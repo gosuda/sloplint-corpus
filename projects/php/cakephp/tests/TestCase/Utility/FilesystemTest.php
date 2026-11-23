@@ -1,0 +1,192 @@
+<?php
+declare(strict_types=1);
+
+/**
+ * CakePHP(tm) : Rapid Development Framework (https://cakephp.org)
+ * Copyright (c) Cake Software Foundation, Inc. (https://cakefoundation.org)
+ *
+ * Licensed under The MIT License
+ * For full copyright and license information, please see the LICENSE.txt
+ * Redistributions of files must retain the above copyright notice
+ *
+ * @copyright     Copyright (c) Cake Software Foundation, Inc. (https://cakefoundation.org)
+ * @link          https://cakephp.org CakePHP(tm) Project
+ * @since         4.0.0
+ * @license       https://opensource.org/licenses/mit-license.php MIT License
+ */
+namespace Cake\Test\TestCase\Utility;
+
+use Cake\TestSuite\FsFixture;
+use Cake\TestSuite\TestCase;
+use Cake\Utility\Filesystem;
+
+/**
+ * Filesystem class
+ */
+class FilesystemTest extends TestCase
+{
+    protected string $vfsPath = '';
+
+    protected Filesystem $fs;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $this->vfsPath = FsFixture::setup('root');
+
+        $this->fs = new Filesystem();
+
+        clearstatcache();
+    }
+
+    protected function tearDown(): void
+    {
+        FsFixture::tearDown();
+        parent::tearDown();
+    }
+
+    public function testMkdir(): void
+    {
+        $path = $this->vfsPath . DS . 'tests' . DS . 'first' . DS . 'second' . DS . 'third';
+        $this->fs->mkdir($path);
+        $this->assertTrue(is_dir($path));
+    }
+
+    public function testDumpFile(): void
+    {
+        $path = $this->vfsPath . DS . 'foo.txt';
+
+        $this->fs->dumpFile($path, 'bar');
+        $this->assertEquals(file_get_contents($path), 'bar');
+
+        $path = $this->vfsPath . DS . 'empty.txt';
+        $this->fs->dumpFile($path, '');
+        $this->assertSame(file_get_contents($path), '');
+    }
+
+    public function testCopyDir(): void
+    {
+        $return = $this->fs->copyDir(WWW_ROOT, $this->vfsPath . DS . 'dest');
+
+        $this->assertTrue($return);
+    }
+
+    public function testDeleteDir(): void
+    {
+        $structure = [
+            'Core' => [
+                'AbstractFactory' => [
+                    'test.php' => 'some text content',
+                    'other.php' => 'Some more text content',
+                    'Invalid.csv' => 'Something else',
+                ],
+                'AnEmptyFolder' => [],
+                'badlocation.php' => 'some bad content',
+            ],
+        ];
+        FsFixture::create($structure, $this->vfsPath);
+
+        $return = $this->fs->deleteDir($this->vfsPath . DS . 'Core');
+
+        $this->assertTrue($return);
+    }
+
+    /**
+     * Tests deleteDir() on directory that contains symlinks
+     */
+    public function testDeleteDirWithLinks(): void
+    {
+        $path = TMP . 'fs_links_test';
+        // phpcs:ignore
+        @mkdir($path);
+        $target = $path . DS . 'target';
+        // phpcs:ignore
+        @mkdir($target);
+
+        $link = $path . DS . 'link';
+        // phpcs:ignore
+        @symlink($target, $link);
+
+        $this->assertTrue($this->fs->deleteDir($path));
+        $this->assertFalse(file_exists($link));
+    }
+
+    public function testFindRecursive(): void
+    {
+        $structure = [
+            'file1.php' => 'content',
+            'file2.txt' => 'content',
+            '.hidden' => [
+                'secret.php' => 'should not see this',
+            ],
+            'subdir' => [
+                'file3.php' => 'content',
+            ],
+        ];
+        FsFixture::create($structure, $this->vfsPath);
+
+        $iterator = $this->fs->findRecursive($this->vfsPath);
+
+        $files = [];
+        foreach ($iterator as $file) {
+            $files[] = $file->getFilename();
+        }
+
+        $this->assertContains('file1.php', $files);
+        $this->assertContains('file2.txt', $files);
+        $this->assertContains('file3.php', $files);
+        // Hidden directories should be skipped
+        $this->assertNotContains('.hidden', $files);
+        $this->assertNotContains('secret.php', $files);
+    }
+
+    public function testFind(): void
+    {
+        $structure = [
+            'file1.php' => 'content',
+            'file2.txt' => 'content',
+            'subdir' => [
+                'file3.php' => 'should not see this (non-recursive)',
+            ],
+        ];
+        FsFixture::create($structure, $this->vfsPath);
+
+        $iterator = $this->fs->find($this->vfsPath);
+
+        $files = [];
+        foreach ($iterator as $file) {
+            $files[] = $file->getFilename();
+        }
+
+        // Should only see top-level files, not subdirectories' contents
+        $this->assertContains('file1.php', $files);
+        $this->assertContains('file2.txt', $files);
+        $this->assertContains('subdir', $files);
+        $this->assertNotContains('file3.php', $files);
+    }
+
+    public function testFindWithCustomFilter(): void
+    {
+        $structure = [
+            'file1.php' => 'content',
+            'file2.txt' => 'content',
+            'file3.php' => 'content',
+            'subdir' => [],
+        ];
+        FsFixture::create($structure, $this->vfsPath);
+
+        $filter = fn($file) => $file->isFile() && $file->getExtension() === 'php';
+        $iterator = $this->fs->find($this->vfsPath, $filter);
+
+        $files = [];
+        foreach ($iterator as $file) {
+            $files[] = $file->getFilename();
+        }
+
+        $this->assertContains('file1.php', $files);
+        $this->assertContains('file3.php', $files);
+        $this->assertNotContains('file2.txt', $files);
+        $this->assertNotContains('subdir', $files);
+    }
+}

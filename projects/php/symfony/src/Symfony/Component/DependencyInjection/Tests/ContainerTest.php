@@ -1,0 +1,807 @@
+<?php
+
+/*
+ * This file is part of the Symfony package.
+ *
+ * (c) Fabien Potencier <fabien@symfony.com>
+ *
+ * For the full copyright and license information, please view the LICENSE
+ * file that was distributed with this source code.
+ */
+
+namespace Symfony\Component\DependencyInjection\Tests;
+
+use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\TestWith;
+use PHPUnit\Framework\TestCase;
+use Symfony\Component\DependencyInjection\Container;
+use Symfony\Component\DependencyInjection\ContainerBuilder;
+use Symfony\Component\DependencyInjection\ContainerInterface;
+use Symfony\Component\DependencyInjection\EnvVarProcessor;
+use Symfony\Component\DependencyInjection\Exception\InvalidArgumentException;
+use Symfony\Component\DependencyInjection\Exception\ServiceCircularReferenceException;
+use Symfony\Component\DependencyInjection\Exception\ServiceNotFoundException;
+use Symfony\Component\DependencyInjection\ParameterBag\FrozenParameterBag;
+use Symfony\Component\DependencyInjection\ParameterBag\ParameterBag;
+use Symfony\Component\DependencyInjection\ServiceLocator;
+use Symfony\Component\DependencyInjection\ServicesResetter;
+use Symfony\Component\DependencyInjection\Tests\Fixtures\ShutdownAwareService;
+use Symfony\Contracts\Service\ResetInterface;
+
+class ContainerTest extends TestCase
+{
+    public function testConstructor()
+    {
+        $sc = new Container();
+        $this->assertSame($sc, $sc->get('service_container'), '__construct() automatically registers itself as a service');
+
+        $sc = new Container(new ParameterBag(['foo' => 'bar']));
+        $this->assertEquals(['foo' => 'bar'], $sc->getParameterBag()->all(), '__construct() takes an array of parameters as its first argument');
+    }
+
+    #[DataProvider('dataForTestCamelize')]
+    public function testCamelize($id, $expected)
+    {
+        $this->assertEquals($expected, Container::camelize($id), \sprintf('Container::camelize("%s")', $id));
+    }
+
+    public static function dataForTestCamelize()
+    {
+        return [
+            ['foo_bar', 'FooBar'],
+            ['foo.bar', 'Foo_Bar'],
+            ['foo.bar_baz', 'Foo_BarBaz'],
+            ['foo._bar', 'Foo_Bar'],
+            ['foo_.bar', 'Foo_Bar'],
+            ['_foo', 'Foo'],
+            ['.foo', '_Foo'],
+            ['foo_', 'Foo'],
+            ['foo.', 'Foo_'],
+            ['foo\bar', 'Foo_Bar'],
+        ];
+    }
+
+    #[DataProvider('dataForTestUnderscore')]
+    public function testUnderscore($id, $expected)
+    {
+        $this->assertEquals($expected, Container::underscore($id), \sprintf('Container::underscore("%s")', $id));
+    }
+
+    public static function dataForTestUnderscore()
+    {
+        return [
+            ['FooBar', 'foo_bar'],
+            ['Foo_Bar', 'foo.bar'],
+            ['Foo_BarBaz', 'foo.bar_baz'],
+            ['FooBar_BazQux', 'foo_bar.baz_qux'],
+            ['_Foo', '.foo'],
+            ['Foo_', 'foo.'],
+        ];
+    }
+
+    public function testCompile()
+    {
+        $sc = new Container(new ParameterBag(['foo' => 'bar']));
+        $this->assertFalse($sc->getParameterBag()->isResolved(), '->compile() resolves the parameter bag');
+        $sc->compile();
+        $this->assertTrue($sc->getParameterBag()->isResolved(), '->compile() resolves the parameter bag');
+        $this->assertInstanceOf(FrozenParameterBag::class, $sc->getParameterBag(), '->compile() changes the parameter bag to a FrozenParameterBag instance');
+        $this->assertEquals(['foo' => 'bar'], $sc->getParameterBag()->all(), '->compile() copies the current parameters to the new parameter bag');
+    }
+
+    public function testIsCompiled()
+    {
+        $sc = new Container(new ParameterBag(['foo' => 'bar']));
+        $this->assertFalse($sc->isCompiled(), '->isCompiled() returns false if the container is not compiled');
+        $sc->compile();
+        $this->assertTrue($sc->isCompiled(), '->isCompiled() returns true if the container is compiled');
+    }
+
+    public function testIsCompiledWithFrozenParameters()
+    {
+        $sc = new Container(new FrozenParameterBag(['foo' => 'bar']));
+        $this->assertFalse($sc->isCompiled(), '->isCompiled() returns false if the container is not compiled but the parameter bag is already frozen');
+    }
+
+    public function testGetParameterBag()
+    {
+        $sc = new Container();
+        $this->assertEquals([], $sc->getParameterBag()->all(), '->getParameterBag() returns an empty array if no parameter has been defined');
+    }
+
+    public function testGetSetParameter()
+    {
+        $sc = new Container(new ParameterBag(['foo' => 'bar']));
+        $sc->setParameter('bar', 'foo');
+        $this->assertEquals('foo', $sc->getParameter('bar'), '->setParameter() sets the value of a new parameter');
+
+        $sc->setParameter('foo', 'baz');
+        $this->assertEquals('baz', $sc->getParameter('foo'), '->setParameter() overrides previously set parameter');
+
+        try {
+            $sc->getParameter('baba');
+            $this->fail('->getParameter() thrown an \InvalidArgumentException if the key does not exist');
+        } catch (\Exception $e) {
+            $this->assertInstanceOf(\InvalidArgumentException::class, $e, '->getParameter() thrown an \InvalidArgumentException if the key does not exist');
+            $this->assertEquals('You have requested a non-existent parameter "baba".', $e->getMessage(), '->getParameter() thrown an \InvalidArgumentException if the key does not exist');
+        }
+    }
+
+    public function testGetSetParameterWithMixedCase()
+    {
+        $sc = new Container(new ParameterBag(['foo' => 'bar']));
+
+        $sc->setParameter('Foo', 'baz1');
+        $this->assertEquals('bar', $sc->getParameter('foo'));
+        $this->assertEquals('baz1', $sc->getParameter('Foo'));
+    }
+
+    public function testGetServiceIds()
+    {
+        $sc = new Container();
+        $sc->set('foo', new \stdClass());
+        $sc->set('bar', new \stdClass());
+        $this->assertEquals(['service_container', 'foo', 'bar'], $sc->getServiceIds(), '->getServiceIds() returns all defined service ids');
+
+        $sc = new ProjectServiceContainer();
+        $sc->set('foo', new \stdClass());
+        $this->assertEquals(['service_container', 'bar', 'foo_bar', 'foo.baz', 'circular', 'throw_exception', 'throws_exception_on_service_configuration', 'throws_error_on_service_configuration', 'throws_exception_on_private_service_configuration', 'internal_dependency', 'alias', 'foo'], $sc->getServiceIds(), '->getServiceIds() returns defined service ids by factory methods in the method map, followed by service ids defined by set()');
+    }
+
+    public function testSet()
+    {
+        $sc = new Container();
+        $sc->set('._. \\o/', $foo = new \stdClass());
+        $this->assertSame($foo, $sc->get('._. \\o/'), '->set() sets a service');
+    }
+
+    public function testSetWithNullResetTheService()
+    {
+        $sc = new Container();
+        $sc->set('foo', new \stdClass());
+        $sc->set('foo', null);
+        $this->assertFalse($sc->has('foo'), '->set() with null service resets the service');
+    }
+
+    public function testSetReplacesAlias()
+    {
+        $c = new ProjectServiceContainer();
+
+        $c->set('alias', $foo = new \stdClass());
+        $this->assertSame($foo, $c->get('alias'), '->set() replaces an existing alias');
+    }
+
+    public function testSetWithNullOnInitializedPredefinedService()
+    {
+        $sc = new Container();
+        $sc->set('foo', new \stdClass());
+        $sc->set('foo', null);
+        $this->assertFalse($sc->has('foo'), '->set() with null service resets the service');
+
+        $sc = new ProjectServiceContainer();
+        $sc->get('bar');
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The "bar" service is already initialized, you cannot replace it.');
+        $sc->set('bar', null);
+    }
+
+    public function testSetWithNullOnUninitializedPredefinedService()
+    {
+        $sc = new Container();
+        $sc->set('foo', new \stdClass());
+        $sc->get('foo');
+        $sc->set('foo', null);
+        $this->assertFalse($sc->has('foo'), '->set() with null service resets the service');
+
+        $sc = new ProjectServiceContainer();
+        $sc->set('bar', null);
+        $this->assertTrue($sc->has('bar'), '->set() with null service resets the pre-defined service');
+    }
+
+    public function testGet()
+    {
+        $sc = new ProjectServiceContainer();
+        $sc->set('foo', $foo = new \stdClass());
+        $this->assertSame($foo, $sc->get('foo'), '->get() returns the service for the given id');
+        $this->assertSame($sc->__bar, $sc->get('bar'), '->get() returns the service for the given id');
+        $this->assertSame($sc->__foo_bar, $sc->get('foo_bar'), '->get() returns the service if a get*Method() is defined');
+        $this->assertSame($sc->__foo_baz, $sc->get('foo.baz'), '->get() returns the service if a get*Method() is defined');
+
+        try {
+            $sc->get('');
+            $this->fail('->get() throws a \InvalidArgumentException exception if the service is empty');
+        } catch (\Exception $e) {
+            $this->assertInstanceOf(ServiceNotFoundException::class, $e, '->get() throws a ServiceNotFoundException exception if the service is empty');
+        }
+        $this->assertNull($sc->get('', ContainerInterface::NULL_ON_INVALID_REFERENCE), '->get() returns null if the service is empty');
+    }
+
+    public function testCaseSensitivity()
+    {
+        $sc = new Container();
+        $sc->set('foo', $foo1 = new \stdClass());
+        $sc->set('Foo', $foo2 = new \stdClass());
+
+        $this->assertSame(['service_container', 'foo', 'Foo'], $sc->getServiceIds());
+        $this->assertSame($foo1, $sc->get('foo'), '->get() returns the service for the given id, case-sensitively');
+        $this->assertSame($foo2, $sc->get('Foo'), '->get() returns the service for the given id, case-sensitively');
+    }
+
+    public function testGetThrowServiceNotFoundException()
+    {
+        $sc = new ProjectServiceContainer();
+        $sc->set('foo', new \stdClass());
+        $sc->set('baz', new \stdClass());
+
+        try {
+            $sc->get('foo1');
+            $this->fail('->get() throws an Symfony\Component\DependencyInjection\Exception\ServiceNotFoundException if the key does not exist');
+        } catch (\Exception $e) {
+            $this->assertInstanceOf(ServiceNotFoundException::class, $e, '->get() throws an Symfony\Component\DependencyInjection\Exception\ServiceNotFoundException if the key does not exist');
+            $this->assertEquals('You have requested a non-existent service "foo1". Did you mean this: "foo"?', $e->getMessage(), '->get() throws an Symfony\Component\DependencyInjection\Exception\ServiceNotFoundException with some advices');
+        }
+
+        try {
+            $sc->get('bag');
+            $this->fail('->get() throws an Symfony\Component\DependencyInjection\Exception\ServiceNotFoundException if the key does not exist');
+        } catch (\Exception $e) {
+            $this->assertInstanceOf(ServiceNotFoundException::class, $e, '->get() throws an Symfony\Component\DependencyInjection\Exception\ServiceNotFoundException if the key does not exist');
+            $this->assertEquals('You have requested a non-existent service "bag". Did you mean one of these: "bar", "baz"?', $e->getMessage(), '->get() throws an Symfony\Component\DependencyInjection\Exception\ServiceNotFoundException with some advices');
+        }
+    }
+
+    public function testGetCircularReference()
+    {
+        $sc = new ProjectServiceContainer();
+        try {
+            $sc->get('circular');
+            $this->fail('->get() throws a ServiceCircularReferenceException if it contains circular reference');
+        } catch (\Exception $e) {
+            $this->assertInstanceOf(ServiceCircularReferenceException::class, $e, '->get() throws a ServiceCircularReferenceException if it contains circular reference');
+            $this->assertStringStartsWith('Circular reference detected for service "circular"', $e->getMessage(), '->get() throws a \LogicException if it contains circular reference');
+        }
+    }
+
+    public function testGetSyntheticServiceThrows()
+    {
+        require_once __DIR__.'/Fixtures/php/services9_compiled.php';
+
+        $container = new \ProjectServiceContainer();
+
+        $this->expectException(ServiceNotFoundException::class);
+        $this->expectExceptionMessage('The "request" service is synthetic, it needs to be set at boot time before it can be used.');
+
+        $container->get('request');
+    }
+
+    public function testGetRemovedServiceThrows()
+    {
+        require_once __DIR__.'/Fixtures/php/services9_compiled.php';
+
+        $container = new \ProjectServiceContainer();
+
+        $this->expectException(ServiceNotFoundException::class);
+        $this->expectExceptionMessage('The "inlined" service or alias has been removed or inlined when the container was compiled. You should either make it public, or stop using the container directly and use dependency injection instead.');
+
+        $container->get('inlined');
+    }
+
+    public function testHas()
+    {
+        $sc = new ProjectServiceContainer();
+        $sc->set('foo', new \stdClass());
+        $this->assertFalse($sc->has('foo1'), '->has() returns false if the service does not exist');
+        $this->assertTrue($sc->has('foo'), '->has() returns true if the service exists');
+        $this->assertTrue($sc->has('bar'), '->has() returns true if a get*Method() is defined');
+        $this->assertTrue($sc->has('foo_bar'), '->has() returns true if a get*Method() is defined');
+        $this->assertTrue($sc->has('foo.baz'), '->has() returns true if a get*Method() is defined');
+    }
+
+    public function testInitialized()
+    {
+        $sc = new ProjectServiceContainer();
+        $sc->set('foo', new \stdClass());
+        $this->assertTrue($sc->initialized('foo'), '->initialized() returns true if service is loaded');
+        $this->assertFalse($sc->initialized('foo1'), '->initialized() returns false if service is not loaded');
+        $this->assertFalse($sc->initialized('bar'), '->initialized() returns false if a service is defined, but not currently loaded');
+        $this->assertFalse($sc->initialized('alias'), '->initialized() returns false if an aliased service is not initialized');
+
+        $sc->get('bar');
+        $this->assertTrue($sc->initialized('alias'), '->initialized() returns true for alias if aliased service is initialized');
+    }
+
+    public function testInitializedWithPrivateService()
+    {
+        $sc = new ProjectServiceContainer();
+        $sc->get('internal_dependency');
+        $this->assertFalse($sc->initialized('internal'));
+    }
+
+    public function testReset()
+    {
+        $c = new Container();
+        $c->set('bar', $bar = new class implements ResetInterface {
+            public int $resetCounter = 0;
+
+            public function reset(): void
+            {
+                ++$this->resetCounter;
+            }
+        });
+
+        $c->reset();
+
+        $this->assertNull($c->get('bar', ContainerInterface::NULL_ON_INVALID_REFERENCE));
+        $this->assertSame(1, $bar->resetCounter);
+    }
+
+    public function testResetWithShutdownFlag()
+    {
+        $container = new Container();
+        $service = new ShutdownAwareService();
+        $container->set('service', $service);
+        $container->reset();
+        $this->assertSame([false], $service->calls);
+
+        $resettable = new class implements ResetInterface {
+            public array $calls = [];
+
+            public function reset(): void
+            {
+                $this->calls[] = \func_num_args();
+            }
+        };
+        $lazy = (new \ReflectionClass(ShutdownAwareService::class))->newLazyGhost(static function () {
+            self::fail('The lazy service should not be initialized.');
+        });
+        $container->set('service', $service);
+        $container->set('resettable', $resettable);
+        $container->set('lazy', $lazy);
+        $container->reset(true);
+        $container->reset();
+
+        $this->assertSame([false, true], $service->calls);
+        $this->assertSame([0], $resettable->calls);
+        $this->assertTrue((new \ReflectionClass($lazy))->isUninitializedLazyObject($lazy));
+        $this->assertFalse($container->initialized('service'));
+    }
+
+    public function testShutdownWithNestedContainerResetOverride()
+    {
+        $nested = new class extends Container {
+            public array $calls = [];
+
+            /**
+             * @param bool $shutdown
+             */
+            public function reset(/* bool $shutdown = false */): void
+            {
+                $this->calls[] = \func_get_args();
+                parent::reset(...\func_get_args());
+            }
+        };
+        $service = new ShutdownAwareService();
+        $nested->set('service', $service);
+        $container = new Container();
+        $container->set('nested', $nested);
+
+        $container->reset(true);
+
+        $this->assertSame([[true]], $nested->calls);
+        $this->assertSame([true], $service->calls);
+        $this->assertFalse($nested->initialized('service'));
+    }
+
+    #[TestWith([false, false])]
+    #[TestWith([false, true])]
+    #[TestWith([true, false])]
+    #[TestWith([true, true])]
+    public function testResetUsesServicesResetterOnly(bool $shutdown, bool $initialized)
+    {
+        $tagged = new ShutdownAwareService();
+        $disabled = new ShutdownAwareService();
+        $untagged = new ShutdownAwareService();
+        $custom = new class {
+            public array $calls = [];
+
+            public function clear(bool $shutdown = false): void
+            {
+                $this->calls[] = $shutdown;
+            }
+        };
+        $resetter = new ServicesResetter(new \ArrayIterator(['tagged' => $tagged, 'disabled' => $disabled, 'custom' => $custom]), ['tagged' => [['reset', false, 'flag']], 'disabled' => [['reset', false, null]], 'custom' => [['clear', false, 'flag']]]);
+        $container = new class($resetter) extends Container {
+            public function __construct(private ServicesResetter $resetter)
+            {
+                parent::__construct();
+                $this->methodMap['services_resetter'] = 'getServicesResetterService';
+            }
+
+            protected function getServicesResetterService(): ServicesResetter
+            {
+                return $this->services['services_resetter'] = $this->resetter;
+            }
+        };
+        $container->set('tagged', $tagged);
+        $container->set('disabled', $disabled);
+        $container->set('untagged', $untagged);
+        $container->set('custom', $custom);
+        if ($initialized) {
+            $container->get('services_resetter');
+        }
+
+        $container->reset($shutdown);
+
+        $this->assertSame([$shutdown], $tagged->calls);
+        $this->assertSame([false], $disabled->calls);
+        $this->assertSame([$shutdown], $custom->calls);
+        $this->assertSame([], $untagged->calls);
+        $this->assertFalse($container->initialized('services_resetter'));
+        $this->assertFalse($container->initialized('tagged'));
+        $this->assertFalse($container->initialized('untagged'));
+    }
+
+    #[TestWith([false])]
+    #[TestWith([true])]
+    public function testResetInitializesLazyServicesResetter(bool $shutdown)
+    {
+        $service = new ShutdownAwareService();
+        $resetter = new ServicesResetter(new \ArrayIterator(['service' => $service]), ['service' => [['reset', false, 'flag']]]);
+        $lazyResetter = (new \ReflectionClass(ServicesResetter::class))->newLazyProxy(static fn () => $resetter);
+        $container = new Container();
+        $container->set('services_resetter', $lazyResetter);
+
+        $container->reset($shutdown);
+
+        $this->assertSame([$shutdown], $service->calls);
+    }
+
+    #[TestWith([false])]
+    #[TestWith([true])]
+    public function testResetContinuesAfterFailure(bool $shutdown)
+    {
+        $container = new class extends Container {
+            public function __construct()
+            {
+                parent::__construct();
+                $this->services['scalar'] = 42;
+                $this->privates['null'] = null;
+            }
+        };
+        $first = new class extends ShutdownAwareService {
+            public function reset(bool $shutdown = false): void
+            {
+                parent::reset($shutdown);
+                throw new \RuntimeException('Reset failed.');
+            }
+        };
+        $second = new ShutdownAwareService();
+        $resetter = new ServicesResetter(new \ArrayIterator(['first' => $first, 'second' => $second]), ['first' => [['reset', false, 'flag']], 'second' => [['reset', false, 'flag']]]);
+        $container->set('services_resetter', $resetter);
+        $container->set('first', $first);
+        $container->set('second', $second);
+        $caught = null;
+        try {
+            $container->reset($shutdown);
+        } catch (\RuntimeException $e) {
+            $caught = $e;
+        }
+
+        if ($shutdown) {
+            $this->assertNotNull($caught);
+            $this->assertSame('Reset failed.', $caught->getMessage());
+        } else {
+            $this->assertNull($caught);
+        }
+        $this->assertSame([$shutdown], $first->calls);
+        $this->assertSame([$shutdown], $second->calls);
+        $this->assertFalse($container->initialized('first'));
+        $this->assertFalse($container->initialized('second'));
+        $this->assertFalse($container->initialized('scalar'));
+        if ($shutdown) {
+            $resetter->reset();
+            $this->assertSame([true], $first->calls);
+            $this->assertSame([true], $second->calls);
+        }
+    }
+
+    public function testResetReleasesTheClosuresThatReferenceTheContainer()
+    {
+        $container = new class extends Container {
+            public function env(string $name): mixed
+            {
+                return $this->getEnv($name);
+            }
+        };
+        $_ENV['SF_CONTAINER_RESET_TEST'] = 'foo';
+
+        try {
+            $this->assertSame('foo', $container->env('SF_CONTAINER_RESET_TEST'));
+        } finally {
+            unset($_ENV['SF_CONTAINER_RESET_TEST']);
+        }
+
+        $gcEnabled = gc_enabled();
+        gc_disable();
+
+        try {
+            $container->reset();
+            $ref = \WeakReference::create($container);
+            unset($container);
+
+            $this->assertNull($ref->get());
+        } finally {
+            if ($gcEnabled) {
+                gc_enable();
+            }
+        }
+    }
+
+    public function testResetDoesNotInitializeLazyServices()
+    {
+        $container = new ContainerBuilder();
+        $container->register('foo', LazyResettableService::class)
+            ->setPublic(true)
+            ->setLazy(true);
+        $container->compile();
+
+        LazyResettableService::$instances = 0;
+        $container->get('foo');
+        $container->reset();
+
+        $this->assertSame(0, LazyResettableService::$instances);
+    }
+
+    public function testGetThrowsException()
+    {
+        $this->expectException(\Exception::class);
+        $this->expectExceptionMessage('Something went terribly wrong!');
+        $c = new ProjectServiceContainer();
+
+        try {
+            $c->get('throw_exception');
+        } catch (\Exception) {
+            // Do nothing.
+        }
+
+        // Retry, to make sure that get*Service() will be called.
+        $c->get('throw_exception');
+    }
+
+    public function testGetThrowsExceptionOnServiceConfiguration()
+    {
+        $c = new ProjectServiceContainer();
+
+        try {
+            $c->get('throws_exception_on_service_configuration');
+        } catch (\Exception) {
+            // Do nothing.
+        }
+
+        $this->assertFalse($c->initialized('throws_exception_on_service_configuration'));
+
+        // Retry, to make sure that get*Service() will be called.
+        try {
+            $c->get('throws_exception_on_service_configuration');
+        } catch (\Exception) {
+            // Do nothing.
+        }
+        $this->assertFalse($c->initialized('throws_exception_on_service_configuration'));
+    }
+
+    public function testGetThrowsErrorOnServiceConfiguration()
+    {
+        $c = new ProjectServiceContainer();
+
+        try {
+            $c->get('throws_error_on_service_configuration');
+            $this->fail('->get() should throw the error raised while configuring the service');
+        } catch (\Error $e) {
+            // Do nothing.
+        }
+
+        $this->assertFalse($c->initialized('throws_error_on_service_configuration'));
+
+        // Retry, to make sure that get*Service() will be called.
+        try {
+            $c->get('throws_error_on_service_configuration');
+            $this->fail('->get() should throw the error again instead of returning a partially-configured service');
+        } catch (\Error $e) {
+            // Do nothing.
+        }
+        $this->assertFalse($c->initialized('throws_error_on_service_configuration'));
+    }
+
+    public function testGetThrowsExceptionOnPrivateServiceConfiguration()
+    {
+        $c = new ProjectServiceContainer();
+
+        try {
+            $c->get('throws_exception_on_private_service_configuration');
+        } catch (\Exception $e) {
+            // Do nothing.
+        }
+
+        $this->assertArrayNotHasKey('throws_exception_on_private_service_configuration', $this->getField($c, 'privates'));
+
+        // Retry, to make sure that get*Service() will be called.
+        try {
+            $c->get('throws_exception_on_private_service_configuration');
+        } catch (\Exception $e) {
+            // Do nothing.
+        }
+        $this->assertArrayNotHasKey('throws_exception_on_private_service_configuration', $this->getField($c, 'privates'));
+    }
+
+    protected function getField($obj, $field)
+    {
+        $reflection = new \ReflectionProperty($obj, $field);
+
+        return $reflection->getValue($obj);
+    }
+
+    public function testAlias()
+    {
+        $c = new ProjectServiceContainer();
+
+        $this->assertTrue($c->has('alias'));
+        $this->assertSame($c->get('alias'), $c->get('bar'));
+    }
+
+    public function testThatCloningIsNotSupported()
+    {
+        $class = new \ReflectionClass(Container::class);
+        $clone = $class->getMethod('__clone');
+        $this->assertFalse($class->isCloneable());
+        $this->assertTrue($clone->isPrivate());
+    }
+
+    public function testCheckExistenceOfAnInternalPrivateService()
+    {
+        $c = new ProjectServiceContainer();
+        $c->get('internal_dependency');
+        $this->assertFalse($c->has('internal'));
+    }
+
+    public function testRequestAnInternalSharedPrivateService()
+    {
+        $c = new ProjectServiceContainer();
+        $c->get('internal_dependency');
+
+        $this->expectException(ServiceNotFoundException::class);
+        $this->expectExceptionMessage('You have requested a non-existent service "internal".');
+
+        $c->get('internal');
+    }
+
+    public function testGetEnvDoesNotAutoCastNullWithDefaultEnvVarProcessor()
+    {
+        $container = new Container();
+        $container->setParameter('env(FOO)', null);
+        $container->compile();
+
+        $r = new \ReflectionMethod($container, 'getEnv');
+        $this->assertNull($r->invoke($container, 'FOO'));
+    }
+
+    public function testGetEnvDoesNotAutoCastNullWithEnvVarProcessorsLocatorReturningDefaultEnvVarProcessor()
+    {
+        $container = new Container();
+        $container->setParameter('env(FOO)', null);
+        $container->set('container.env_var_processors_locator', new ServiceLocator([
+            'string' => static fn (): EnvVarProcessor => new EnvVarProcessor($container),
+        ]));
+        $container->compile();
+
+        $r = new \ReflectionMethod($container, 'getEnv');
+        $this->assertNull($r->invoke($container, 'FOO'));
+    }
+}
+
+class ProjectServiceContainer extends Container
+{
+    public $__bar;
+    public $__foo_bar;
+    public $__foo_baz;
+    public $__internal;
+
+    public function __construct()
+    {
+        parent::__construct();
+
+        $this->__bar = new \stdClass();
+        $this->__foo_bar = new \stdClass();
+        $this->__foo_baz = new \stdClass();
+        $this->__internal = new \stdClass();
+        $this->privates = [];
+        $this->aliases = ['alias' => 'bar'];
+        $this->methodMap = [
+            'bar' => 'getBarService',
+            'foo_bar' => 'getFooBarService',
+            'foo.baz' => 'getFoo_BazService',
+            'circular' => 'getCircularService',
+            'throw_exception' => 'getThrowExceptionService',
+            'throws_exception_on_service_configuration' => 'getThrowsExceptionOnServiceConfigurationService',
+            'throws_error_on_service_configuration' => 'getThrowsErrorOnServiceConfigurationService',
+            'throws_exception_on_private_service_configuration' => 'getThrowsExceptionOnPrivateServiceConfigurationService',
+            'internal_dependency' => 'getInternalDependencyService',
+        ];
+    }
+
+    protected function getInternalService()
+    {
+        return $this->privates['internal'] = $this->__internal;
+    }
+
+    protected function getBarService()
+    {
+        return $this->services['bar'] = $this->__bar;
+    }
+
+    protected function getFooBarService()
+    {
+        return $this->__foo_bar;
+    }
+
+    protected function getFoo_BazService()
+    {
+        return $this->__foo_baz;
+    }
+
+    protected function getCircularService()
+    {
+        return $this->get('circular');
+    }
+
+    protected function getThrowExceptionService()
+    {
+        throw new \Exception('Something went terribly wrong!');
+    }
+
+    protected function getThrowsExceptionOnServiceConfigurationService()
+    {
+        $this->services['throws_exception_on_service_configuration'] = $instance = new \stdClass();
+
+        throw new \Exception('Something was terribly wrong while trying to configure the service!');
+    }
+
+    protected function getThrowsErrorOnServiceConfigurationService()
+    {
+        $this->services['throws_error_on_service_configuration'] = $instance = new \stdClass();
+
+        throw new \Error('Something was terribly wrong while trying to configure the service!');
+    }
+
+    protected function getThrowsExceptionOnPrivateServiceConfigurationService()
+    {
+        $this->privates['throws_exception_on_private_service_configuration'] = $instance = new \stdClass();
+
+        throw new \Exception('Something was terribly wrong while trying to configure the private service!');
+    }
+
+    protected function getInternalDependencyService()
+    {
+        $this->services['internal_dependency'] = $instance = new \stdClass();
+
+        $instance->internal = $this->privates['internal'] ?? $this->getInternalService();
+
+        return $instance;
+    }
+}
+
+class LazyResettableService implements ResetInterface
+{
+    public static int $instances = 0;
+
+    private array $state = [];
+
+    public function __construct()
+    {
+        ++self::$instances;
+    }
+
+    public function reset(): void
+    {
+        $this->state = [];
+    }
+}

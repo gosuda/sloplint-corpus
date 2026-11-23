@@ -1,0 +1,373 @@
+<?php
+
+/*
+ * This file is part of the Symfony package.
+ *
+ * (c) Fabien Potencier <fabien@symfony.com>
+ *
+ * For the full copyright and license information, please view the LICENSE
+ * file that was distributed with this source code.
+ */
+
+namespace Symfony\Component\DependencyInjection\Tests\Kernel;
+
+use PHPUnit\Framework\Attributes\RequiresMethod;
+use PHPUnit\Framework\TestCase;
+use Symfony\Component\DependencyInjection\Compiler\CompilerPassInterface;
+use Symfony\Component\DependencyInjection\Container;
+use Symfony\Component\DependencyInjection\ContainerBuilder;
+use Symfony\Component\DependencyInjection\Exception\EnvNotFoundException;
+use Symfony\Component\DependencyInjection\Kernel\AbstractKernel;
+use Symfony\Component\DependencyInjection\Kernel\KernelTrait;
+use Symfony\Component\DependencyInjection\Kernel\ServicesBundle;
+use Symfony\Component\DependencyInjection\Tests\Fixtures\ShutdownAwareService;
+use Symfony\Component\EventDispatcher\CompiledEventDispatcher;
+
+class KernelTest extends TestCase
+{
+    private string $projectDir;
+
+    protected function setUp(): void
+    {
+        $this->projectDir = sys_get_temp_dir().'/sf_di_kernel_'.bin2hex(random_bytes(6));
+    }
+
+    protected function tearDown(): void
+    {
+        if (!is_dir($this->projectDir)) {
+            return;
+        }
+
+        $files = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($this->projectDir, \FilesystemIterator::SKIP_DOTS), \RecursiveIteratorIterator::CHILD_FIRST);
+
+        foreach ($files as $file) {
+            $file->isDir() ? rmdir($file->getPathname()) : unlink($file->getPathname());
+        }
+
+        rmdir($this->projectDir);
+    }
+
+    public function testShutdownFlagInDumpedContainer()
+    {
+        mkdir($this->projectDir.'/config', 0o777, true);
+        file_put_contents($this->projectDir.'/config/bundles.php', '<?php return '.var_export([ServicesBundle::class => ['all' => true]], true).';');
+        $kernel = new ShutdownFlagKernel($this->projectDir);
+        $kernel->boot();
+        $container = $kernel->getContainer();
+        $shared = $container->get('shared');
+        $first = $container->get('non_shared');
+        $second = $container->get('non_shared');
+        $custom = $container->get('custom');
+        $shutdownOnly = $container->get('shutdown_only');
+        $disabled = $container->get('disabled');
+        $manual = $container->get('manual');
+        $tagged = $container->get('tagged');
+        $lazy = $container->get('lazy');
+        $nested = $container->get('nested');
+        $nested->set('service', $nestedService = new ShutdownAwareService());
+        $discarded = \WeakReference::create($container->get('non_shared'));
+        $this->assertNull($discarded->get());
+
+        $container->get('services_resetter')->reset();
+        foreach ([$shared, $first, $second, $custom, $disabled, $tagged] as $service) {
+            $this->assertSame([false], $service->calls);
+        }
+        $this->assertSame([], $manual->calls);
+        $this->assertSame([], $shutdownOnly->calls);
+        $this->assertSame([false], $nestedService->calls);
+        $nested->set('service', $nestedService);
+
+        $kernel->shutdown();
+        $kernel->shutdown();
+
+        foreach ([$shared, $first, $second, $custom] as $service) {
+            $this->assertSame([false, true], $service->calls);
+        }
+        $this->assertSame([false], $shutdownOnly->calls);
+        $this->assertSame([false, false], $disabled->calls);
+        $this->assertSame([false, false], $tagged->calls);
+        $this->assertSame([], $manual->calls);
+        $this->assertSame([false, true], $nestedService->calls);
+        $this->assertTrue((new \ReflectionClass($lazy))->isUninitializedLazyObject($lazy));
+        $this->assertFalse($container->initialized('unused'));
+    }
+
+    #[RequiresMethod(CompiledEventDispatcher::class, 'shutdown')]
+    public function testTheEventDispatcherReleasesItsListenersWhenTheKernelShutsDown()
+    {
+        mkdir($this->projectDir.'/config', 0o777, true);
+        file_put_contents($this->projectDir.'/config/bundles.php', '<?php return '.var_export([ServicesBundle::class => ['all' => true]], true).';');
+        $kernel = new EventListenerKernel($this->projectDir);
+        $kernel->boot();
+        // the dispatcher outlives the kernel, as it would in a reference cycle
+        $dispatcher = $kernel->getContainer()->get('event_dispatcher');
+        $dispatcher->dispatch($event = new \stdClass(), 'foo');
+        $listener = \WeakReference::create($event->listener);
+        unset($event);
+
+        $kernel->getContainer()->get('services_resetter')->reset();
+        $this->assertNotNull($listener->get());
+
+        $kernel->shutdown();
+        $this->assertNull($listener->get());
+    }
+
+    public function testBuildContainerWritesCachedirTag()
+    {
+        $kernel = new TestKernel($this->projectDir);
+        $kernel->boot();
+
+        foreach ([$kernel->getCacheDir(), $kernel->getBuildDir()] as $dir) {
+            $cachedirTag = $dir.'/CACHEDIR.TAG';
+            $this->assertFileExists($cachedirTag);
+            $this->assertStringStartsWith('Signature: 8a477f597d28d172789f06886806bc55', file_get_contents($cachedirTag));
+        }
+    }
+
+    public function testBuildContainerWritesCompilerLogWithoutDebug()
+    {
+        $kernel = new TestKernel($this->projectDir);
+        $kernel->boot();
+
+        $this->assertFalse($kernel->isDebug());
+
+        $container = $kernel->getContainer();
+        $compilerLog = $container->getParameter('kernel.build_dir').'/'.$container->getParameter('kernel.container_class').'Compiler.log';
+
+        $this->assertFileExists($compilerLog);
+        $this->assertStringContainsString('Removed service "unused_service"; reason: unused.', file_get_contents($compilerLog));
+    }
+
+    public function testBuildContainerDoesNotWriteCompilerLogWhenBuildingFails()
+    {
+        $kernel = new BrokenKernel($this->projectDir);
+
+        try {
+            $kernel->boot();
+            $this->fail('Booting the kernel should have failed.');
+        } catch (\LogicException $e) {
+            $this->assertSame('Broken build.', $e->getMessage());
+        }
+
+        $this->assertEmpty(glob($kernel->getBuildDir().'/*Compiler.log'));
+    }
+
+    public function testContainerBuilderIsReleasedAfterBuildingTheContainer()
+    {
+        gc_collect_cycles();
+        $kernel = new BuilderLifetimeKernel($this->projectDir);
+        $kernel->boot();
+
+        $this->assertTrue($kernel->builderReleased);
+    }
+
+    public function testCachedBootDoesNotCollectUnrelatedCycles()
+    {
+        (new BuilderLifetimeKernel($this->projectDir))->boot();
+        gc_collect_cycles();
+
+        $cycle = new \stdClass();
+        $cycle->self = $cycle;
+        $reference = \WeakReference::create($cycle);
+        unset($cycle);
+
+        try {
+            $kernel = new BuilderLifetimeKernel($this->projectDir);
+            $kernel->boot();
+
+            $this->assertNull($kernel->builderReleased);
+            $this->assertNotNull($reference->get());
+        } finally {
+            gc_collect_cycles();
+        }
+    }
+
+    public function testDumpContainerWritesContainerDirectory()
+    {
+        $kernel = new TestKernel($this->projectDir);
+        $kernel->boot();
+
+        $containerDirs = glob($kernel->getBuildDir().'/*', \GLOB_ONLYDIR);
+
+        $this->assertCount(1, $containerDirs);
+        $this->assertSame(strstr($kernel->getContainer()::class, '\\', true), basename($containerDirs[0]));
+        $this->assertFileExists($containerDirs[0].'/'.$kernel->getContainer()->getParameter('kernel.container_class').'.php');
+
+        if ('\\' !== \DIRECTORY_SEPARATOR) {
+            $this->assertSame(0o777 & ~umask(), fileperms($containerDirs[0]) & 0o777);
+
+            foreach (glob($containerDirs[0].'/*') as $file) {
+                $this->assertSame(0o666 & ~umask(), fileperms($file) & 0o777);
+            }
+        }
+    }
+
+    public function testDumpContainerReusesExistingContainerDirectory()
+    {
+        $kernel = new TestKernel($this->projectDir);
+        $kernel->boot();
+
+        $buildDir = $kernel->getBuildDir();
+        $class = $kernel->getContainer()->getParameter('kernel.container_class');
+        [$containerDir] = glob($buildDir.'/Container*', \GLOB_ONLYDIR);
+        $mtime = time() - 3600;
+        foreach (glob($containerDir.'/*') as $file) {
+            touch($file, $mtime);
+        }
+        unlink($buildDir.'/'.$class.'.php');
+
+        (new TestKernel($this->projectDir))->boot();
+
+        $this->assertSame([$containerDir], glob($buildDir.'/*', \GLOB_ONLYDIR));
+
+        clearstatcache();
+        $this->assertGreaterThan($mtime, filemtime($containerDir.'/'.$class.'.php'));
+        $this->assertSame($mtime, filemtime($containerDir.'/getPublicServiceService.php'));
+    }
+
+    public function testDumpContainerRestoresMissingFilesInExistingContainerDirectory()
+    {
+        $kernel = new TestKernel($this->projectDir);
+        $kernel->boot();
+
+        $buildDir = $kernel->getBuildDir();
+        $class = $kernel->getContainer()->getParameter('kernel.container_class');
+        [$containerDir] = glob($buildDir.'/Container*', \GLOB_ONLYDIR);
+        $code = file_get_contents($containerDir.'/'.$class.'.php');
+        unlink($containerDir.'/'.$class.'.php');
+        unlink($buildDir.'/'.$class.'.php');
+
+        (new TestKernel($this->projectDir))->boot();
+
+        $this->assertStringEqualsFile($containerDir.'/'.$class.'.php', $code);
+    }
+
+    public function testDumpContainerPreloadsEnvNotFoundException()
+    {
+        mkdir($this->projectDir.'/config', 0o777, true);
+        file_put_contents($this->projectDir.'/config/bundles.php', '<?php return '.var_export([ServicesBundle::class => ['all' => true]], true).';');
+
+        $kernel = new TestKernel($this->projectDir);
+        $kernel->boot();
+
+        $class = $kernel->getContainer()->getParameter('kernel.container_class');
+        $preloadFile = $kernel->getBuildDir().'/'.$class.'.preload.php';
+
+        $this->assertFileExists($preloadFile);
+        $this->assertStringContainsString(EnvNotFoundException::class, file_get_contents($preloadFile));
+    }
+}
+
+class TestKernel extends AbstractKernel
+{
+    use KernelTrait;
+
+    public function __construct(private string $projectDir)
+    {
+        parent::__construct('test', false);
+    }
+
+    public function getProjectDir(): string
+    {
+        return $this->projectDir;
+    }
+
+    public function getBuildDir(): string
+    {
+        return $this->projectDir.'/var/build';
+    }
+
+    protected function build(ContainerBuilder $container): void
+    {
+        $container->register('unused_service', \stdClass::class);
+        $container->register('public_service', \stdClass::class)->setPublic(true);
+    }
+}
+
+class BrokenKernel extends TestKernel
+{
+    protected function build(ContainerBuilder $container): void
+    {
+        throw new \LogicException('Broken build.');
+    }
+}
+
+class BuilderLifetimeKernel extends TestKernel
+{
+    public ?bool $builderReleased = null;
+
+    private ?\WeakReference $builder = null;
+
+    protected function build(ContainerBuilder $container): void
+    {
+        parent::build($container);
+        $this->builder = \WeakReference::create($container);
+        $container->addCompilerPass(new class implements CompilerPassInterface {
+            private ContainerBuilder $container;
+
+            public function process(ContainerBuilder $container): void
+            {
+                // Compiler passes can retain a back-reference to their container builder.
+                $this->container = $container;
+            }
+        });
+    }
+
+    protected function initializeContainer(): void
+    {
+        parent::initializeContainer();
+
+        if ($this->builder) {
+            $this->builderReleased = null === $this->builder->get();
+        }
+    }
+}
+
+class EventListenerKernel extends TestKernel
+{
+    protected function build(ContainerBuilder $container): void
+    {
+        // not shared, so that only the dispatcher references the listener
+        $container->register('listener', RecordingListener::class)
+            ->setShared(false)
+            ->addTag('kernel.event_listener', ['event' => 'foo', 'method' => '__invoke']);
+    }
+}
+
+class RecordingListener
+{
+    public function __invoke(\stdClass $event): void
+    {
+        $event->listener = $this;
+    }
+}
+
+class ShutdownFlagKernel extends TestKernel
+{
+    protected function build(ContainerBuilder $container): void
+    {
+        foreach (['shared', 'non_shared', 'lazy', 'unused'] as $id) {
+            $container->register($id, ShutdownAwareService::class)
+                ->setPublic(true)
+                ->setAutoconfigured(true)
+                ->setShared('non_shared' !== $id)
+                ->setLazy('lazy' === $id);
+        }
+        $container->register('manual', ShutdownAwareService::class)->setPublic(true);
+        $container->register('nested', Container::class)->setPublic(true)->setAutoconfigured(true);
+        $container->register('tagged', ShutdownAwareService::class)
+            ->setPublic(true)
+            ->addTag('kernel.reset', ['method' => 'reset']);
+        $container->register('custom', ShutdownAwareService::class)
+            ->setPublic(true)
+            ->setShared(false)
+            ->addTag('kernel.reset', ['method' => 'clear', 'on_shutdown' => 'flag']);
+        $container->register('shutdown_only', ShutdownAwareService::class)
+            ->setPublic(true)
+            ->setShared(false)
+            ->addTag('kernel.reset', ['method' => 'clear', 'on_shutdown' => 'only']);
+        $container->register('disabled', ShutdownAwareService::class)
+            ->setPublic(true)
+            ->addTag('kernel.reset', ['method' => 'reset', 'on_shutdown' => null]);
+    }
+}

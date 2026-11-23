@@ -4,6 +4,281 @@ schema_version = 1
 mode = "public"
 
 [[project]]
+name = "afnetworking"
+language = "objc"
+url = "https://github.com/AFNetworking/AFNetworking"
+rev = "d9f589cc2c1fe9d55eb5eea00558010afea7a41e"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:485a5c56e1f03948b5edac845793090dd5d1791f0fa6791915702ccfebd61433"
+added_by = "CorpusPopC3"
+added_on = "2026-11-23"
+reason = "ObjC golden-age HTTP library; preprocessor and NS_DESIGNATED_INITIALIZER macro stress"
+notice_present_upstream = false
+
+[[project]]
+name = "sdwebimage"
+language = "objc"
+url = "https://github.com/SDWebImage/SDWebImage"
+rev = "c3ad5e1a9bf55c9b76d4c362430b5fcded96c502"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:1bd9ddf4e7528050479868bba201cb69dee9cccb3817947fb66457cdf476260b"
+added_by = "CorpusPopC3"
+added_on = "2026-11-23"
+reason = "Maintained image library; generics nullability annotations, demo app layout"
+notice_present_upstream = false
+
+[[project]]
+name = "restkit"
+language = "objc"
+url = "https://github.com/RestKit/RestKit"
+rev = "d902e6a6fc3d765939c739c21ee5b6b3f25f2470"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+exclude = ["Code/CocoaLumberjack/**", "Code/CocoaLumberjack/*/**", "Code/CocoaLumberjack/*/*/**", "Code/Testing/RKBenchmark.m"]
+tree_hash = "sha256:04d8a1862ddb2d1aeaceb0ab5e0e1a66ce4bf271a479584d30cf691c5e1def91"
+added_by = "CorpusPopC3"
+added_on = "2026-11-23"
+reason = "Mapping and CoreData library plus logic tests; vendored BSD dir and one copyleft-worded benchmark file excluded"
+notice_present_upstream = false
+
+[[project]]
+name = "guzzle"
+language = "php"
+url = "https://github.com/guzzle/guzzle"
+rev = "ba6574fd975ab16f87dc356729a36777c03851e8"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:6c187b633fa07ffd9f4b2611dc2f8cf4070c78ba68791d89334bb47bda485ba9"
+added_by = "CorpusPopC3"
+added_on = "2026-11-23"
+reason = "Small HTTP client; promise chains and reference-heavy code"
+notice_present_upstream = false
+
+
+[[project]]
+name = "composer"
+language = "php"
+url = "https://github.com/composer/composer"
+rev = "8a53515e753d9f60f1ed338cd40e0fae9464af52"
+spdx = "MIT"
+storage = "copied"
+paths = ["src/Composer/**", "src/Composer/*/**", "src/Composer/*/*/**", "src/Composer/*/*/*/**", "src/Composer/*/*/*/*/**", "src/Composer/*/*/*/*/*/**", "src/Composer/*/*/*/*/*/*/**", "src/Composer/*/*/*/*/*/*/*/**", "src/Composer/*/*/*/*/*/*/*/*/**", "src/Composer/*/*/*/*/*/*/*/*/*/**"]
+exclude = ["src/Composer/Util/TlsHelper.php"]
+tree_hash = "sha256:4f12f890468f12f0df1f5a6ec8040e107d4dfca0de29e68e80a8d480fb7cf0a4"
+added_by = "CorpusPopC3"
+added_on = "2026-11-23"
+reason = "Package manager core library; version-constraint parser strings; tests dropped (token fixtures, LGPL-quoting comment); TlsHelper.php excluded (embeds BSD-3 text)"
+notice_present_upstream = false
+
+[[project]]
+name = "cakephp"
+language = "php"
+url = "https://github.com/cakephp/cakephp"
+rev = "459929001cfcca2c1035f16cf0ea61f242b50578"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+exclude = ["vendor/**", "vendor/*/**", "vendor/*/*/**", "vendor/*/*/*/**", "vendor/*/*/*/*/**", "vendor/*/*/*/*/*/**", "vendor/*/*/*/*/*/*/**", "vendor/*/*/*/*/*/*/*/**", "vendor/*/*/*/*/*/*/*/*/**", "vendor/*/*/*/*/*/*/*/*/*/**", "src/Http/ResponseEmitter.php"]
+tree_hash = "sha256:97e8263db70162f48f610b7d71cc4423df659e60679b4c60ec19f0fce4945af4"
+added_by = "CorpusPopC3"
+added_on = "2026-11-23"
+reason = "Full-stack framework with docblock generics; test-app vendor fixtures excluded; ResponseEmitter.php excluded (quotes BSD license text)"
+notice_present_upstream = false
+
+[[project]]
+name = "laravel"
+language = "php"
+url = "https://github.com/laravel/framework"
+rev = "1caec34a347d3bdd875b18d0e279aef9b80435c2"
+spdx = "MIT"
+storage = "copied"
+paths = ["src/Illuminate/**", "src/Illuminate/*/**", "src/Illuminate/*/*/**", "src/Illuminate/*/*/*/**", "src/Illuminate/*/*/*/*/**", "src/Illuminate/*/*/*/*/*/**", "src/Illuminate/*/*/*/*/*/*/**", "src/Illuminate/*/*/*/*/*/*/*/**"]
+exclude = ["src/Illuminate/Translation/MessageSelector.php"]
+tree_hash = "sha256:00440d63ff1445abc80597fcde01953c2c9db8fef353d8517e40d5a44fcf6f86"
+added_by = "CorpusPopC3"
+added_on = "2026-11-23"
+reason = "Framework core library (facades, Macroable, database); tests dropped for 15MB project cap; MessageSelector.php excluded (quotes BSD license text)"
+notice_present_upstream = false
+
+[[project]]
+name = "symfony"
+language = "php"
+url = "https://github.com/symfony/symfony"
+rev = "2894e4eeea9e328e5f38d5e5e52498438c9a12fc"
+spdx = "MIT"
+storage = "copied"
+paths = ["src/Symfony/Component/HttpFoundation/**", "src/Symfony/Component/HttpFoundation/*/**", "src/Symfony/Component/HttpFoundation/*/*/**", "src/Symfony/Component/HttpFoundation/*/*/*/**", "src/Symfony/Component/HttpFoundation/*/*/*/*/**", "src/Symfony/Component/HttpFoundation/*/*/*/*/*/**", "src/Symfony/Component/HttpFoundation/*/*/*/*/*/*/**", "src/Symfony/Component/HttpFoundation/*/*/*/*/*/*/*/**", "src/Symfony/Component/HttpFoundation/*/*/*/*/*/*/*/*/**", "src/Symfony/Component/Console/**", "src/Symfony/Component/Console/*/**", "src/Symfony/Component/Console/*/*/**", "src/Symfony/Component/Console/*/*/*/**", "src/Symfony/Component/Console/*/*/*/*/**", "src/Symfony/Component/Console/*/*/*/*/*/**", "src/Symfony/Component/Console/*/*/*/*/*/*/**", "src/Symfony/Component/Console/*/*/*/*/*/*/*/**", "src/Symfony/Component/Console/*/*/*/*/*/*/*/*/**", "src/Symfony/Component/Routing/**", "src/Symfony/Component/Routing/*/**", "src/Symfony/Component/Routing/*/*/**", "src/Symfony/Component/Routing/*/*/*/**", "src/Symfony/Component/Routing/*/*/*/*/**", "src/Symfony/Component/Routing/*/*/*/*/*/**", "src/Symfony/Component/Routing/*/*/*/*/*/*/**", "src/Symfony/Component/Routing/*/*/*/*/*/*/*/**", "src/Symfony/Component/Routing/*/*/*/*/*/*/*/*/**", "src/Symfony/Component/HttpKernel/**", "src/Symfony/Component/HttpKernel/*/**", "src/Symfony/Component/HttpKernel/*/*/**", "src/Symfony/Component/HttpKernel/*/*/*/**", "src/Symfony/Component/HttpKernel/*/*/*/*/**", "src/Symfony/Component/HttpKernel/*/*/*/*/*/**", "src/Symfony/Component/HttpKernel/*/*/*/*/*/*/**", "src/Symfony/Component/HttpKernel/*/*/*/*/*/*/*/**", "src/Symfony/Component/HttpKernel/*/*/*/*/*/*/*/*/**", "src/Symfony/Component/DependencyInjection/**", "src/Symfony/Component/DependencyInjection/*/**", "src/Symfony/Component/DependencyInjection/*/*/**", "src/Symfony/Component/DependencyInjection/*/*/*/**", "src/Symfony/Component/DependencyInjection/*/*/*/*/**", "src/Symfony/Component/DependencyInjection/*/*/*/*/*/**", "src/Symfony/Component/DependencyInjection/*/*/*/*/*/*/**", "src/Symfony/Component/DependencyInjection/*/*/*/*/*/*/*/**", "src/Symfony/Component/DependencyInjection/*/*/*/*/*/*/*/*/**", "src/Symfony/Component/EventDispatcher/**", "src/Symfony/Component/EventDispatcher/*/**", "src/Symfony/Component/EventDispatcher/*/*/**", "src/Symfony/Component/EventDispatcher/*/*/*/**", "src/Symfony/Component/EventDispatcher/*/*/*/*/**", "src/Symfony/Component/EventDispatcher/*/*/*/*/*/**", "src/Symfony/Component/EventDispatcher/*/*/*/*/*/*/**", "src/Symfony/Component/EventDispatcher/*/*/*/*/*/*/*/**", "src/Symfony/Component/EventDispatcher/*/*/*/*/*/*/*/*/**", "src/Symfony/Bundle/FrameworkBundle/**", "src/Symfony/Bundle/FrameworkBundle/*/**", "src/Symfony/Bundle/FrameworkBundle/*/*/**", "src/Symfony/Bundle/FrameworkBundle/*/*/*/**", "src/Symfony/Bundle/FrameworkBundle/*/*/*/*/**", "src/Symfony/Bundle/FrameworkBundle/*/*/*/*/*/**", "src/Symfony/Bundle/FrameworkBundle/*/*/*/*/*/*/**", "src/Symfony/Bundle/FrameworkBundle/*/*/*/*/*/*/*/**", "src/Symfony/Bundle/FrameworkBundle/*/*/*/*/*/*/*/*/**", "src/Symfony/Component/String/**", "src/Symfony/Component/String/*/**", "src/Symfony/Component/String/*/*/**", "src/Symfony/Component/String/*/*/*/**", "src/Symfony/Component/String/*/*/*/*/**", "src/Symfony/Component/String/*/*/*/*/*/**", "src/Symfony/Component/String/*/*/*/*/*/*/**", "src/Symfony/Component/String/*/*/*/*/*/*/*/**", "src/Symfony/Component/String/*/*/*/*/*/*/*/*/**", "src/Symfony/Component/Finder/**", "src/Symfony/Component/Finder/*/**", "src/Symfony/Component/Finder/*/*/**", "src/Symfony/Component/Finder/*/*/*/**", "src/Symfony/Component/Finder/*/*/*/*/**", "src/Symfony/Component/Finder/*/*/*/*/*/**", "src/Symfony/Component/Finder/*/*/*/*/*/*/**", "src/Symfony/Component/Finder/*/*/*/*/*/*/*/**", "src/Symfony/Component/Finder/*/*/*/*/*/*/*/*/**", "src/Symfony/Component/Yaml/**", "src/Symfony/Component/Yaml/*/**", "src/Symfony/Component/Yaml/*/*/**", "src/Symfony/Component/Yaml/*/*/*/**", "src/Symfony/Component/Yaml/*/*/*/*/**", "src/Symfony/Component/Yaml/*/*/*/*/*/**", "src/Symfony/Component/Yaml/*/*/*/*/*/*/**", "src/Symfony/Component/Yaml/*/*/*/*/*/*/*/**", "src/Symfony/Component/Yaml/*/*/*/*/*/*/*/*/**", "src/Symfony/Component/Process/**", "src/Symfony/Component/Process/*/**", "src/Symfony/Component/Process/*/*/**", "src/Symfony/Component/Process/*/*/*/**", "src/Symfony/Component/Process/*/*/*/*/**", "src/Symfony/Component/Process/*/*/*/*/*/**", "src/Symfony/Component/Process/*/*/*/*/*/*/**", "src/Symfony/Component/Process/*/*/*/*/*/*/*/**", "src/Symfony/Component/Process/*/*/*/*/*/*/*/*/**", "src/Symfony/Component/Filesystem/**", "src/Symfony/Component/Filesystem/*/**", "src/Symfony/Component/Filesystem/*/*/**", "src/Symfony/Component/Filesystem/*/*/*/**", "src/Symfony/Component/Filesystem/*/*/*/*/**", "src/Symfony/Component/Filesystem/*/*/*/*/*/**", "src/Symfony/Component/Filesystem/*/*/*/*/*/*/**", "src/Symfony/Component/Filesystem/*/*/*/*/*/*/*/**", "src/Symfony/Component/Filesystem/*/*/*/*/*/*/*/*/**"]
+exclude = ["src/Symfony/Component/HttpFoundation/Request.php", "src/Symfony/Component/HttpFoundation/Tests/ResponseTest.php"]
+tree_hash = "sha256:00ba39dc7cea842cbd74ecbf409ca2e02fa4ef9f4b71ca3ad8a85b646c8133b0"
+added_by = "CorpusPopC3"
+added_on = "2026-11-23"
+reason = "Framework components (HTTP, console, routing, DI, events, kernel, utils); attributes and union types; Request.php and ResponseTest.php excluded (quote BSD license text)"
+notice_present_upstream = false
+
+[[project]]
+name = "jekyll"
+language = "ruby"
+url = "https://github.com/jekyll/jekyll"
+rev = "97c3bdc822df9d5bea4c269b29a28de5a5e29d70"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:f7ed52975a0cda7bc895744c687860a9469aea122c6f89118bc230897e050232"
+added_by = "CorpusPopC3"
+added_on = "2026-11-23"
+reason = "Static site generator, liquid-adjacent filters, small class"
+notice_present_upstream = false
+
+[[project]]
+name = "sinatra"
+language = "ruby"
+url = "https://github.com/sinatra/sinatra"
+rev = "2e3f79139154b8bfdaad7ad516f35dcb0e70446a"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:54d2c60c170b8d5f1603cb9b252d07715b7a2413e5c78be11b9ec6fc68f824d8"
+added_by = "CorpusPopC3"
+added_on = "2026-11-23"
+reason = "Route DSL with condition blocks, incl rack-protection subtree"
+notice_present_upstream = false
+
+
+[[project]]
+name = "rubocop"
+language = "ruby"
+url = "https://github.com/rubocop/rubocop"
+rev = "77d0e31cc591fafa765e865fa3dfc83fc0e39302"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+exclude = ["spec/rubocop/cop/style/copyright_spec.rb"]
+tree_hash = "sha256:69f2b518b833784747f69fd783d24d11b78709872d24bdd9ebc4336f4aa653ce"
+added_by = "CorpusPopC3"
+added_on = "2026-11-23"
+reason = "Self-hosting parser stress: pattern DSL and metaprogramming; copyright-cop fixture quotes copyleft text"
+notice_present_upstream = false
+
+[[project]]
+name = "fluentd"
+language = "ruby"
+url = "https://github.com/fluent/fluentd"
+rev = "bae5601e2ee7990c03a5f3fcb66162cf78927d92"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:8ef7591f2b3b71206d9e9c4a0ea84b2ab681a06b650f3b58ccd1ed80e14b15ab"
+added_by = "CorpusPopC3"
+added_on = "2026-11-23"
+reason = "Log collector plugin DSL; only Apache-2.0 Ruby project in lane"
+notice_present_upstream = false
+
+
+[[project]]
+name = "nvm"
+language = "bash"
+url = "https://github.com/nvm-sh/nvm"
+rev = "9abb2163671f66767c1426a53827f341bd0a9906"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:16c335f5b91d358c26c36ddc4438b1b1a0633a3a24223dacd7b714aa0c8d4e9b"
+added_by = "CorpusPopC3"
+added_on = "2026-11-23"
+reason = "Version manager; single huge nvm.sh with deep case nesting (extensionless helpers outside adapter)"
+notice_present_upstream = false
+
+[[project]]
+name = "bats-core"
+language = "bash"
+url = "https://github.com/bats-core/bats-core"
+rev = "3a45b53d71cd488dcfc095593ff60398b3894653"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:6d98b7fa7293fe6f07767d9b362a07da31628ea44c529060ca5024e4d9416a88"
+added_by = "CorpusPopC3"
+added_on = "2026-11-23"
+reason = "Test framework; @test syntax and .bats grammar stress; NOTICE.md kept"
+notice_present_upstream = true
+
+[[project]]
+name = "pyenv"
+language = "bash"
+url = "https://github.com/pyenv/pyenv"
+rev = "fc6046ccd0721c0ea258e11c9320515cee13f4d7"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:316a0ee5aa28a206b58d42d01b41d20cf906c4e5de9fb0befefdf61f1718e749"
+added_by = "CorpusPopC3"
+added_on = "2026-11-23"
+reason = "Version manager bats suite plus python-build shell; extensionless libexec core outside adapter"
+notice_present_upstream = false
+
+
+[[project]]
+name = "oh-my-bash"
+language = "bash"
+url = "https://github.com/ohmybash/oh-my-bash"
+rev = "94c2977eda06f230aafa9628fcd869123f01896b"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+exclude = ["tools/git-completion.bash", "tools/git-prompt.sh", "completions/defaults.completion.sh", "plugins/bashmarks/bashmarks.plugin.sh"]
+tree_hash = "sha256:bf84649cc25b56b5cdd092f426899b99b394561f4f3a709c232c42aba6389526"
+added_by = "CorpusPopC3"
+added_on = "2026-11-23"
+reason = "Prompt framework; two git-derived GPL files excluded; two BSD-licensed files excluded (defaults completion, bashmarks plugin)"
+notice_present_upstream = false
+[[project]]
+name = "powershell-scripts"
+language = "powershell"
+url = "https://github.com/PowerShell/PowerShell"
+rev = "ba2221aed027041b6620c5fe1c0675567f14452a"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:4b5fdbcd49d49678d62f5f37260e898a9daa6dea25c07407541af56846907984"
+added_by = "CorpusPopC3"
+added_on = "2026-11-23"
+reason = "Language-forming product scripts and Pester tests; .psd1 manifests outside adapter"
+notice_present_upstream = false
+
+
+[[project]]
+name = "psscriptanalyzer"
+language = "powershell"
+url = "https://github.com/PowerShell/PSScriptAnalyzer"
+rev = "0151b9dafd1a7ba4279e0deeb03f04661223e629"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+exclude = ["Tests/Rules/TestFiles/BOMAbsent_UTF16EncodedScript.ps1", "Tests/Rules/TestFiles/BOMAbsent_UnknownEncodedScript.ps1", "Tests/Rules/TestFiles/BOMPresent_UTF16EncodedScript.ps1"]
+tree_hash = "sha256:518a6cffce42b8aeed79c9fc58da6003e0bd7b08b956544bd6beb20a50b38545"
+added_by = "CorpusPopC3"
+added_on = "2026-11-23"
+reason = "Analyzer rule-violation fixtures; UTF-16 encoding fixtures excluded (binary gate)"
+notice_present_upstream = false
+
+[[project]]
+name = "posh-git"
+language = "powershell"
+url = "https://github.com/dahlbyk/posh-git"
+rev = "bbc5ac380018239e0ac70411a59f4e367ca87f2d"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:e193066434d82c42ed98078b2e10bfe1a7f56fc0ba1038d4f7ece6d6ce43b3f9"
+added_by = "CorpusPopC3"
+added_on = "2026-11-23"
+reason = "Git prompt module with global state; small class"
 name = "mathlib-algebra"
 language = "lean"
 url = "https://github.com/leanprover-community/mathlib4"

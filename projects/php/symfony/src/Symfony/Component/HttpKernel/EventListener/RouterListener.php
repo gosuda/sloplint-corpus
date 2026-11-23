@@ -1,0 +1,266 @@
+<?php
+
+/*
+ * This file is part of the Symfony package.
+ *
+ * (c) Fabien Potencier <fabien@symfony.com>
+ *
+ * For the full copyright and license information, please view the LICENSE
+ * file that was distributed with this source code.
+ */
+
+namespace Symfony\Component\HttpKernel\EventListener;
+
+use Psr\Log\LoggerInterface;
+use Symfony\Component\EventDispatcher\EventSubscriberInterface;
+use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\RequestStack;
+use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpKernel\Event\ExceptionEvent;
+use Symfony\Component\HttpKernel\Event\FinishRequestEvent;
+use Symfony\Component\HttpKernel\Event\RequestEvent;
+use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
+use Symfony\Component\HttpKernel\Exception\MethodNotAllowedHttpException;
+use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
+use Symfony\Component\HttpKernel\Kernel;
+use Symfony\Component\HttpKernel\KernelEvents;
+use Symfony\Component\Routing\Controller\RedirectController;
+use Symfony\Component\Routing\Exception\InvalidParameterException;
+use Symfony\Component\Routing\Exception\MethodNotAllowedException;
+use Symfony\Component\Routing\Exception\NoConfigurationException;
+use Symfony\Component\Routing\Exception\ResourceNotFoundException;
+use Symfony\Component\Routing\Matcher\RequestMatcherInterface;
+use Symfony\Component\Routing\Matcher\UrlMatcherInterface;
+use Symfony\Component\Routing\RequestContext;
+use Symfony\Component\Routing\RequestContextAwareInterface;
+
+/**
+ * Initializes the context from the request and sets request attributes based on a matching route.
+ *
+ * @author Fabien Potencier <fabien@symfony.com>
+ * @author Yonel Ceruto <yonelceruto@gmail.com>
+ *
+ * @final
+ */
+class RouterListener implements EventSubscriberInterface
+{
+    private RequestContext $context;
+    private array $parentContexts = [];
+
+    /**
+     * @param RequestContext|null $context The RequestContext (can be null when $matcher implements RequestContextAwareInterface)
+     *
+     * @throws \InvalidArgumentException
+     */
+    public function __construct(
+        private UrlMatcherInterface|RequestMatcherInterface $matcher,
+        private RequestStack $requestStack,
+        ?RequestContext $context = null,
+        private ?LoggerInterface $logger = null,
+        private ?string $projectDir = null,
+        private bool $debug = true,
+    ) {
+        if (null === $context && !$matcher instanceof RequestContextAwareInterface) {
+            throw new \InvalidArgumentException('You must either pass a RequestContext or the matcher must implement RequestContextAwareInterface.');
+        }
+
+        $this->context = $context ?? $matcher->getContext();
+    }
+
+    private function setCurrentRequest(?Request $request): void
+    {
+        if (null !== $request) {
+            try {
+                $this->context->fromRequest($request);
+            } catch (\UnexpectedValueException $e) {
+                throw new BadRequestHttpException($e->getMessage(), $e, $e->getCode());
+            }
+        }
+    }
+
+    /**
+     * After a sub-request is done, we need to reset the routing context to the parent request so that the URL generator
+     * operates on the correct context again.
+     */
+    public function onKernelFinishRequest(?FinishRequestEvent $event = null): void
+    {
+        if (null === $event) {
+            $this->setCurrentRequest($this->requestStack->getParentRequest());
+
+            return;
+        }
+
+        $id = spl_object_id($event->getRequest());
+
+        if (!isset($this->parentContexts[$id])) {
+            return;
+        }
+
+        // The context of the parent is restored instead of being computed again:
+        // while a sub-request runs, its trusted proxies also apply to the parent request
+        $parentContext = $this->parentContexts[$id];
+        unset($this->parentContexts[$id]);
+
+        $this->context
+            ->setBaseUrl($parentContext->getBaseUrl())
+            ->setPathInfo($parentContext->getPathInfo())
+            ->setMethod($parentContext->getMethod())
+            ->setHost($parentContext->getHost())
+            ->setScheme($parentContext->getScheme())
+            ->setHttpPort($parentContext->getHttpPort())
+            ->setHttpsPort($parentContext->getHttpsPort())
+            ->setQueryString($parentContext->getQueryString());
+    }
+
+    public function onKernelRequest(RequestEvent $event): void
+    {
+        $request = $event->getRequest();
+
+        if (null !== $this->requestStack->getParentRequest()) {
+            $this->parentContexts[spl_object_id($request)] = clone $this->context;
+        }
+
+        $this->setCurrentRequest($request);
+
+        if ($request->attributes->has('_controller')) {
+            // routing is already done
+            return;
+        }
+
+        // add attributes based on the request (routing)
+        try {
+            // matching a request is more powerful than matching a URL path + context, so try that first
+            if ($this->matcher instanceof RequestMatcherInterface) {
+                $parameters = $this->matcher->matchRequest($request);
+            } else {
+                $parameters = $this->matcher->match($request->getPathInfo());
+            }
+
+            $this->logger?->info('Matched route "{route}".', [
+                'route' => $parameters['_route'] ?? 'n/a',
+                'route_parameters' => $parameters,
+                'request_uri' => $this->getRequestUri($request),
+                'method' => $request->getMethod(),
+            ]);
+
+            if (($parameters['_scheme_redirect'] ?? false) && RedirectController::class.'::urlRedirectAction' === ($parameters['_controller'] ?? null)) {
+                // the route is not served over this scheme, so redirect right away rather than
+                // letting listeners act on a request that this URL does not actually serve
+                $event->setResponse((new RedirectController())->urlRedirectAction(
+                    $request,
+                    $parameters['path'],
+                    $parameters['permanent'],
+                    $parameters['scheme'],
+                    $parameters['httpPort'],
+                    $parameters['httpsPort'],
+                ));
+
+                return;
+            }
+
+            $attributes = $parameters;
+            if ($mapping = $parameters['_route_mapping'] ?? false) {
+                unset($parameters['_route_mapping']);
+                $mappedAttributes = [];
+                $attributes = [];
+
+                foreach ($parameters as $parameter => $value) {
+                    if (!isset($mapping[$parameter])) {
+                        $attribute = $parameter;
+                    } elseif (\is_array($mapping[$parameter])) {
+                        [$attribute, $parameter] = $mapping[$parameter];
+                        $mappedAttributes[$attribute] = '';
+                    } else {
+                        $attribute = $mapping[$parameter];
+                    }
+
+                    if (!isset($mappedAttributes[$attribute])) {
+                        $attributes[$attribute] = $value;
+                        $mappedAttributes[$attribute] = $parameter;
+                    } elseif ('' !== $mappedAttributes[$attribute]) {
+                        $attributes[$attribute] = [
+                            $mappedAttributes[$attribute] => $attributes[$attribute],
+                            $parameter => $value,
+                        ];
+                        $mappedAttributes[$attribute] = '';
+                    } else {
+                        $attributes[$attribute][$parameter] = $value;
+                    }
+                }
+
+                $attributes['_route_mapping'] = $mapping;
+            }
+
+            $request->attributes->add($attributes);
+
+            // the route may declare query parameters it always carries, the request wins over them
+            if (!\is_array($query = $attributes['_query'] ?? [])) {
+                throw new InvalidParameterException(\sprintf('Default "_query" must be an array of query parameters for route "%s".', $parameters['_route'] ?? ''));
+            }
+
+            if ($query = array_filter($query, static fn ($value) => null !== $value)) {
+                // going through the query string gives the same values a real one would have parsed to
+                parse_str(http_build_query($query, '', '&', \PHP_QUERY_RFC3986), $query);
+                $request->query->add(array_diff_key($query, $request->query->all()));
+            }
+
+            unset($parameters['_route'], $parameters['_controller'], $parameters['_query']);
+            $request->attributes->set('_route_params', $parameters);
+        } catch (ResourceNotFoundException $e) {
+            $message = \sprintf('No route found for "%s %s"', $request->getMethod(), $request->getUriForPath($request->getPathInfo()));
+
+            if ($referer = $request->headers->get('referer')) {
+                $message .= \sprintf(' (from "%s")', $referer);
+            }
+
+            throw new NotFoundHttpException($message, $e);
+        } catch (MethodNotAllowedException $e) {
+            $message = \sprintf('No route found for "%s %s": Method Not Allowed (Allow: %s)', $request->getMethod(), $request->getUriForPath($request->getPathInfo()), implode(', ', $e->getAllowedMethods()));
+
+            throw new MethodNotAllowedHttpException($e->getAllowedMethods(), $message, $e);
+        }
+    }
+
+    public function onKernelException(ExceptionEvent $event): void
+    {
+        if (!$this->debug || !($e = $event->getThrowable()) instanceof NotFoundHttpException) {
+            return;
+        }
+
+        if ($e->getPrevious() instanceof NoConfigurationException) {
+            $event->setResponse($this->createWelcomeResponse());
+        }
+    }
+
+    public static function getSubscribedEvents(): array
+    {
+        return [
+            KernelEvents::REQUEST => [['onKernelRequest', 32]],
+            KernelEvents::FINISH_REQUEST => [['onKernelFinishRequest', 0]],
+            KernelEvents::EXCEPTION => ['onKernelException', -64],
+        ];
+    }
+
+    /**
+     * Builds the same URI as Request::getUri() from the context, which was just filled from the request.
+     */
+    private function getRequestUri(Request $request): string
+    {
+        $scheme = $this->context->getScheme();
+        $port = 'https' === $scheme ? $this->context->getHttpsPort() : $this->context->getHttpPort();
+        $qs = $request::normalizeQueryString($this->context->getQueryString());
+
+        return $scheme.'://'.$this->context->getHost().(('https' === $scheme ? 443 : 80) === $port ? '' : ':'.$port).$this->context->getBaseUrl().$this->context->getPathInfo().('' === $qs ? '' : '?'.$qs);
+    }
+
+    private function createWelcomeResponse(): Response
+    {
+        $projectDir = realpath((string) $this->projectDir).\DIRECTORY_SEPARATOR;
+        $version = $docVersion = Kernel::MAJOR_VERSION.'.'.Kernel::MINOR_VERSION;
+
+        ob_start();
+        include \dirname(__DIR__).'/Resources/welcome.html.php';
+
+        return new Response(ob_get_clean(), Response::HTTP_NOT_FOUND);
+    }
+}

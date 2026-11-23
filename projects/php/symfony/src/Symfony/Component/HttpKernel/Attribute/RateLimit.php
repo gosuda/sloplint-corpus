@@ -1,0 +1,65 @@
+<?php
+
+/*
+ * This file is part of the Symfony package.
+ *
+ * (c) Fabien Potencier <fabien@symfony.com>
+ *
+ * For the full copyright and license information, please view the LICENSE
+ * file that was distributed with this source code.
+ */
+
+namespace Symfony\Component\HttpKernel\Attribute;
+
+use Symfony\Component\ExpressionLanguage\Expression;
+use Symfony\Component\RateLimiter\Exception\RateLimitExceededException;
+
+/**
+ * Rate limits the controller.
+ *
+ * When several attributes apply, the `X-RateLimit-*` headers describe the limiter closest to
+ * rejecting, out of those with $exposeHeaders enabled. A rejecting limiter always wins; when it
+ * does not expose its state, the response carries no `X-RateLimit-*` headers at all.
+ *
+ * Tokens are consumed as soon as the controller is known, before its arguments are resolved,
+ * unless $key or $if reads them: a Closure, or an Expression that uses `args`.
+ *
+ * @see https://symfony.com/doc/current/rate_limiter.html
+ *
+ * @author Ayyoub AFW-ALLAH <ayyoub.afwallah@gmail.com>
+ */
+#[\Attribute(\Attribute::IS_REPEATABLE | \Attribute::TARGET_CLASS | \Attribute::TARGET_METHOD | \Attribute::TARGET_FUNCTION)]
+#[RecoverableAttribute(RateLimitExceededException::class)]
+class RateLimit
+{
+    /** @var string[] */
+    public readonly array $methods;
+
+    /**
+     * @param string                          $limiter       The configured limiter name
+     * @param string|Expression|\Closure|null $key           A string where {name} is replaced by the "name" request attribute, such as a route parameter, or an Expression or a Closure evaluating to a string; null means client IP, or its /64 network for IPv6, + path
+     * @param int                             $tokens        The number of tokens to consume
+     * @param string[]|string                 $methods       HTTP methods to rate limit; empty means all methods
+     * @param bool                            $exposeHeaders Whether this limiter's state may be exposed via the `X-RateLimit-*` response headers, opt-in
+     * @param bool|Expression|\Closure        $if            Whether the rate limit applies: a boolean, or an Expression or a Closure evaluating to one
+     */
+    public function __construct(
+        public readonly string $limiter,
+        public readonly string|Expression|\Closure|null $key = null,
+        public readonly int $tokens = 1,
+        array|string $methods = [],
+        public readonly bool $exposeHeaders = false,
+        public readonly bool|Expression|\Closure $if = true,
+    ) {
+        if ($this->tokens < 1) {
+            throw new \InvalidArgumentException(\sprintf('The "$tokens" argument of "%s" must be greater than 0, "%d" given.', static::class, $this->tokens));
+        }
+
+        $methods = array_reduce(array_map('strtoupper', (array) $methods), static fn (array $methods, string $method) => array_merge($methods, preg_split('/\s*,\s*/', $method)), []);
+
+        if (\in_array('GET', $methods, true)) {
+            $methods[] = 'HEAD';
+        }
+        $this->methods = $methods;
+    }
+}

@@ -1,0 +1,409 @@
+<?php
+
+/*
+ * This file is part of the Symfony package.
+ *
+ * (c) Fabien Potencier <fabien@symfony.com>
+ *
+ * For the full copyright and license information, please view the LICENSE
+ * file that was distributed with this source code.
+ */
+
+namespace Symfony\Component\DependencyInjection\Compiler;
+
+use Symfony\Component\Config\Definition\ArrayNode;
+use Symfony\Component\Config\Definition\BaseNode;
+use Symfony\Component\Config\Definition\ConfigurationInterface;
+use Symfony\Component\Config\Definition\Processor;
+use Symfony\Component\DependencyInjection\ContainerBuilder;
+use Symfony\Component\DependencyInjection\Exception\ExceptionInterface;
+use Symfony\Component\DependencyInjection\Exception\InvalidArgumentException;
+use Symfony\Component\DependencyInjection\Exception\LogicException;
+use Symfony\Component\DependencyInjection\Exception\ParameterNotFoundException;
+use Symfony\Component\DependencyInjection\Exception\RuntimeException;
+use Symfony\Component\DependencyInjection\Extension\ConfigurationExtensionInterface;
+use Symfony\Component\DependencyInjection\Extension\Extension;
+use Symfony\Component\DependencyInjection\Extension\ExtensionInterface;
+use Symfony\Component\DependencyInjection\Extension\PrependExtensionInterface;
+use Symfony\Component\DependencyInjection\Loader\UndefinedExtensionHandler;
+use Symfony\Component\DependencyInjection\ParameterBag\EnvPlaceholderParameterBag;
+use Symfony\Component\DependencyInjection\ParameterBag\ParameterBagInterface;
+
+/**
+ * Merges extension configs into the container builder.
+ *
+ * @author Fabien Potencier <fabien@symfony.com>
+ */
+class MergeExtensionConfigurationPass implements CompilerPassInterface
+{
+    private array $extensions = [];
+
+    /**
+     * @param string[] $extensions Extension aliases to implicitly load when no configuration is explicitly provided
+     */
+    public function __construct(
+        array $extensions = [],
+    ) {
+        $this->extensions = $extensions;
+    }
+
+    public function process(ContainerBuilder $container): void
+    {
+        foreach ($this->extensions as $extension) {
+            if (!$container->getExtensionConfig($extension)) {
+                $container->loadFromExtension($extension, []);
+            }
+        }
+        $parameters = $container->getParameterBag()->all();
+        $definitions = $container->getDefinitions();
+        $aliases = $container->getAliases();
+        $exprLangProviders = $container->getExpressionLanguageProviders();
+        $configAvailable = class_exists(BaseNode::class);
+
+        foreach ($container->getExtensions() as $extension) {
+            if ($extension instanceof PrependExtensionInterface) {
+                $extension->prepend($container);
+            }
+        }
+
+        $forwardingBags = $configAvailable ? $this->forwardExtensionAliases($container) : [];
+
+        foreach ($container->getExtensions() as $name => $extension) {
+            if (!$config = $container->getExtensionConfig($name)) {
+                // this extension was not called
+                continue;
+            }
+            $resolvingBag = $container->getParameterBag();
+            if ($resolvingBag instanceof EnvPlaceholderParameterBag && $extension instanceof Extension) {
+                // create a dedicated bag so that we can track env vars per-extension
+                $resolvingBag = new MergeExtensionConfigurationParameterBag($resolvingBag);
+                if ($configAvailable) {
+                    BaseNode::setPlaceholderUniquePrefix($resolvingBag->getEnvPlaceholderUniquePrefix());
+                }
+            }
+            if (isset($forwardingBags[$name]) && $resolvingBag instanceof EnvPlaceholderParameterBag) {
+                $resolvingBag->mergeEnvPlaceholders($forwardingBags[$name]);
+            }
+
+            try {
+                $config = $resolvingBag->resolveValue($config);
+            } catch (ParameterNotFoundException $e) {
+                $e->setSourceExtensionName($name);
+
+                throw $e;
+            }
+
+            try {
+                $tmpContainer = new MergeExtensionConfigurationContainerBuilder($extension, $resolvingBag);
+                $tmpContainer->setResourceTracking($container->isTrackingResources());
+                $tmpContainer->addObjectResource($extension);
+                if ($extension instanceof ConfigurationExtensionInterface && null !== $configuration = $extension->getConfiguration($config, $tmpContainer)) {
+                    $tmpContainer->addObjectResource($configuration);
+                }
+
+                foreach ($exprLangProviders as $provider) {
+                    $tmpContainer->addExpressionLanguageProvider($provider);
+                }
+
+                $inlinedOptions = [];
+
+                if ($configAvailable) {
+                    BaseNode::setPlaceholderResolver(static function (mixed $value, string $path) use ($tmpContainer, &$inlinedOptions): mixed {
+                        try {
+                            $usedEnvs = [];
+                            $value = $tmpContainer->resolveStaticValue($value, $usedEnvs);
+
+                            foreach ($usedEnvs as $env) {
+                                $inlinedOptions[$env][$path] = $path;
+                            }
+
+                            return $value;
+                        } catch (ExceptionInterface $e) {
+                            throw new RuntimeException(\sprintf('The value of the configuration option "%s" must be known when the container is compiled: ', $path).$e->getMessage(), 0, $e);
+                        }
+                    });
+                }
+
+                $extension->load($config, $tmpContainer);
+            } catch (\Exception $e) {
+                if ($resolvingBag instanceof MergeExtensionConfigurationParameterBag) {
+                    $container->getParameterBag()->mergeEnvPlaceholders($resolvingBag);
+                }
+
+                throw $e;
+            } finally {
+                if ($configAvailable) {
+                    BaseNode::setPlaceholderResolver(null);
+                }
+            }
+
+            foreach ($inlinedOptions as $env => $paths) {
+                foreach ($paths as $path) {
+                    $container->log($this, \sprintf('Inlined env var "%%env(%s)%%" into option "%s".', $env, $path));
+                }
+            }
+            foreach (array_diff($tmpContainer->getInlinedEnvVars(), array_keys($inlinedOptions)) as $env) {
+                $container->log($this, \sprintf('Inlined env var "%%env(%s)%%" while loading extension "%s".', $env, $name));
+            }
+
+            if ($resolvingBag instanceof MergeExtensionConfigurationParameterBag) {
+                // don't keep track of env vars that are *overridden* when configs are merged
+                $resolvingBag->freezeAfterProcessing($extension, $tmpContainer);
+            }
+
+            $container->merge($tmpContainer);
+            $container->getParameterBag()->add($parameters);
+        }
+
+        foreach ($container->getDefinitions() as $id => $definition) {
+            if (isset($aliases[$id]) || (isset($definitions[$id]) && $definitions[$id] !== $definition)) {
+                // count the env vars of extension definitions that user-defined services or aliases replace
+                try {
+                    $value = serialize($definition);
+                } catch (\Throwable) {
+                    $value = $definition;
+                }
+                $container->resolveEnvPlaceholders($value);
+            }
+        }
+
+        $container->addDefinitions($definitions);
+        $container->addAliases($aliases);
+    }
+
+    /**
+     * Moves the values of the nodes declared with NodeDefinition::aliasOf() to the configuration of the extension with that alias.
+     *
+     * @return array<string, EnvPlaceholderParameterBag> The bags that resolved the forwarded values, indexed by the alias of their extension
+     */
+    private function forwardExtensionAliases(ContainerBuilder $container): array
+    {
+        $forwardingBags = [];
+
+        foreach ($container->getExtensions() as $name => $extension) {
+            if (!$configs = $container->getExtensionConfig($name)) {
+                continue;
+            }
+
+            if ($extension instanceof ConfigurationInterface) {
+                $configuration = $extension;
+            } elseif (!$extension instanceof ConfigurationExtensionInterface || null === $configuration = $extension->getConfiguration($configs, $container)) {
+                continue;
+            }
+
+            $tree = $configuration->getConfigTreeBuilder()->buildTree();
+
+            if (!$tree instanceof ArrayNode) {
+                continue;
+            }
+
+            $aliases = [];
+            foreach ($tree->getChildren() as $key => $child) {
+                if ($child instanceof BaseNode && null !== $child->getAttribute('alias_of')) {
+                    $aliases[$key] = $child;
+                }
+            }
+
+            if (!$aliases) {
+                continue;
+            }
+
+            $forwarded = [];
+            foreach ($configs as $i => $config) {
+                if (!\is_array($config)) {
+                    continue;
+                }
+
+                foreach ($tree->getXmlRemappings() as [$singular, $plural]) {
+                    if (isset($aliases[$plural]) && isset($config[$singular])) {
+                        $config[$plural] = Processor::normalizeConfig($config, $singular, $plural);
+                        unset($config[$singular]);
+                    }
+                }
+
+                foreach ($aliases as $key => $node) {
+                    $configKey = $key;
+
+                    if (!\array_key_exists($key, $config)) {
+                        // ArrayNode::preNormalize() turns hyphenated keys into their underscored form
+                        if (!str_contains($key, '_') || !\array_key_exists($configKey = str_replace('_', '-', $key), $config)) {
+                            continue;
+                        }
+                    }
+
+                    $alias = $node->getAttribute('alias_of');
+
+                    if (!$container->hasExtension($alias)) {
+                        throw UndefinedExtensionHandler::createUndefinedAliasException($name, $key, $alias, $container);
+                    }
+
+                    if ($node->isDeprecated()) {
+                        $deprecation = $node->getDeprecation($key, $node->getPath());
+                        trigger_deprecation($deprecation['package'], $deprecation['version'], $deprecation['message']);
+                    }
+
+                    $alias = $container->getExtension($alias)->getAlias();
+                    $resolvingBag = $container->getParameterBag();
+                    if ($resolvingBag instanceof EnvPlaceholderParameterBag) {
+                        // the env vars of the value are tracked by the aliased extension, which ignores the ones of overridden values
+                        $resolvingBag = $forwardingBags[$alias] ??= new MergeExtensionConfigurationParameterBag($resolvingBag);
+                    }
+
+                    try {
+                        // the value is merged into another extension's configuration, which is resolved
+                        // before that extension is loaded, so resolve it before normalizing it here
+                        $value = $resolvingBag->resolveValue($config[$configKey]);
+                    } catch (ParameterNotFoundException $e) {
+                        $e->setSourceExtensionName($name);
+
+                        throw $e;
+                    }
+
+                    $value = $node->normalize($value) ?? [];
+
+                    if (!\is_array($value)) {
+                        throw new InvalidArgumentException(\sprintf('The "%s.%s" configuration must be an array or null, "%s" given.', $name, $key, get_debug_type($value)));
+                    }
+
+                    $forwarded[] = [$i, $alias, $value];
+                    unset($config[$configKey]);
+                }
+
+                $configs[$i] = $config;
+            }
+
+            if (!$forwarded) {
+                continue;
+            }
+
+            $container->setExtensionConfig($name, $configs);
+
+            foreach ($forwarded as [$i, $alias, $value]) {
+                $container->forwardExtensionConfig($name, $i, $alias, $value);
+            }
+        }
+
+        return $forwardingBags;
+    }
+}
+
+/**
+ * @internal
+ */
+class MergeExtensionConfigurationParameterBag extends EnvPlaceholderParameterBag
+{
+    private array $processedEnvPlaceholders;
+
+    public function __construct(parent $parameterBag)
+    {
+        parent::__construct($parameterBag->all());
+        $this->mergeEnvPlaceholders($parameterBag);
+    }
+
+    public function freezeAfterProcessing(Extension $extension, ContainerBuilder $container): void
+    {
+        if ($config = $extension->getProcessedConfigs()) {
+            $this->processedEnvPlaceholders = [];
+            $candidatePlaceholders = parent::getEnvPlaceholders() + parent::getUnusedEnvPlaceholders();
+        } else {
+            // Extension::processConfiguration() wasn't called, we cannot know how configs were merged
+            $this->processedEnvPlaceholders = parent::getEnvPlaceholders();
+            $candidatePlaceholders = array_diff_key(parent::getUnusedEnvPlaceholders(), $this->processedEnvPlaceholders);
+        }
+
+        // serialize config and container to catch env vars nested in object graphs
+        $config = serialize($config).serialize($container->getDefinitions()).serialize($container->getAliases()).serialize($container->getParameterBag()->all());
+
+        if (!$candidatePlaceholders || false === stripos($config, 'env_')) {
+            return;
+        }
+
+        preg_match_all('/env_[a-f0-9]{16}_\w+_[a-f0-9]{32}/Ui', $config, $matches);
+        $usedPlaceholders = array_flip($matches[0]);
+        foreach ($candidatePlaceholders as $env => $placeholders) {
+            foreach ($placeholders as $placeholder) {
+                if (isset($usedPlaceholders[$placeholder])) {
+                    $this->processedEnvPlaceholders[$env] = $placeholders;
+                    break;
+                }
+            }
+        }
+    }
+
+    public function getEnvPlaceholders(): array
+    {
+        return $this->processedEnvPlaceholders ?? parent::getEnvPlaceholders();
+    }
+
+    public function getUnusedEnvPlaceholders(): array
+    {
+        return !isset($this->processedEnvPlaceholders) ? [] : array_diff_key(parent::getEnvPlaceholders(), $this->processedEnvPlaceholders);
+    }
+}
+
+/**
+ * A container builder preventing using methods that wouldn't have any effect from extensions.
+ *
+ * @internal
+ */
+class MergeExtensionConfigurationContainerBuilder extends ContainerBuilder
+{
+    private string $extensionClass;
+
+    public function __construct(ExtensionInterface $extension, ?ParameterBagInterface $parameterBag = null)
+    {
+        parent::__construct($parameterBag);
+
+        $this->extensionClass = $extension::class;
+    }
+
+    public function addCompilerPass(CompilerPassInterface $pass, string $type = PassConfig::TYPE_BEFORE_OPTIMIZATION, int $priority = 0): static
+    {
+        throw new LogicException(\sprintf('You cannot add compiler pass "%s" from extension "%s". Compiler passes must be registered before the container is compiled.', get_debug_type($pass), $this->extensionClass));
+    }
+
+    public function registerExtension(ExtensionInterface $extension): void
+    {
+        throw new LogicException(\sprintf('You cannot register extension "%s" from "%s". Extensions must be registered before the container is compiled.', get_debug_type($extension), $this->extensionClass));
+    }
+
+    public function compile(bool $resolveEnvPlaceholders = false): void
+    {
+        throw new LogicException(\sprintf('Cannot compile the container in extension "%s".', $this->extensionClass));
+    }
+
+    /**
+     * Resolves the env vars referenced by $value, ignoring the restriction that applies to extensions.
+     */
+    public function resolveStaticValue(mixed $value, ?array &$usedEnvs = null): mixed
+    {
+        return parent::resolveEnvPlaceholders($value, true, $usedEnvs);
+    }
+
+    public function resolveEnvPlaceholders(mixed $value, string|bool|null $format = null, ?array &$usedEnvs = null): mixed
+    {
+        if (true !== $format || !\is_string($value)) {
+            return parent::resolveEnvPlaceholders($value, $format, $usedEnvs);
+        }
+
+        $bag = $this->getParameterBag();
+        $value = $bag->resolveValue($value);
+
+        if (!$bag instanceof EnvPlaceholderParameterBag) {
+            return parent::resolveEnvPlaceholders($value, true, $usedEnvs);
+        }
+
+        foreach ($bag->getEnvPlaceholders() as $env => $placeholders) {
+            if (!str_contains($env, ':')) {
+                continue;
+            }
+            foreach ($placeholders as $placeholder) {
+                if (false !== stripos($value, $placeholder)) {
+                    throw new RuntimeException(\sprintf('Using a cast in "env(%s)" is incompatible with resolution at compile time in "%s". The logic in the extension should be moved to a compiler pass, or an env parameter with no cast should be used instead.', $env, $this->extensionClass));
+                }
+            }
+        }
+
+        return parent::resolveEnvPlaceholders($value, true, $usedEnvs);
+    }
+}

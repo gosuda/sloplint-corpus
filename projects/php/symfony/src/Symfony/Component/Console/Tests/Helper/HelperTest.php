@@ -1,0 +1,133 @@
+<?php
+
+/*
+ * This file is part of the Symfony package.
+ *
+ * (c) Fabien Potencier <fabien@symfony.com>
+ *
+ * For the full copyright and license information, please view the LICENSE
+ * file that was distributed with this source code.
+ */
+
+namespace Symfony\Component\Console\Tests\Helper;
+
+use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\TestCase;
+use Symfony\Component\Console\Formatter\OutputFormatter;
+use Symfony\Component\Console\Helper\Helper;
+
+class HelperTest extends TestCase
+{
+    public static function formatTimeProvider()
+    {
+        return [
+            [0,      '< 1 ms', 1],
+            [0.0004, '< 1 ms', 1],
+            [0.95,   '950 ms', 1],
+            [1,      '1 s', 1],
+            [2,      '2 s', 2],
+            [59,     '59 s', 1],
+            [59.21,  '59 s', 1],
+            [59.21,  '59 s, 210 ms', 5],
+            [60,     '1 min', 2],
+            [61,     '1 min, 1 s', 2],
+            [119,    '1 min, 59 s', 2],
+            [120,    '2 min', 2],
+            [121,    '2 min, 1 s', 2],
+            [3599,   '59 min, 59 s', 2],
+            [3600,   '1 h', 2],
+            [7199,   '1 h, 59 min', 2],
+            [7200,   '2 h', 2],
+            [7201,   '2 h', 2],
+            [86399,  '23 h, 59 min', 2],
+            [86399,  '23 h, 59 min, 59 s', 3],
+            [86400,  '1 d', 2],
+            [86401,  '1 d', 2],
+            [172799, '1 d, 23 h', 2],
+            [172799, '1 d, 23 h, 59 min, 59 s', 4],
+            [172799.123, '1 d, 23 h, 59 min, 59 s, 123 ms', 5],
+            [172800, '2 d', 2],
+            [172801, '2 d', 2],
+            [172801, '2 d, 1 s', 4],
+        ];
+    }
+
+    public static function decoratedTextProvider()
+    {
+        return [
+            ['abc', 'abc'],
+            ['abc<fg=default;bg=default>', 'abc'],
+            ["a\033[1;36mbc", 'abc'],
+            ["a\033]8;;http://url\033\\b\033]8;;\033\\c", 'abc'],
+            ['a-\\>b', 'a->b'],
+            ["a\0", 'a\\'],
+        ];
+    }
+
+    public static function lengthProvider(): iterable
+    {
+        yield [0, null];
+        yield [0, ''];
+        yield [3, 'abc'];
+        yield [5, "a\0\t\e\x7F"];
+        yield [3, "a\r\nb"];
+        yield [4, "a\n\rb"];
+        yield [2, "\r\r"];
+        yield [4, 'déjà'];
+        yield [1, "e\u{301}"];
+        yield [4, "abc\xFF"];
+    }
+
+    public static function substrProvider(): iterable
+    {
+        yield ['', null, 0, null];
+        yield ['bc', 'abc', 1, null];
+        yield ['b', 'abc', 1, 1];
+        yield ['c', 'abc', -1, null];
+        yield ['', 'abc', 5, null];
+        yield ["\r\n", "a\r\nb", 1, 1];
+        yield ['b', "a\r\nb", 2, null];
+        yield ["\n", "a\n\rb", 1, 1];
+        yield ['é', 'déjà', 1, 1];
+        yield ['bc', "abc\xFF", 1, 2];
+    }
+
+    #[DataProvider('formatTimeProvider')]
+    public function testFormatTime(int|float $secs, string $expectedFormat, int $precision)
+    {
+        $this->assertEquals($expectedFormat, Helper::formatTime($secs, $precision));
+    }
+
+    #[DataProvider('decoratedTextProvider')]
+    public function testRemoveDecoration(string $decoratedText, string $undecoratedText)
+    {
+        $this->assertEquals($undecoratedText, Helper::removeDecoration(new OutputFormatter(), $decoratedText));
+    }
+
+    #[DataProvider('lengthProvider')]
+    public function testLength(int $expected, ?string $string)
+    {
+        $this->assertSame($expected, Helper::length($string));
+    }
+
+    #[DataProvider('substrProvider')]
+    public function testSubstr(string $expected, ?string $string, int $from, ?int $length)
+    {
+        $this->assertSame($expected, Helper::substr($string, $from, $length));
+    }
+
+    public function testLengthAndSubstrOfALegacyMultibyteEncoding()
+    {
+        $detectOrder = mb_detect_order();
+        mb_detect_order(['SJIS', 'UTF-8']);
+
+        try {
+            $string = "\x82\xA0\x82\xA2";
+
+            $this->assertSame(2, Helper::length($string));
+            $this->assertSame("\x82\xA2", Helper::substr($string, 1, 1));
+        } finally {
+            mb_detect_order($detectOrder);
+        }
+    }
+}

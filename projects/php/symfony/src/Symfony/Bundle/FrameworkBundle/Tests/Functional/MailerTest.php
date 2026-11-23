@@ -1,0 +1,152 @@
+<?php
+
+/*
+ * This file is part of the Symfony package.
+ *
+ * (c) Fabien Potencier <fabien@symfony.com>
+ *
+ * For the full copyright and license information, please view the LICENSE
+ * file that was distributed with this source code.
+ */
+
+namespace Symfony\Bundle\FrameworkBundle\Tests\Functional;
+
+use Psr\Log\LoggerInterface;
+use Symfony\Component\EventDispatcher\EventDispatcherInterface;
+use Symfony\Component\Mailer\Mailer;
+use Symfony\Component\Mailer\SentMessage;
+use Symfony\Component\Mailer\Transport\AbstractTransport;
+use Symfony\Component\Mime\Address;
+use Symfony\Component\Mime\Email;
+
+class MailerTest extends AbstractWebTestCase
+{
+    public function testEnvelopeListener()
+    {
+        self::bootKernel(['test_case' => 'Mailer']);
+
+        $onDoSend = function (SentMessage $message) {
+            $envelope = $message->getEnvelope();
+
+            $this->assertEquals(
+                [new Address('redirected@example.org')],
+                $envelope->getRecipients()
+            );
+
+            $this->assertEquals('sender@example.org', $envelope->getSender()->getAddress());
+        };
+
+        $eventDispatcher = self::getContainer()->get(EventDispatcherInterface::class);
+        $logger = self::getContainer()->get('logger');
+
+        $testTransport = new class($eventDispatcher, $logger, $onDoSend) extends AbstractTransport {
+            private \Closure $onDoSend;
+
+            public function __construct(EventDispatcherInterface $eventDispatcher, LoggerInterface $logger, \Closure $onDoSend)
+            {
+                parent::__construct($eventDispatcher, $logger);
+                $this->onDoSend = $onDoSend;
+            }
+
+            public function __toString(): string
+            {
+                return 'dummy://local';
+            }
+
+            protected function doSend(SentMessage $message): void
+            {
+                $onDoSend = $this->onDoSend;
+                $onDoSend($message);
+            }
+        };
+
+        $mailer = new Mailer($testTransport);
+
+        $message = (new Email())
+            ->subject('Test subject')
+            ->text('Hello world')
+            ->from('from@example.org')
+            ->to('to@example.org');
+
+        $mailer->send($message);
+    }
+
+    public function testMailerAssertions()
+    {
+        $client = $this->createClient(['test_case' => 'Mailer', 'root_config' => 'config.yml', 'debug' => true]);
+        $client->request('GET', '/send_email');
+
+        $this->assertEmailCount(2);
+        $this->assertQueuedEmailCount(2);
+        $this->assertEmailIsQueued($this->getMailerEvent(0));
+        $this->assertEmailIsQueued($this->getMailerEvent(2));
+        $this->assertEmailIsNotQueued($this->getMailerEvent(1));
+        $this->assertEmailIsNotQueued($this->getMailerEvent(3));
+
+        // queued and sent emails are reported by two events but by a single message
+        $email = $this->getMailerMessage(0);
+        $this->assertEmailHasHeader($email, 'To');
+        $this->assertEmailHeaderSame($email, 'To', 'fabien@symfony.com');
+        $this->assertEmailHeaderNotSame($email, 'To', 'helene@symfony.com');
+        $this->assertEmailTextBodyContains($email, 'Bar');
+        $this->assertEmailTextBodyNotContains($email, 'Foo');
+        $this->assertEmailHtmlBodyContains($email, 'Foo');
+        $this->assertEmailHtmlBodyNotContains($email, 'Bar');
+        $this->assertEmailAttachmentCount($email, 1);
+        $this->assertEmailAddressNotContains($email, 'To', 'thomas@symfony.com');
+
+        $email = $this->getMailerMessage(1);
+        $this->assertEmailSubjectContains($email, 'Foo');
+        $this->assertEmailSubjectNotContains($email, 'Bar');
+        $this->assertEmailAddressContains($email, 'To', 'fabien@symfony.com');
+        $this->assertEmailAddressContains($email, 'To', 'thomas@symfony.com');
+        $this->assertEmailAddressContains($email, 'Reply-To', 'me@symfony.com');
+        $this->assertEmailAddressNotContains($email, 'To', 'helene@symfony.com');
+        $this->assertEmailAddressNotContains($email, 'Reply-To', 'helene@symfony.com');
+    }
+
+    public function testEmailsSentBeforeARebootAreKept()
+    {
+        $client = $this->createClient(['test_case' => 'Mailer', 'root_config' => 'config.yml', 'debug' => true]);
+        $client->request('GET', '/send_email/Foo');
+        $this->assertResponseRedirects('/email_sent');
+        $client->followRedirect();
+
+        $this->assertEmailCount(1);
+        $this->assertQueuedEmailCount(1);
+        $this->assertEmailSubjectContains($this->getMailerMessage(), 'Foo');
+    }
+
+    public function testEmailsSentBeforeARebootAreListedBeforeTheNewOnes()
+    {
+        $client = $this->createClient(['test_case' => 'Mailer', 'root_config' => 'config.yml', 'debug' => true]);
+        $client->request('GET', '/send_email/Foo');
+        $client->request('GET', '/send_email/Bar');
+
+        $this->assertEmailCount(2);
+        $this->assertSame(['Foo', 'Bar'], array_map(static fn (Email $email) => $email->getSubject(), $this->getMailerMessages()));
+    }
+
+    public function testEmailsAreKeptWhenRebootIsDisabled()
+    {
+        $client = $this->createClient(['test_case' => 'Mailer', 'root_config' => 'config.yml', 'debug' => true]);
+        $client->disableReboot();
+        $client->request('GET', '/send_email/Foo');
+        $client->followRedirect();
+        $client->request('GET', '/send_email/Bar');
+
+        $this->assertEmailCount(2);
+        $this->assertSame(['Foo', 'Bar'], array_map(static fn (Email $email) => $email->getSubject(), $this->getMailerMessages()));
+    }
+
+    public function testKeptEmailsDoNotOutliveTheKernel()
+    {
+        $client = $this->createClient(['test_case' => 'Mailer', 'root_config' => 'config.yml', 'debug' => true]);
+        $client->request('GET', '/send_email/Foo');
+        $client->followRedirect();
+        self::ensureKernelShutdown();
+        self::bootKernel(['test_case' => 'Mailer', 'root_config' => 'config.yml', 'debug' => true]);
+
+        $this->assertEmailCount(0);
+    }
+}

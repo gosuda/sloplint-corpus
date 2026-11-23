@@ -1,0 +1,196 @@
+<?php
+declare(strict_types=1);
+
+/**
+ * CakePHP(tm) : Rapid Development Framework (https://cakephp.org)
+ * Copyright (c) Cake Software Foundation, Inc. (https://cakefoundation.org)
+ *
+ * Licensed under The MIT License
+ * For full copyright and license information, please see the LICENSE.txt
+ * Redistributions of files must retain the above copyright notice.
+ *
+ * @copyright     Copyright (c) Cake Software Foundation, Inc. (https://cakefoundation.org)
+ * @link          https://cakephp.org CakePHP(tm) Project
+ * @since         3.6.0
+ * @license       https://opensource.org/licenses/mit-license.php MIT License
+ */
+namespace Cake\Test\TestCase\Command;
+
+use Cake\Cache\Cache;
+use Cake\Cache\Engine\NullEngine;
+use Cake\Console\TestSuite\ConsoleIntegrationTestTrait;
+use Cake\Database\Schema\CachedCollection;
+use Cake\Datasource\ConnectionManager;
+use Cake\TestSuite\TestCase;
+use Mockery;
+
+/**
+ * SchemaCacheCommands test.
+ */
+class SchemaCacheCommandsTest extends TestCase
+{
+    use ConsoleIntegrationTestTrait;
+
+    /**
+     * Fixtures.
+     *
+     * @var array<string>
+     */
+    protected array $fixtures = ['core.Articles', 'core.Tags'];
+
+    /**
+     * @var \Cake\Datasource\ConnectionInterface
+     */
+    protected $connection;
+
+    /**
+     * @var \Cake\Cache\Engine\NullEngine|\Mockery\MockInterface
+     */
+    protected $cache;
+
+    /**
+     * setup method
+     */
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->setAppNamespace();
+
+        $this->cache = Mockery::mock(NullEngine::class)->makePartial();
+
+        Cache::setConfig('orm_cache', $this->cache);
+
+        $this->connection = ConnectionManager::get('test');
+        $this->connection->cacheMetadata('orm_cache');
+    }
+
+    /**
+     * Teardown
+     */
+    protected function tearDown(): void
+    {
+        $this->connection->cacheMetadata(false);
+        parent::tearDown();
+
+        unset($this->connection);
+        Cache::drop('orm_cache');
+    }
+
+    /**
+     * Test that clear enables the cache if it was disabled.
+     */
+    public function testClearEnablesMetadataCache(): void
+    {
+        $this->connection->cacheMetadata(false);
+
+        $this->exec('schema_cache clear --connection test');
+        $this->assertExitSuccess();
+        $this->assertInstanceOf(CachedCollection::class, $this->connection->getSchemaCollection());
+    }
+
+    /**
+     * Test that build enables the cache if it was disabled.
+     */
+    public function testBuildEnablesMetadataCache(): void
+    {
+        $this->connection->cacheMetadata(false);
+
+        $this->exec('schema_cache build --connection test');
+        $this->assertExitSuccess();
+        $this->assertInstanceOf(CachedCollection::class, $this->connection->getSchemaCollection());
+    }
+
+    /**
+     * Test build() with no args.
+     */
+    public function testBuildNoArgs(): void
+    {
+        $this->cache->shouldReceive('set')
+            ->atLeast()->once()
+            ->andReturn(true);
+
+        $this->exec('schema_cache build --connection test');
+        $this->assertExitSuccess();
+    }
+
+    /**
+     * Test build() with one arg.
+     */
+    public function testBuildNamedModel(): void
+    {
+        $this->cache->shouldReceive('set')
+            ->once()
+            ->withSomeOfArgs('test_articles')
+            ->andReturn(true);
+        $this->cache->shouldReceive('delete')
+            ->never();
+
+        $this->exec('schema_cache build --connection test articles');
+        $this->assertExitSuccess();
+    }
+
+    /**
+     * Test build() overwrites cached data.
+     */
+    public function testBuildOverwritesExistingData(): void
+    {
+        $this->cache->shouldReceive('set')
+            ->once()
+            ->withSomeOfArgs('test_articles')
+            ->andReturn(true);
+        $this->cache->shouldReceive('get')
+            ->never();
+        $this->cache->shouldReceive('delete')
+            ->never();
+
+        $this->exec('schema_cache build --connection test articles');
+        $this->assertExitSuccess();
+    }
+
+    /**
+     * Test build() with a nonexistent connection name.
+     */
+    public function testBuildInvalidConnection(): void
+    {
+        $this->exec('schema_cache build --connection derpy-derp articles');
+        $this->assertExitError();
+    }
+
+    /**
+     * Test clear() with an invalid connection name.
+     */
+    public function testClearInvalidConnection(): void
+    {
+        $this->exec('schema_cache clear --connection derpy-derp articles');
+        $this->assertExitError();
+    }
+
+    /**
+     * Test clear() with no args.
+     */
+    public function testClearNoArgs(): void
+    {
+        $this->cache->shouldReceive('delete')
+            ->atLeast()->once()
+            ->andReturn(true);
+
+        $this->exec('schema_cache clear --connection test');
+        $this->assertExitSuccess();
+    }
+
+    /**
+     * Test clear() with a model name.
+     */
+    public function testClearNamedModel(): void
+    {
+        $this->cache->shouldReceive('set')
+            ->never();
+        $this->cache->shouldReceive('delete')
+            ->once()
+            ->with('test_articles')
+            ->andReturn(false);
+
+        $this->exec('schema_cache clear --connection test articles');
+        $this->assertExitSuccess();
+    }
+}

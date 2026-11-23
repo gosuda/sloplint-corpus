@@ -1,0 +1,429 @@
+<?php
+
+/*
+ * This file is part of the Symfony package.
+ *
+ * (c) Fabien Potencier <fabien@symfony.com>
+ *
+ * For the full copyright and license information, please view the LICENSE
+ * file that was distributed with this source code.
+ */
+
+namespace Symfony\Component\Console\Command;
+
+use Symfony\Component\Console\Application;
+use Symfony\Component\Console\Attribute\AsCommand;
+use Symfony\Component\Console\Completion\CompletionInput;
+use Symfony\Component\Console\Completion\CompletionSuggestions;
+use Symfony\Component\Console\Completion\Output\BashCompletionOutput;
+use Symfony\Component\Console\Completion\Output\CompletionOutputInterface;
+use Symfony\Component\Console\Completion\Output\FishCompletionOutput;
+use Symfony\Component\Console\Completion\Output\ZshCompletionOutput;
+use Symfony\Component\Console\Completion\Suggestion;
+use Symfony\Component\Console\Exception\CommandNotFoundException;
+use Symfony\Component\Console\Exception\ExceptionInterface;
+use Symfony\Component\Console\Exception\InvalidArgumentException;
+use Symfony\Component\Console\Input\ArgvInput;
+use Symfony\Component\Console\Input\InputDefinition;
+use Symfony\Component\Console\Input\InputInterface;
+use Symfony\Component\Console\Input\InputOption;
+use Symfony\Component\Console\Output\OutputInterface;
+
+/**
+ * Responsible for providing the values to the shell completion.
+ *
+ * @author Wouter de Jong <wouter@wouterj.nl>
+ */
+#[AsCommand(name: '|_complete', description: 'Internal command to provide shell completion suggestions')]
+final class CompleteCommand extends Command
+{
+    public const COMPLETION_API_VERSION = '2';
+
+    private const MINIMUM_COMPLETION_API_VERSION = '1';
+
+    private array $completionOutputs;
+    private ?InputDefinition $fullDefinition = null;
+    private bool $isDebug = false;
+
+    /**
+     * @param array<string, class-string<CompletionOutputInterface>> $completionOutputs A list of additional completion outputs, with shell name as key and FQCN as value
+     */
+    public function __construct(array $completionOutputs = [])
+    {
+        // must be set before the parent constructor, as the property value is used in configure()
+        $this->completionOutputs = $completionOutputs + [
+            'bash' => BashCompletionOutput::class,
+            'fish' => FishCompletionOutput::class,
+            'zsh' => ZshCompletionOutput::class,
+        ];
+
+        parent::__construct();
+    }
+
+    public function setApplication(?Application $application): void
+    {
+        $this->fullDefinition = null;
+
+        parent::setApplication($application);
+    }
+
+    public function setDefinition(array|InputDefinition $definition): static
+    {
+        $this->fullDefinition = null;
+
+        return parent::setDefinition($definition);
+    }
+
+    /**
+     * @internal
+     */
+    public function mergeApplicationDefinition(bool $mergeArgs = true): void
+    {
+        if (!$application = $this->getApplication()) {
+            return;
+        }
+
+        $definition = $this->getNativeDefinition();
+        $this->fullDefinition = new InputDefinition();
+        $this->fullDefinition->setOptions($definition->getOptions());
+
+        foreach ($application->getDefinition()->getOptions() as $option) {
+            // the completion scripts rely on the options of this command, they win over the conflicting application ones
+            if ($definition->hasOption($option->getName()) || array_filter(explode('|', $option->getShortcut() ?? ''), $definition->hasShortcut(...))) {
+                continue;
+            }
+
+            $this->fullDefinition->addOption($option);
+        }
+
+        if ($mergeArgs) {
+            $this->fullDefinition->setArguments($application->getDefinition()->getArguments());
+        }
+        $this->fullDefinition->addArguments($definition->getArguments());
+    }
+
+    public function getDefinition(): InputDefinition
+    {
+        return $this->fullDefinition ?? parent::getDefinition();
+    }
+
+    protected function configure(): void
+    {
+        $this
+            ->addOption('shell', 's', InputOption::VALUE_REQUIRED, 'The shell type ("'.implode('", "', array_keys($this->completionOutputs)).'")')
+            ->addOption('input', 'i', InputOption::VALUE_REQUIRED | InputOption::VALUE_IS_ARRAY, 'An array of input tokens (e.g. COMP_WORDS or argv)')
+            ->addOption('current', 'c', InputOption::VALUE_REQUIRED, 'The index of the "input" array that the cursor is in (e.g. COMP_CWORD)')
+            ->addOption('api-version', 'a', InputOption::VALUE_REQUIRED, 'The API version of the completion script')
+            ->addOption('symfony', 'S', InputOption::VALUE_REQUIRED, 'deprecated')
+        ;
+    }
+
+    protected function initialize(InputInterface $input, OutputInterface $output): void
+    {
+        $this->isDebug = filter_var(getenv('SYMFONY_COMPLETION_DEBUG'), \FILTER_VALIDATE_BOOL);
+    }
+
+    protected function execute(InputInterface $input, OutputInterface $output): int
+    {
+        try {
+            // "symfony" must be kept for compat with the shell scripts generated by Symfony Console 5.4 - 6.1
+            $version = $input->getOption('symfony') ? '1' : $input->getOption('api-version');
+            if ($version && version_compare($version, self::MINIMUM_COMPLETION_API_VERSION, '<')) {
+                $message = \sprintf('Completion script version is not supported ("%s" given, ">=%s" required).', $version, self::MINIMUM_COMPLETION_API_VERSION);
+                $this->log($message);
+
+                $output->writeln($message.' Install the Symfony completion script again by using the "completion" command.');
+
+                return 126;
+            }
+
+            $shell = $input->getOption('shell');
+            if (!$shell) {
+                throw new \RuntimeException('The "--shell" option must be set.');
+            }
+
+            if (!$completionOutput = $this->completionOutputs[$shell] ?? false) {
+                throw new \RuntimeException(\sprintf('Shell completion is not supported for your shell: "%s" (supported: "%s").', $shell, implode('", "', array_keys($this->completionOutputs))));
+            }
+
+            $completionInput = $this->createCompletionInput($input);
+            $suggestions = new CompletionSuggestions();
+
+            $this->log([
+                '',
+                '<comment>'.date('Y-m-d H:i:s').'</>',
+                '<info>Input:</> <comment>("|" indicates the cursor position)</>',
+                '  '.$completionInput,
+                '<info>Command:</>',
+                '  '.implode(' ', $_SERVER['argv']),
+                '<info>Messages:</>',
+            ]);
+
+            $treeSuggested = false;
+            $command = $this->findCommand($completionInput);
+            $node = $command;
+            if (null === $node && $first = $completionInput->getFirstArgument()) {
+                try {
+                    $node = new Command($first);
+                    $node->setApplication($this->getApplication());
+                } catch (InvalidArgumentException) {
+                    // the first argument is not a valid command name, nothing to walk
+                }
+            }
+            if ($node && $tree = $this->completeCommandTree($node, $input, $suggestions)) {
+                if (\is_array($tree)) {
+                    [$command, $completionInput] = $tree;
+                } else {
+                    $treeSuggested = true;
+                }
+            }
+            if ($command && !$treeSuggested) {
+                $command->mergeApplicationDefinition();
+                $completionInput->bind($command->getDefinition());
+            }
+            if ($treeSuggested) {
+                $this->log('  Suggesting the sub-commands and options of a command tree level.');
+            } elseif (null === $command) {
+                $this->log('  No command found, completing using the Application class.');
+
+                $this->getApplication()->complete($completionInput, $suggestions);
+            } elseif (
+                $completionInput->mustSuggestArgumentValuesFor('command')
+            ) {
+                $this->log('  Command found, completing command name.');
+
+                // expand shortcut names ("cache:cl<TAB>") into their full name ("cache:clear")
+                $commandNames = array_filter(array_merge([$command->getName()], $command->getAliases()));
+                foreach ($commandNames as $name) {
+                    if (str_starts_with($name, $completionInput->getCompletionValue())) {
+                        $commandNames = [$name];
+                        break;
+                    }
+                }
+                $suggestions->suggestValues($commandNames);
+            } else {
+                if (CompletionInput::TYPE_OPTION_NAME === $completionInput->getCompletionType()) {
+                    $this->log('  Completing option names for the <comment>'.($command instanceof LazyCommand ? $command->getCommand() : $command)::class.'</> command.');
+
+                    $suggestions->suggestOptions($command->getDefinition()->getOptions());
+                } else {
+                    $this->log([
+                        '  Completing using the <comment>'.($command instanceof LazyCommand ? $command->getCommand() : $command)::class.'</> class.',
+                        '  Completing <comment>'.$completionInput->getCompletionType().'</> for <comment>'.$completionInput->getCompletionName().'</>',
+                    ]);
+                    if (null !== $compval = $completionInput->getCompletionValue()) {
+                        $this->log('  Current value: <comment>'.$compval.'</>');
+                    }
+
+                    $command->complete($completionInput, $suggestions);
+                }
+            }
+
+            // the scripts complete paths since version 2 of the API
+            if (($paths = $suggestions->getPathSuggestion()) && (!$version || version_compare($version, '2', '<'))) {
+                $this->log('  The completion script cannot complete '.$paths.', install it again to fix this.');
+                $paths = null;
+            }
+
+            /** @var CompletionOutputInterface $completionOutput */
+            $completionOutput = new $completionOutput();
+
+            $this->log('<info>Suggestions:</>');
+            if ($paths) {
+                $this->log('  <comment>'.ucfirst($paths).'</> are completed by the shell');
+            }
+            if ($options = $suggestions->getOptionSuggestions()) {
+                $this->log('  --'.implode(' --', array_map(static fn ($o) => $o->getName(), $options)));
+            } elseif ($values = $suggestions->getValueSuggestions()) {
+                $this->log('  '.implode(' ', $values));
+            } elseif (!$paths) {
+                $this->log('  <comment>No suggestions were provided</>');
+            }
+
+            if ($paths) {
+                $output->writeln(':'.$paths);
+            }
+            $completionOutput->write($suggestions, $output);
+        } catch (\Throwable $e) {
+            $this->log([
+                '<error>Error!</error>',
+                (string) $e,
+            ]);
+
+            if ($output->isDebug()) {
+                throw $e;
+            }
+
+            return 2;
+        }
+
+        return 0;
+    }
+
+    private function createCompletionInput(InputInterface $input): CompletionInput
+    {
+        $currentIndex = $input->getOption('current');
+        if (!$currentIndex || !ctype_digit($currentIndex)) {
+            throw new \RuntimeException('The "--current" option must be set and it must be an integer.');
+        }
+
+        $completionInput = CompletionInput::fromTokens($input->getOption('input'), (int) $currentIndex);
+
+        try {
+            $completionInput->bind($this->getApplication()->getDefinition());
+        } catch (ExceptionInterface) {
+        }
+
+        return $completionInput;
+    }
+
+    /**
+     * Completes an input that walks into the tree below the found command.
+     *
+     * Returns true when suggestions for a branch level were added, a rebased
+     * command and input when the cursor sits at leaf level, or null when the
+     * regular completion flow applies.
+     *
+     * @return array{Command, CompletionInput}|true|null
+     */
+    private function completeCommandTree(Command $command, InputInterface $input, CompletionSuggestions $suggestions): array|bool|null
+    {
+        $application = $this->getApplication();
+        $path = $command->getName();
+        $getDescendants = static fn (string $p) => array_keys($application->all($p));
+
+        if (!$path || !$getDescendants($path)) {
+            return null;
+        }
+
+        $words = $input->getOption('input') ?? [];
+        $current = (int) $input->getOption('current');
+        $tokens = \array_slice($words, 1, max(0, $current - 1));
+        $cursorWord = $words[$current] ?? '';
+
+        if (!$tokens) {
+            return null;
+        }
+
+        $node = $command;
+        $isRoot = true;
+
+        while (true) {
+            $definition = new InputDefinition();
+            if ($node) {
+                $definition->setOptions($node->getNativeDefinition()->getOptions());
+                $definition->addOptions($application->getDefinition()->getOptions());
+            } else {
+                $definition->setOptions($application->getDefinition()->getOptions());
+            }
+            if ($isRoot) {
+                $definition->setArguments($application->getDefinition()->getArguments());
+            }
+            $definition->setIgnoreExtraArguments(true);
+
+            $levelInput = new ArgvInput(['', ...$tokens]);
+            try {
+                $levelInput->bind($definition);
+            } catch (ExceptionInterface) {
+                return null;
+            }
+            $unparsed = $levelInput->getUnparsedTokens();
+            $consumed = \array_slice($tokens, 0, \count($tokens) - \count($unparsed));
+
+            if ('--' === end($consumed)) {
+                // the remaining tokens are the current node's own arguments
+                if ($isRoot) {
+                    return null;
+                }
+
+                return $node ? $this->rebaseCompletion($node, $path, $tokens, $words, $current) : true;
+            }
+
+            if (!$unparsed) {
+                if (str_starts_with($cursorWord, '-')) {
+                    $suggestions->suggestOptions($definition->getOptions());
+
+                    return true;
+                }
+
+                $prefixLength = \strlen($path) + 1;
+                $segments = [];
+                foreach ($getDescendants($path) as $name) {
+                    $segments[explode(':', substr($name, $prefixLength))[0]] = true;
+                }
+                foreach (array_keys($segments) as $segment) {
+                    $childPath = $path.':'.$segment;
+                    $suggestions->suggestValue(new Suggestion($segment, $application->has($childPath) ? $application->get($childPath)->getDescription() : ''));
+                }
+
+                if (!$node?->getNativeDefinition()->getArguments()) {
+                    return true;
+                }
+
+                // the node's own argument values complete next to its sub-commands
+                return $isRoot ? null : $this->rebaseCompletion($node, $path, $tokens, $words, $current);
+            }
+
+            $segment = array_shift($unparsed);
+            $childPath = $path.':'.$segment;
+            // an alias of the current node is not a sub-command
+            if ($registered = $application->has($childPath) && $application->get($childPath)->getName() !== $path) {
+                $childPath = $application->get($childPath)->getName();
+            }
+            $childDescendants = $getDescendants($childPath);
+
+            if (!$registered && !$childDescendants) {
+                // the segment names no sub-command: it starts the node's own arguments, if it has any
+                if (!$node?->getNativeDefinition()->getArguments()) {
+                    return true;
+                }
+
+                return $isRoot ? null : $this->rebaseCompletion($node, $path, $tokens, $words, $current);
+            }
+
+            if ($registered && !$childDescendants) {
+                return $this->rebaseCompletion($application->get($childPath), $childPath, $unparsed, $words, $current);
+            }
+
+            $node = $registered ? $application->get($childPath) : null;
+            $path = $childPath;
+            $tokens = $unparsed;
+            $isRoot = false;
+        }
+    }
+
+    /**
+     * Rebases the completion input on a tree node, so that its own definition completes the remaining words.
+     *
+     * @return array{Command, CompletionInput}
+     */
+    private function rebaseCompletion(Command $node, string $path, array $tokens, array $words, int $current): array
+    {
+        return [$node instanceof LazyCommand ? $node->getCommand() : $node, CompletionInput::fromTokens([$words[0], $path, ...$tokens, ...\array_slice($words, $current)], 2 + \count($tokens))];
+    }
+
+    private function findCommand(CompletionInput $completionInput): ?Command
+    {
+        try {
+            $inputName = $completionInput->getFirstArgument();
+            if (null === $inputName) {
+                return null;
+            }
+
+            return $this->getApplication()->find($inputName);
+        } catch (CommandNotFoundException) {
+        }
+
+        return null;
+    }
+
+    private function log($messages): void
+    {
+        if (!$this->isDebug) {
+            return;
+        }
+
+        $commandName = basename($_SERVER['argv'][0]);
+        file_put_contents(sys_get_temp_dir().'/sf_'.$commandName.'.log', implode(\PHP_EOL, (array) $messages).\PHP_EOL, \FILE_APPEND);
+    }
+}
