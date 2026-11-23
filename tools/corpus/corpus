@@ -184,6 +184,11 @@ def list_project_files(projdir):
     found = []
     for dirpath, dirnames, filenames in os.walk(projdir, followlinks=False):
         dirnames.sort()
+        for name in sorted(dirnames):
+            full = os.path.join(dirpath, name)
+            if os.path.islink(full):
+                rel = os.path.relpath(full, projdir).replace(os.sep, "/")
+                found.append((rel, full))
         for name in sorted(filenames):
             full = os.path.join(dirpath, name)
             rel = os.path.relpath(full, projdir).replace(os.sep, "/")
@@ -272,6 +277,8 @@ def check_license_files(projdir, declared_ids, public, errors, tag):
         depth = rel.count("/")
         base = os.path.basename(rel)
         if depth == 0 and base in LICENSE_NAMES:
+            if os.path.islink(full) or not os.path.isfile(full):
+                continue
             candidates.append(full)
     if not candidates:
         errors.append("%s: copied entry has no LICENSE or COPYING file" % tag)
@@ -311,6 +318,8 @@ def check_license_files(projdir, declared_ids, public, errors, tag):
 def check_headers(projdir, language, declared_ids, public, errors, tag):
     for rel, full in list_project_files(projdir):
         if not extension_ok(language, rel):
+            continue
+        if os.path.islink(full) or not os.path.isfile(full):
             continue
         try:
             with open(full, "rb") as fh:
@@ -378,11 +387,15 @@ def check_nested_licenses(projdir, errors, tag):
     for rel, full in list_project_files(projdir):
         base = os.path.basename(rel)
         if rel.count("/") == 0 and base in LICENSE_NAMES + NOTICE_NAMES:
+            if os.path.islink(full) or not os.path.isfile(full):
+                continue
             with open(full, "rb") as fh:
                 top[base] = fh.read()
     for rel, full in list_project_files(projdir):
         base = os.path.basename(rel)
         if rel.count("/") > 0 and base in LICENSE_NAMES + NOTICE_NAMES:
+            if os.path.islink(full) or not os.path.isfile(full):
+                continue
             with open(full, "rb") as fh:
                 content = fh.read()
             if content not in set(top.values()):
@@ -976,7 +989,7 @@ def cmd_measure(args):
     for project in sorted(projects, key=lambda p: p.get("name", "")):
         projdir = os.path.join(root, "projects", language, project["name"])
         for rel, full in list_project_files(projdir):
-            if extension_ok(language, rel) and os.path.isfile(full):
+            if extension_ok(language, rel) and os.path.isfile(full) and not os.path.islink(full):
                 files_all.append(full)
                 total_bytes += os.path.getsize(full)
     files_all.sort()
@@ -1115,6 +1128,8 @@ def cmd_seeds(args):
         for rel, full in list_project_files(projdir):
             if not extension_ok(language, rel):
                 continue
+            if os.path.islink(full) or not os.path.isfile(full):
+                continue
             size = os.path.getsize(full)
             if size > MAX_FILE_BYTES or size == 0:
                 continue
@@ -1169,9 +1184,8 @@ def cmd_stats(args):
         storage = project.get("storage", "")
         if storage == "copied":
             row["copied"] += 1
-            projdir = os.path.join(root, "projects", language, project.get("name", ""))
             for rel, full in list_project_files(projdir):
-                if extension_ok(language, rel) and os.path.isfile(full):
+                if extension_ok(language, rel) and os.path.isfile(full) and not os.path.islink(full):
                     row["files"] += 1
                     row["bytes"] += os.path.getsize(full)
         else:

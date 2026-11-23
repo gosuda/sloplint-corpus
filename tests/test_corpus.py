@@ -378,6 +378,16 @@ class TestVerify(unittest.TestCase):
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("not owned by a copied manifest entry", proc.stdout)
 
+    @unittest.skipUnless(HAS_ASKALONO, "askalono binary not installed")
+    def test_directory_symlink_fails(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        projdir = add_synthetic_project(root, name="demo")
+        target = os.path.join(projdir, "src")
+        os.symlink(target, os.path.join(projdir, "linkdir"))
+        proc = run_tool(root, "verify", "--offline")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("linkdir is a symlink", proc.stdout)
 
     @unittest.skipUnless(HAS_ASKALONO, "askalono binary not installed")
     def test_clean_tree_passes(self):
