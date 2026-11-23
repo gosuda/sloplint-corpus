@@ -36,3 +36,11 @@ jobs:
                       ["python3", "tools/corpus/corpus", "measure", lang],
                       check=True)
           EOF
+      - name: Show measurement reports
+        if: always()
+        run: |
+          shopt -s nullglob
+          for report in reports/*.json; do
+            echo "--- $report"
+            cat "$report"
+          done
