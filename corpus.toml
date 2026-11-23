@@ -2,3 +2,63 @@ schema_version = 1
 
 [corpus]
 mode = "public"
+
+
+[[project]]
+name = "spring-boot"
+language = "java"
+url = "https://github.com/spring-projects/spring-boot"
+rev = "ebb5e11c70c50469c45f8aada56dd6d477c6b77f"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["module/**", "module/*/**", "module/*/*/**", "module/*/*/*/**", "module/*/*/*/*/**", "module/*/*/*/*/*/**", "module/*/*/*/*/*/*/**", "module/*/*/*/*/*/*/*/**", "module/*/*/*/*/*/*/*/*/**", "module/*/*/*/*/*/*/*/*/*/**", "module/*/*/*/*/*/*/*/*/*/*/**", "module/*/*/*/*/*/*/*/*/*/*/*/**", "module/*/*/*/*/*/*/*/*/*/*/*/*/**", "module/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "module/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "module/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "module/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "loader/**", "loader/*/**", "loader/*/*/**", "loader/*/*/*/**", "loader/*/*/*/*/**", "loader/*/*/*/*/*/**", "loader/*/*/*/*/*/*/**", "loader/*/*/*/*/*/*/*/**", "loader/*/*/*/*/*/*/*/*/**", "loader/*/*/*/*/*/*/*/*/*/**", "loader/*/*/*/*/*/*/*/*/*/*/**", "loader/*/*/*/*/*/*/*/*/*/*/*/**", "loader/*/*/*/*/*/*/*/*/*/*/*/*/**", "loader/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "loader/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "loader/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "loader/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**"]
+exclude = ["**/TokenValidatorTests.java"]
+tree_hash = "sha256:4297cdef77155420b7daca7380e53b632fde921e4e33eb095308af59ae242506"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "large framework subset (extension modules plus loader), current (2026)"
+notice_present_upstream = false
+
+[[project]]
+name = "guava"
+language = "java"
+url = "https://github.com/google/guava"
+rev = "b8eedaa3faf64621a5dc1a85d206a8665370fc35"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["guava/**", "guava/*/**", "guava/*/*/**", "guava/*/*/*/**", "guava/*/*/*/*/**", "guava/*/*/*/*/*/**", "guava/*/*/*/*/*/*/**", "guava/*/*/*/*/*/*/*/**", "guava/*/*/*/*/*/*/*/*/**", "guava/*/*/*/*/*/*/*/*/*/**", "guava/*/*/*/*/*/*/*/*/*/*/**", "guava/*/*/*/*/*/*/*/*/*/*/*/**", "guava/*/*/*/*/*/*/*/*/*/*/*/*/**", "guava/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "guava/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "guava/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "guava/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "guava-tests/**", "guava-tests/*/**", "guava-tests/*/*/**", "guava-tests/*/*/*/**", "guava-tests/*/*/*/*/**", "guava-tests/*/*/*/*/*/**", "guava-tests/*/*/*/*/*/*/**", "guava-tests/*/*/*/*/*/*/*/**", "guava-tests/*/*/*/*/*/*/*/*/**", "guava-tests/*/*/*/*/*/*/*/*/*/**", "guava-tests/*/*/*/*/*/*/*/*/*/*/**", "guava-tests/*/*/*/*/*/*/*/*/*/*/*/**", "guava-tests/*/*/*/*/*/*/*/*/*/*/*/*/**", "guava-tests/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "guava-tests/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "guava-tests/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "guava-tests/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "guava-testlib/**", "guava-testlib/*/**", "guava-testlib/*/*/**", "guava-testlib/*/*/*/**", "guava-testlib/*/*/*/*/**", "guava-testlib/*/*/*/*/*/**", "guava-testlib/*/*/*/*/*/*/**", "guava-testlib/*/*/*/*/*/*/*/**", "guava-testlib/*/*/*/*/*/*/*/*/**", "guava-testlib/*/*/*/*/*/*/*/*/*/**", "guava-testlib/*/*/*/*/*/*/*/*/*/*/**", "guava-testlib/*/*/*/*/*/*/*/*/*/*/*/**", "guava-testlib/*/*/*/*/*/*/*/*/*/*/*/*/**", "guava-testlib/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "guava-testlib/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "guava-testlib/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "guava-testlib/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**"]
+exclude = ["android/**", "android/*/**", "android/*/*/**", "android/*/*/*/**", "android/*/*/*/*/**", "android/*/*/*/*/*/**", "android/*/*/*/*/*/*/**", "android/*/*/*/*/*/*/*/**", "android/*/*/*/*/*/*/*/*/**", "android/*/*/*/*/*/*/*/*/*/**", "android/*/*/*/*/*/*/*/*/*/*/**", "android/*/*/*/*/*/*/*/*/*/*/*/**", "android/*/*/*/*/*/*/*/*/*/*/*/*/**", "android/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "android/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "android/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "android/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**"]
+tree_hash = "sha256:14607d6e8da0098424743a656dcf71540d87737ea5eead65ce19ba3250deb84e"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "large library (JRE flavor plus tests), dense generics, mature"
+notice_present_upstream = false
+
+[[project]]
+name = "netty"
+language = "java"
+url = "https://github.com/netty/netty"
+rev = "ccaf4e84fc8e605526f13713f1ec6a89c738f91d"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["codec-http/**", "codec-http/*/**", "codec-http/*/*/**", "codec-http/*/*/*/**", "codec-http/*/*/*/*/**", "codec-http/*/*/*/*/*/**", "codec-http/*/*/*/*/*/*/**", "codec-http/*/*/*/*/*/*/*/**", "codec-http/*/*/*/*/*/*/*/*/**", "codec-http/*/*/*/*/*/*/*/*/*/**", "codec-http/*/*/*/*/*/*/*/*/*/*/**", "codec-http/*/*/*/*/*/*/*/*/*/*/*/**", "codec-http/*/*/*/*/*/*/*/*/*/*/*/*/**", "codec-http/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "codec-http/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "codec-http/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "codec-http/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "codec-http2/**", "codec-http2/*/**", "codec-http2/*/*/**", "codec-http2/*/*/*/**", "codec-http2/*/*/*/*/**", "codec-http2/*/*/*/*/*/**", "codec-http2/*/*/*/*/*/*/**", "codec-http2/*/*/*/*/*/*/*/**", "codec-http2/*/*/*/*/*/*/*/*/**", "codec-http2/*/*/*/*/*/*/*/*/*/**", "codec-http2/*/*/*/*/*/*/*/*/*/*/**", "codec-http2/*/*/*/*/*/*/*/*/*/*/*/**", "codec-http2/*/*/*/*/*/*/*/*/*/*/*/*/**", "codec-http2/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "codec-http2/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "codec-http2/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "codec-http2/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "transport/**", "transport/*/**", "transport/*/*/**", "transport/*/*/*/**", "transport/*/*/*/*/**", "transport/*/*/*/*/*/**", "transport/*/*/*/*/*/*/**", "transport/*/*/*/*/*/*/*/**", "transport/*/*/*/*/*/*/*/*/**", "transport/*/*/*/*/*/*/*/*/*/**", "transport/*/*/*/*/*/*/*/*/*/*/**", "transport/*/*/*/*/*/*/*/*/*/*/*/**", "transport/*/*/*/*/*/*/*/*/*/*/*/*/**", "transport/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "transport/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "transport/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "transport/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "common/**", "common/*/**", "common/*/*/**", "common/*/*/*/**", "common/*/*/*/*/**", "common/*/*/*/*/*/**", "common/*/*/*/*/*/*/**", "common/*/*/*/*/*/*/*/**", "common/*/*/*/*/*/*/*/*/**", "common/*/*/*/*/*/*/*/*/*/**", "common/*/*/*/*/*/*/*/*/*/*/**", "common/*/*/*/*/*/*/*/*/*/*/*/**", "common/*/*/*/*/*/*/*/*/*/*/*/*/**", "common/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "common/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "common/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "common/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "buffer/**", "buffer/*/**", "buffer/*/*/**", "buffer/*/*/*/**", "buffer/*/*/*/*/**", "buffer/*/*/*/*/*/**", "buffer/*/*/*/*/*/*/**", "buffer/*/*/*/*/*/*/*/**", "buffer/*/*/*/*/*/*/*/*/**", "buffer/*/*/*/*/*/*/*/*/*/**", "buffer/*/*/*/*/*/*/*/*/*/*/**", "buffer/*/*/*/*/*/*/*/*/*/*/*/**", "buffer/*/*/*/*/*/*/*/*/*/*/*/*/**", "buffer/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "buffer/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "buffer/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "buffer/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**"]
+tree_hash = "sha256:8bca557427e3beab6580918be1d0d9e4a1a5e760ec8069a0a36e820810ddf5d7"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "large networking (codecs plus transports plus buffers), mature, branch 4.2"
+notice_present_upstream = true
+
+[[project]]
+name = "mockito"
+language = "java"
+url = "https://github.com/mockito/mockito"
+rev = "10b31ba2a8252cf340bc154c9e05224802a84691"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+exclude = ["licenses/**", "licenses/*/**", "licenses/*/*/**", "licenses/*/*/*/**", "licenses/*/*/*/*/**", "licenses/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**", "licenses/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/*/**"]
+tree_hash = "sha256:3506896b0ccf9c63c5913fa7f44098b034515f0d292348313e3131f002f507cf"
+added_by = "CorpusPopC2"
+added_on = "2026-11-23"
+reason = "medium testing (proxies plus subclass mocking), mature"
+notice_present_upstream = false
