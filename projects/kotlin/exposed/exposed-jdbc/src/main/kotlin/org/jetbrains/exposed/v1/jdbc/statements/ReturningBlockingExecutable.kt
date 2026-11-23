@@ -1,0 +1,43 @@
+package org.jetbrains.exposed.v1.jdbc.statements
+
+import org.jetbrains.exposed.v1.core.Expression
+import org.jetbrains.exposed.v1.core.InternalApi
+import org.jetbrains.exposed.v1.core.ResultRow
+import org.jetbrains.exposed.v1.core.statements.ReturningStatement
+import org.jetbrains.exposed.v1.core.statements.api.ResultApi
+import org.jetbrains.exposed.v1.jdbc.JdbcTransaction
+import org.jetbrains.exposed.v1.jdbc.statements.api.JdbcPreparedStatementApi
+import org.jetbrains.exposed.v1.jdbc.statements.jdbc.JdbcResult
+import org.jetbrains.exposed.v1.jdbc.transactions.TransactionManager
+import java.sql.ResultSet
+
+/**
+ * Represents the execution logic for an underlying SQL statement that returns a result with data from any modified rows.
+ */
+open class ReturningBlockingExecutable(
+    override val statement: ReturningStatement
+) : BlockingExecutable<ResultApi, ReturningStatement>, Iterable<ResultRow> {
+    override fun JdbcPreparedStatementApi.executeInternal(transaction: JdbcTransaction): JdbcResult = executeQuery()
+
+    override fun iterator(): Iterator<ResultRow> {
+        val rs = TransactionManager.current().execQuery(this)
+        val resultIterator = ResultIterator(rs)
+        return Iterable { resultIterator }.iterator()
+    }
+
+    private inner class ResultIterator(rs: ResultSet) : StatementIterator<Expression<*>, ResultRow>(rs) {
+        override val fieldIndex = statement.returningExpressions.withIndex()
+            .associateBy({ it.value }, { it.index })
+
+        // Row-invariant for this result set, so build it once and share across every row.
+        @OptIn(InternalApi::class)
+        private val columnTypes = ResultRow.columnTypesOf(fieldIndex)
+
+        init {
+            hasNext = result.next()
+        }
+
+        @OptIn(InternalApi::class)
+        override fun createResultRow(): ResultRow = ResultRow.create(JdbcResult(result), fieldIndex, columnTypes)
+    }
+}

@@ -1,0 +1,32 @@
+/*
+ * Copyright 2012-present the original author or authors.
+ */
+
+package org.springframework.boot.pulsar.autoconfigure;
+
+import org.springframework.boot.autoconfigure.service.connection.ConnectionDetails;
+
+/**
+ * Details required to establish a connection to a Pulsar service.
+ *
+ * @author Chris Bono
+ * @since 4.0.0
+ * @deprecated since 4.2.0 for removal in 4.4.0 in favor of
+ * <a href="https://github.com/apache/pulsar-spring">pulsar-spring</a>
+ */
+@Deprecated(since = "4.2.0", forRemoval = true)
+public interface PulsarConnectionDetails extends ConnectionDetails {
+
+	/**
+	 * URL used to connect to the broker.
+	 * @return the service URL
+	 */
+	String getBrokerUrl();
+
+	/**
+	 * URL user to connect to the admin endpoint.
+	 * @return the admin URL
+	 */
+	String getAdminUrl();
+
+}

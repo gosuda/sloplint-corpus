@@ -1,0 +1,140 @@
+package coil3
+
+import org.gradle.api.Project
+import org.gradle.api.provider.Provider
+import org.gradle.kotlin.dsl.configure
+import org.gradle.kotlin.dsl.withType
+import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
+import org.jetbrains.kotlin.gradle.dsl.KotlinMultiplatformExtension
+import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget
+import org.jetbrains.kotlin.gradle.plugin.mpp.TestExecutable
+import org.jetbrains.kotlin.gradle.targets.js.dsl.KotlinJsBinaryMode.DEVELOPMENT
+import org.jetbrains.kotlin.gradle.targets.js.dsl.KotlinJsTargetDsl
+import org.jetbrains.kotlin.gradle.targets.js.npm.npmProject
+import org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeTest
+import org.jetbrains.kotlin.konan.target.Family
+
+fun Project.addAllMultiplatformTargets(
+    skikoVersion: Provider<String>,
+    enableWasm: Boolean = true,
+    enableNativeLinux: Boolean = true,
+) {
+    plugins.withId("org.jetbrains.kotlin.multiplatform") {
+        extensions.configure<KotlinMultiplatformExtension> {
+            applyCoilHierarchyTemplate()
+
+            jvm()
+
+            val sharedKarmaConfigDirectory = rootProject.projectDir.resolve("karma.config.d")
+
+            js {
+                browser {
+                    testTask {
+                        useKarma {
+                            useChromeHeadless()
+                            useConfigDirectory(sharedKarmaConfigDirectory)
+                        }
+                    }
+                }
+                nodejs {
+                    testTask {
+                        // Compose Multiplatform is not supported on nodejs.
+                        enabled = false
+                    }
+                }
+                configureWebBinaries(includeLibrary = true)
+            }
+
+            if (enableWasm) {
+                @OptIn(ExperimentalWasmDsl::class)
+                wasmJs {
+                    val skikoDirProvider = rootProject.layout
+                        .buildDirectory
+                        .dir("wasm/packages/coil-root${path.replace(":", "-")}-test/kotlin")
+                        .map { it.asFile }
+                    val wasmTestModuleProvider = skikoDirProvider.map {
+                        it.resolve("coil-root${path.replace(":", "-")}-test.uninstantiated.mjs")
+                    }
+
+                    browser {
+                        testTask {
+                            useKarma {
+                                useChromeHeadless()
+                                useConfigDirectory(sharedKarmaConfigDirectory)
+                            }
+                            doFirst {
+                                val wasmTestModule = wasmTestModuleProvider.get()
+                                if (wasmTestModule.isFile) {
+                                    // Kotlin/Wasm checks `process.release.name` to detect Node.js.
+                                    // When webpack injects a browser `process` shim without `release`,
+                                    // this throws and leaves Karma browser tests stuck idle.
+                                    val original = wasmTestModule.readText()
+                                    val patched = original.replace(
+                                        "(process.release.name === 'node')",
+                                        "(process.release && process.release.name === 'node')",
+                                    )
+                                    if (patched != original) {
+                                        wasmTestModule.writeText(patched)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    nodejs {
+                        testTask {
+                            // Compose Multiplatform is not supported on nodejs.
+                            enabled = false
+                        }
+                    }
+                    configureWebBinaries(includeLibrary = true)
+                }
+            }
+
+            iosArm64()
+            iosSimulatorArm64()
+
+            macosArm64()
+
+            if (enableNativeLinux) {
+                linuxX64()
+                linuxArm64()
+            }
+
+            if (System.getProperty("os.name").startsWith("Windows")) {
+                targets.withType<KotlinNativeTarget>().configureEach {
+                    if (konanTarget.family == Family.LINUX) {
+                        // Skip linking Linux test binaries as well as running them on Windows.
+                        binaries.withType<TestExecutable>().configureEach {
+                            linkTaskProvider.configure { enabled = false }
+                        }
+                        val linuxTargetName = name
+                        tasks.withType<KotlinNativeTest>().configureEach {
+                            if (targetName == linuxTargetName) enabled = false
+                        }
+                    }
+                }
+            }
+        }
+
+        createSkikoWasmJsRuntimeDependency(skikoVersion)
+    }
+}
+
+// https://youtrack.jetbrains.com/issue/KT-68813
+fun KotlinJsTargetDsl.configureWebBinaries(includeLibrary: Boolean = false) {
+    val executables = binaries.executable()
+    val otherBinaries = if (includeLibrary) {
+        executables + binaries.library().filter { it.mode == DEVELOPMENT }
+    } else {
+        executables.filter { it.mode == DEVELOPMENT }
+    }
+    for (binary in otherBinaries) {
+        // Keep the npm package's kotlin/ entry point for its primary production binary.
+        // Other binaries need sibling directories so their sync tasks can't overwrite it.
+        val directoryName = "kotlin-${binary.name}"
+        val outputDirectory = binary.compilation.npmProject.dir.map { it.dir(directoryName).asFile }
+        binary.linkSyncTask.configure {
+            destinationDirectory.set(outputDirectory)
+        }
+    }
+}

@@ -1,0 +1,36 @@
+plugins {
+    kotlin("multiplatform")
+    id("org.jetbrains.compose")
+    id("org.jetbrains.kotlin.plugin.compose")
+}
+
+repositories {
+    google()
+    mavenCentral {
+        url = uri("https://cache-redirector.jetbrains.com/maven-central")
+    }
+    maven("https://packages.jetbrains.team/maven/p/cmp/dev")
+    mavenLocal()
+}
+
+kotlin {
+    js(IR) {
+        nodejs {}
+        browser() {}
+        binaries.executable()
+    }
+
+    sourceSets {
+        val commonMain by getting {
+            dependencies {
+                implementation(kotlin("stdlib-common"))
+                implementation(compose.runtime)
+                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.1")
+            }
+        }
+    }
+}
+
+
+tasks.findByName("jsBrowserProductionWebpack")!!.mustRunAfter("jsDevelopmentExecutableCompileSync")
+tasks.findByName("jsNodeDevelopmentRun")!!.mustRunAfter("jsProductionExecutableCompileSync")

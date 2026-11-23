@@ -1,0 +1,126 @@
+/*
+ * Copyright 2012-present the original author or authors.
+ */
+
+package org.springframework.boot.jetty.reactive;
+
+import java.net.InetSocketAddress;
+
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.eclipse.jetty.ee11.servlet.ServletContextHandler;
+import org.eclipse.jetty.ee11.servlet.ServletHolder;
+import org.eclipse.jetty.server.AbstractConnector;
+import org.eclipse.jetty.server.NetworkConnectionLimit;
+import org.eclipse.jetty.server.Server;
+import org.eclipse.jetty.server.handler.GracefulHandler;
+import org.jspecify.annotations.Nullable;
+
+import org.springframework.boot.jetty.ConfigurableJettyWebServerFactory;
+import org.springframework.boot.jetty.ForwardHeadersCustomizer;
+import org.springframework.boot.jetty.JettyServerCustomizer;
+import org.springframework.boot.jetty.JettyWebServer;
+import org.springframework.boot.jetty.JettyWebServerFactory;
+import org.springframework.boot.jetty.servlet.JettyServletWebServerFactory;
+import org.springframework.boot.web.server.ForwardedRequestHeaders;
+import org.springframework.boot.web.server.Shutdown;
+import org.springframework.boot.web.server.Ssl;
+import org.springframework.boot.web.server.WebServer;
+import org.springframework.boot.web.server.reactive.ConfigurableReactiveWebServerFactory;
+import org.springframework.boot.web.server.reactive.ReactiveWebServerFactory;
+import org.springframework.http.client.reactive.JettyResourceFactory;
+import org.springframework.http.server.reactive.HttpHandler;
+import org.springframework.http.server.reactive.ServletHttpHandlerAdapter;
+
+/**
+ * {@link ReactiveWebServerFactory} that can be used to create {@link JettyWebServer}s.
+ *
+ * @author Brian Clozel
+ * @author Moritz Halbritter
+ * @author WooSeung Kim
+ * @since 4.0.0
+ */
+public class JettyReactiveWebServerFactory extends JettyWebServerFactory
+		implements ConfigurableJettyWebServerFactory, ConfigurableReactiveWebServerFactory {
+
+	private static final Log logger = LogFactory.getLog(JettyReactiveWebServerFactory.class);
+
+	private @Nullable JettyResourceFactory resourceFactory;
+
+	/**
+	 * Create a new {@link JettyServletWebServerFactory} instance.
+	 */
+	public JettyReactiveWebServerFactory() {
+	}
+
+	/**
+	 * Create a new {@link JettyServletWebServerFactory} that listens for requests using
+	 * the specified port.
+	 * @param port the port to listen on
+	 */
+	public JettyReactiveWebServerFactory(int port) {
+		super(port);
+	}
+
+	@Override
+	public WebServer getWebServer(HttpHandler httpHandler) {
+		ServletHttpHandlerAdapter servlet = new ServletHttpHandlerAdapter(httpHandler);
+		Server server = createJettyServer(servlet);
+		return new JettyWebServer(server, getPort() >= 0);
+	}
+
+	/**
+	 * Set the {@link JettyResourceFactory} to get the shared resources from.
+	 * @param resourceFactory the server resources
+	 */
+	public void setResourceFactory(@Nullable JettyResourceFactory resourceFactory) {
+		this.resourceFactory = resourceFactory;
+	}
+
+	protected @Nullable JettyResourceFactory getResourceFactory() {
+		return this.resourceFactory;
+	}
+
+	protected Server createJettyServer(ServletHttpHandlerAdapter servlet) {
+		int port = Math.max(getPort(), 0);
+		InetSocketAddress address = new InetSocketAddress(getAddress(), port);
+		Server server = new Server(getThreadPool());
+		server.addConnector(createConnector(address, server, this.resourceFactory));
+		server.setStopTimeout(0);
+		ServletHolder servletHolder = new ServletHolder(servlet);
+		servletHolder.setAsyncSupported(true);
+		ServletContextHandler contextHandler = new ServletContextHandler("/", false, false);
+		contextHandler.addServlet(servletHolder, "/");
+		server.setHandler(addHandlerWrappers(contextHandler));
+		logger.info("Server initialized with port: " + port);
+		if (Ssl.isEnabled(getSsl())) {
+			customizeSsl(server, address);
+		}
+		if (this.getMaxConnections() > -1) {
+			server.addBean(new NetworkConnectionLimit(this.getMaxConnections(), server.getConnectors()));
+		}
+		for (JettyServerCustomizer customizer : getServerCustomizers()) {
+			customizer.customize(server);
+		}
+		ForwardedRequestHeaders forwardedHeaders = getForwardedRequestHeaders();
+		if (forwardedHeaders != null) {
+			new ForwardHeadersCustomizer(forwardedHeaders).customize(server);
+		}
+		if (getShutdown() == Shutdown.GRACEFUL) {
+			GracefulHandler gracefulHandler = new GracefulHandler();
+			gracefulHandler.setHandler(server.getHandler());
+			server.setHandler(gracefulHandler);
+		}
+		return server;
+	}
+
+	private AbstractConnector createConnector(InetSocketAddress address, Server server,
+			@Nullable JettyResourceFactory resourceFactory) {
+		if (resourceFactory == null) {
+			return createConnector(address, server);
+		}
+		return createConnector(address, server, resourceFactory.getExecutor(), resourceFactory.getScheduler(),
+				resourceFactory.getByteBufferPool());
+	}
+
+}
