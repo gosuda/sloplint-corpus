@@ -1,0 +1,986 @@
+import 'dart:async';
+import 'dart:io';
+
+import 'package:analysis_server_plugin/edit/dart/correction_producer.dart';
+import 'package:analysis_server_plugin/registry.dart';
+import 'package:analysis_server_plugin/src/correction/fix_generators.dart';
+import 'package:analyzer/analysis_rule/analysis_rule.dart';
+import 'package:analyzer/dart/analysis/analysis_context_collection.dart';
+import 'package:analyzer/dart/analysis/results.dart';
+import 'package:analyzer/dart/ast/token.dart';
+import 'package:analyzer/dart/ast/visitor.dart';
+import 'package:analyzer/diagnostic/diagnostic.dart';
+import 'package:analyzer/error/listener.dart';
+import 'package:analyzer/source/line_info.dart';
+import 'package:analyzer/source/source_range.dart';
+import 'package:analyzer/src/dart/ast/ast.dart';
+import 'package:analyzer/src/lint/config.dart';
+import 'package:analyzer_plugin/protocol/protocol_common.dart';
+import 'package:analyzer_plugin/utilities/change_builder/change_builder_core.dart';
+import 'package:analyzer_plugin/utilities/range_factory.dart';
+import 'package:collection/collection.dart';
+import 'package:dart_style/dart_style.dart';
+import 'package:glob/glob.dart';
+import 'package:path/path.dart' as p;
+import 'package:riverpod_lint/main.dart';
+import 'package:riverpod_analyzer_utils/riverpod_analyzer_utils.dart';
+import 'package:test/test.dart';
+import 'package:yaml/yaml.dart';
+
+import 'encoders.dart';
+import 'io_utils.dart';
+import 'registry.dart';
+import 'context.dart';
+import 'string.dart';
+
+Future<void> main() async {
+  final registry = _PluginRegistry();
+  plugin.register(registry);
+
+  final filesToAnalyze = await _findFilesToAnalyze().toList();
+  final codegenExcludes = _readCodegenExcludes();
+
+  final collection = AnalysisContextCollection(
+    includedPaths: filesToAnalyze.map((e) => e.absolute.path).toList(),
+    sdkPath: dartSdkPath,
+  );
+
+  for (final file in filesToAnalyze) {
+    group(p.basename(file.path), () {
+      late final ResolvedUnitResult unit;
+      late final ResolvedLibraryResult library;
+      late final Iterable<int> uniqueOffsets;
+      late final Set<String> testIds;
+
+      setUpAll(() async {
+        final context = collection.contextFor(file.absolute.path);
+        final session = context.currentSession;
+
+        final unitResult = await session.getResolvedUnit(file.absolute.path);
+        unitResult as ResolvedUnitResult;
+        unit = unitResult;
+
+        final libraryResult = await session.getResolvedLibrary(
+          file.absolute.path,
+        );
+        libraryResult as ResolvedLibraryResult;
+
+        library = libraryResult;
+
+        final visitor = _VisitAllNodes((node) => range.node(node));
+
+        unit.unit.accept(visitor);
+        final astRanges = visitor._result;
+
+        final tokensRanges = <SourceRange>[];
+        for (
+          Token? token = unit.unit.beginToken;
+          token != null && token != unit.unit.endToken;
+          token = token.next
+        ) {
+          tokensRanges.add(range.token(token));
+        }
+
+        uniqueOffsets =
+            astRanges
+                .followedBy(tokensRanges)
+                .map((e) => e.offset)
+                .toSet()
+                .toList()
+              ..sortBy((a) => a);
+
+        testIds = _findTestIds(unit);
+        _verifyAllIdsExist(registry, testIds);
+      });
+
+      _testProducers(
+        registry.assists,
+        () => (
+          unit: unit,
+          library: library,
+          uniqueOffsets: uniqueOffsets,
+          testIds: testIds,
+        ),
+        file,
+        groupName: 'assist',
+        id: (producer) => producer.assistKind!.id,
+      );
+
+      _testFixes(
+        registry,
+        () => (
+          unit: unit,
+          library: library,
+          uniqueOffsets: uniqueOffsets,
+          testIds: testIds,
+        ),
+        file,
+        id: (producer) => producer.fixKind!.id,
+      );
+
+      final relativePath = p.posix.joinAll(
+        p.split(p.relative(file.absolute.path)),
+      );
+      if (codegenExcludes.any((glob) => glob.matches(relativePath))) {
+        test('excluded from codegen, so only contains failing cases', () {
+          _verifyOnlyFailingProviders(
+            registry,
+            unit: unit,
+            library: library,
+            testIds: testIds,
+          );
+        });
+      }
+    });
+  }
+}
+
+/// The `generate_for.exclude` globs of riverpod_generator in `build.yaml`.
+List<Glob> _readCodegenExcludes() {
+  final buildYaml = loadYaml(File('build.yaml').readAsStringSync()) as YamlMap;
+  final excludes =
+      buildYaml['targets'][r'$default']['builders']['riverpod_generator']['generate_for']['exclude']
+          as YamlList;
+
+  return excludes.cast<String>().map((e) => Glob(e, context: p.posix)).toList();
+}
+
+/// Fixtures excluded from codegen must only contain providers that the
+/// fixture's rules report. Valid providers belong in a generated fixture,
+/// so that riverpod_generator checks they are indeed valid.
+void _verifyOnlyFailingProviders(
+  _PluginRegistry registry, {
+  required ResolvedUnitResult unit,
+  required ResolvedLibraryResult library,
+  required Set<String> testIds,
+}) {
+  final rules = registry.rules
+      .map((e) => e.$1)
+      .where((rule) => testIds.contains(rule.name))
+      .toList();
+  if (rules.isEmpty) {
+    fail(
+      'This fixture is excluded from codegen, '
+      'but its @TestFor does not name any rule.',
+    );
+  }
+
+  final diagnostics = _runRules(unit: unit, library: library, rules: rules);
+
+  final validProviders = unit.unit.declarations
+      .where(
+        (declaration) => switch (declaration) {
+          ClassDeclaration() || FunctionDeclaration() => true,
+          _ => false,
+        },
+      )
+      .where(
+        (declaration) => declaration.metadata.any((annotation) {
+          final type = annotation.elementAnnotation
+              ?.computeConstantValue()
+              ?.type;
+          return type != null && riverpodType.isExactlyType(type);
+        }),
+      )
+      .where(
+        (declaration) => !diagnostics.any(
+          (diagnostic) =>
+              diagnostic.offset >= declaration.offset &&
+              diagnostic.offset < declaration.end,
+        ),
+      )
+      .map((declaration) => declaration.declaredFragment!.element.displayName)
+      .toList();
+
+  if (validProviders.isNotEmpty) {
+    fail(
+      'This fixture is excluded from codegen (see build.yaml), '
+      'so it should only contain failing cases. '
+      'No ${rules.map((e) => e.name).join('/')} diagnostic was reported for: '
+      '${validProviders.join(', ')}.\n'
+      'Move them to a fixture that riverpod_generator runs on.',
+    );
+  }
+}
+
+void _testFixes(
+  _PluginRegistry pluginRegistry,
+  ({
+    ResolvedLibraryResult library,
+    Set<String> testIds,
+    Iterable<int> uniqueOffsets,
+    ResolvedUnitResult unit,
+  })
+  Function()
+  result,
+  File file, {
+  required Function(CorrectionProducer<ParsedUnitResult> producer) id,
+}) {
+  for (final fix in pluginRegistry.fixes) {
+    final producerId = id(
+      fix.generator(context: StubCorrectionProducerContext.instance),
+    );
+    _testProducers(
+      [fix.generator],
+      () {
+        final (
+          :unit,
+          :library,
+          :uniqueOffsets,
+          :testIds,
+        ) = result();
+
+        // Fixtures only request a subset of fixes. Avoid traversing the AST
+        // for rules whose fixes will be skipped by _testProducers.
+        if (!testIds.contains(producerId)) {
+          return (
+            unit: unit,
+            library: library,
+            uniqueOffsets: uniqueOffsets,
+            testIds: testIds,
+          );
+        }
+
+        final rules = pluginRegistry.rules
+            .where(
+              (e) => e.$1.diagnosticCodes.contains(fix.code),
+            )
+            .single;
+
+        final diagnostics = _runRules(
+          unit: unit,
+          library: library,
+          rules: [rules.$1],
+        );
+
+        final offsetsOverlappingDiagnostics = uniqueOffsets.where(
+          (offset) => diagnostics.any(
+            (e) => range.startOffsetLength(e.offset, e.length).contains(offset),
+          ),
+        );
+
+        return (
+          unit: unit,
+          library: library,
+          uniqueOffsets: offsetsOverlappingDiagnostics,
+          testIds: testIds,
+        );
+      },
+      file,
+      groupName: 'fix',
+      id: (producer) => producer.fixKind!.id,
+    );
+  }
+}
+
+void _verifyAllIdsExist(_PluginRegistry plugin, Set<String> testIds) {
+  final actualIds = plugin.allIds().toSet();
+
+  expect(
+    actualIds,
+    containsAll(testIds),
+    reason:
+        '''
+class TestFor {
+  const TestFor(this.id);
+  ${actualIds.map((e) => "static const $e = TestFor('$e');").join('\n')}
+
+  final String id;
+}
+''',
+  );
+}
+
+List<Diagnostic> _runRules({
+  required ResolvedUnitResult unit,
+  required ResolvedLibraryResult library,
+  required Iterable<AbstractAnalysisRule> rules,
+}) {
+  final _errorReporter = errorReporter;
+  errorReporter = (_) {};
+
+  try {
+    final diagnosticsListener = RecordingDiagnosticListener();
+
+    final registry = Registry();
+    final context = Context.fromResolvedUnitResult(
+      unit,
+      library,
+      diagnosticsListener,
+    );
+
+    for (final rule in rules) {
+      rule.reporter = DiagnosticReporter(
+        diagnosticsListener,
+        unit.libraryFragment.source,
+      );
+
+      rule.registerNodeProcessors(registry, context);
+    }
+
+    unit.unit.accept(_InvokeVisitor(registry));
+
+    return diagnosticsListener.diagnostics;
+  } finally {
+    errorReporter = _errorReporter;
+  }
+}
+
+class _InvokeVisitor extends GeneralizingAstVisitor<void> {
+  final Registry registry;
+
+  _InvokeVisitor(this.registry);
+
+  @override
+  void visitNode(AstNode node) {
+    super.visitNode(node);
+
+    for (final (_, visitor) in registry.visitors) {
+      node.accept(visitor);
+    }
+  }
+}
+
+void _testProducers(
+  Iterable<ProducerGenerator> producerFactories,
+  ({
+    ResolvedUnitResult unit,
+    ResolvedLibraryResult library,
+    Iterable<int> uniqueOffsets,
+    Set<String> testIds,
+  })
+  Function()
+  results,
+  File file, {
+  required String groupName,
+  required String Function(CorrectionProducer<ParsedUnitResult> producer) id,
+}) {
+  for (final producerFactory in producerFactories) {
+    final stubProducer = producerFactory(
+      context: StubCorrectionProducerContext.instance,
+    );
+    final producerId = id(stubProducer);
+
+    test('$groupName $producerId', () async {
+      final (:unit, :library, :uniqueOffsets, :testIds) = results();
+      if (!testIds.contains(producerId)) return;
+
+      final uniqueSourceOutputs =
+          <({String header, String editedSource}), List<({int offset})>>{};
+      final _errorReporter = errorReporter;
+      errorReporter = (_) {};
+      addTearDown(() => errorReporter = _errorReporter);
+
+      for (final offset in uniqueOffsets) {
+        final changeBuilder = ChangeBuilder(session: unit.session);
+        final context = CorrectionProducerContext.createResolved(
+          libraryResult: library,
+          unitResult: unit,
+          selectionOffset: offset,
+        );
+        final producer = producerFactory(context: context);
+        await producer.compute(changeBuilder);
+
+        if (changeBuilder.sourceChange.edits.isEmpty) continue;
+
+        final edit = changeBuilder.sourceChange.edits.single;
+
+        final editedSource = SourceEdit.applySequence(
+          unit.content,
+          edit.edits,
+        );
+        final editedLineInfo = LineInfo.fromContent(editedSource);
+
+        final header = encodePrioritizedSourceChanges(
+          unmodifiedSource: unit.content,
+          editedSource: editedSource,
+          unmodifiedLineInfo: unit.lineInfo,
+          editedLineInfo: editedLineInfo,
+        );
+
+        final offsetsForEdit =
+            uniqueSourceOutputs[(
+                  header: header,
+                  editedSource: editedSource,
+                )] ??=
+                [];
+        offsetsForEdit.add((offset: offset));
+      }
+
+      await _expectGoldensMatchProducers(
+        uniqueSourceOutputs,
+        file,
+        producerId: producerId,
+        groupName: groupName,
+      );
+    });
+  }
+}
+
+extension on File {
+  File goldenFile({
+    required String id,
+    required String groupName,
+    required String lineLabel,
+  }) {
+    final baseName = p.basenameWithoutExtension(path);
+
+    return parent.file(
+      '$baseName.$id-$lineLabel.$groupName.dart',
+    );
+  }
+
+  String get _goldensPattern => '${p.basenameWithoutExtension(path)}.';
+
+  Iterable<File> goldensForFile({
+    required String id,
+  }) {
+    return parent
+        .listSync()
+        .whereType<File>()
+        .where(
+          (e) =>
+              !e.path.endsWith('.g.dart') && !e.path.endsWith('.freezed.dart'),
+        )
+        .where(
+          (e) {
+            final fileName = p.basenameWithoutExtension(e.path);
+
+            if (!fileName.startsWith(_goldensPattern) || e == this)
+              return false;
+
+            final [_, idAndIndex, _] = fileName.split('.');
+            final [fileId, _] = idAndIndex.split('-');
+
+            return fileId == id;
+          },
+        );
+  }
+}
+
+Set<String> _findTestIds(ResolvedUnitResult unit) {
+  final library = unit.unit.directives
+      .whereType<LibraryDirective>()
+      .firstOrNull;
+  final testIds = <String>{};
+
+  for (final meta in library?.metadata ?? <Annotation>[]) {
+    final annotation = meta.elementAnnotation?.computeConstantValue();
+    if (annotation == null) continue;
+
+    if (annotation.type?.element?.name != 'TestFor') continue;
+
+    final id = annotation.getField('id')!.toStringValue();
+    if (id == null) continue;
+
+    testIds.add(id);
+  }
+
+  if (testIds.isEmpty) {
+    throw StateError('No test ids found in ${unit.libraryElement.uri}');
+  }
+
+  return testIds;
+}
+
+final _goldenWrite = bool.parse(Platform.environment['goldens'] ?? 'false');
+
+Future<void> _expectGoldensMatchProducers(
+  Map<({String header, String editedSource}), List<({int offset})>>
+  uniqueSourceOutputs,
+  File file, {
+  required String producerId,
+  required String groupName,
+}) async {
+  if (_goldenWrite) {
+    await _writeProducerResultToFile(
+      uniqueSourceOutputs,
+      sourceFile: file,
+      producerId: producerId,
+      groupName: groupName,
+    );
+    return;
+  }
+
+  await _verifyGoldensMatchProducers(
+    uniqueSourceOutputs,
+    file,
+    producerId: producerId,
+    groupName: groupName,
+  );
+}
+
+Future<void> _verifyGoldensMatchProducers(
+  Map<({String header, String editedSource}), List<({int offset})>>
+  uniqueSourceOutputs,
+  File file, {
+  required String producerId,
+  required String groupName,
+}) async {
+  final goldens = file
+      .goldensForFile(id: producerId)
+      .map((e) => e.path)
+      .toSet();
+  final mismatch = <({String? expected, String actual})>[];
+  final missing = <({String filePath})>[];
+  final sourceContent = file.readAsStringSync();
+
+  final actualFiles = uniqueSourceOutputs.entries.map(
+    (entry) {
+      final lineLabel = _goldenLineLabel(
+        sourceContent: sourceContent,
+        offsets: entry.value.map((e) => e.offset),
+      );
+      final goldenFile = file.goldenFile(
+        id: producerId,
+        groupName: groupName,
+        lineLabel: lineLabel,
+      );
+
+      return (
+        goldenFile,
+        _encodeProducerOutput(
+          sourceFile: file,
+          source: entry.key,
+          goldenFile: goldenFile,
+          producerId: producerId,
+          offsets: entry.value.map((e) => e.offset),
+        ),
+      );
+    },
+  ).toList();
+
+  for (final (file, actual) in actualFiles) {
+    try {
+      final expected = file.readAsStringSync();
+
+      if (actual != expected) {
+        mismatch.add((expected: expected, actual: actual));
+      }
+    } on PathNotFoundException {
+      mismatch.add((expected: null, actual: actual));
+    }
+  }
+
+  for (final golden in goldens) {
+    if (!actualFiles.any((e) => e.$1.path == golden)) {
+      missing.add((filePath: golden));
+    }
+  }
+
+  if (mismatch.isNotEmpty || missing.isNotEmpty) {
+    final buffer = StringBuffer();
+
+    if (missing.isNotEmpty) {
+      buffer.writeAll(
+        missing.map((e) => 'Missing golden: ${e.filePath}\n'),
+      );
+    }
+
+    if (mismatch.isNotEmpty) {
+      buffer.writeAll(
+        mismatch.map((e) => 'Mismatch: ${e.actual}\n'),
+      );
+    }
+
+    throw TestFailure(buffer.toString());
+  }
+}
+
+String _encodeProducerOutput({
+  required File sourceFile,
+  required File goldenFile,
+  required ({String header, String editedSource}) source,
+  required String producerId,
+  required Iterable<int> offsets,
+}) {
+  final offsetsForKind = <String, List<int>>{};
+  for (final offset in offsets) {
+    final offsets = offsetsForKind[producerId] ??= [];
+    offsets.add(offset);
+  }
+  final sourceContent = sourceFile.readAsStringSync();
+
+  final buffer = StringBuffer();
+  buffer.writeln('// GENERATED CODE - DO NOT MODIFY BY HAND');
+  buffer.writeln('// ignore_for_file: type=lint, type=warning, todo');
+  buffer.write(
+    _renderOffsetsWithContext(
+      offsetsForKind: offsetsForKind,
+      sourceContent: sourceContent,
+    ),
+  );
+
+  if (source.header.isNotEmpty) {
+    buffer.write(source.header.indentWith('// '));
+  }
+
+  var content = source.editedSource;
+  content = content.replaceAll(
+    "part '${p.basenameWithoutExtension(sourceFile.path)}",
+    "part '${p.basenameWithoutExtension(goldenFile.path)}",
+  );
+
+  buffer.write(content);
+
+  // Format the content using dart_style
+  try {
+    return DartFormatter(
+      languageVersion: DartFormatter.latestLanguageVersion,
+    ).format(buffer.toString());
+  } catch (err, stack) {
+    Zone.current.handleUncaughtError(err, stack);
+    return buffer.toString();
+  }
+}
+
+String _goldenLineLabel({
+  required String sourceContent,
+  required Iterable<int> offsets,
+}) {
+  final lineStarts = _computeLineStarts(sourceContent);
+  final lineNumbers = offsets.map(
+    (offset) => _lineNumberForOffset(
+      sourceContent: sourceContent,
+      lineStarts: lineStarts,
+      offset: offset,
+    ),
+  );
+
+  if (lineNumbers.isEmpty) {
+    return '0';
+  }
+
+  return lineNumbers.reduce((a, b) => a < b ? a : b).toString();
+}
+
+List<int> _computeLineStarts(String sourceContent) {
+  final lineStarts = <int>[0];
+  for (var i = 0; i < sourceContent.length; i++) {
+    if (sourceContent.codeUnitAt(i) == 0x0A) {
+      lineStarts.add(i + 1);
+    }
+  }
+  return lineStarts;
+}
+
+int _lineIndexForOffset({
+  required String sourceContent,
+  required List<int> lineStarts,
+  required int offset,
+}) {
+  final maxOffset = sourceContent.isEmpty ? 0 : sourceContent.length - 1;
+  final safeOffset = offset.clamp(0, maxOffset);
+
+  var low = 0;
+  var high = lineStarts.length - 1;
+
+  while (low <= high) {
+    final mid = (low + high) >> 1;
+    final start = lineStarts[mid];
+    final isLast = mid == lineStarts.length - 1;
+    final nextStart = isLast ? sourceContent.length : lineStarts[mid + 1];
+
+    if (safeOffset < start) {
+      high = mid - 1;
+    } else if (safeOffset >= nextStart && !isLast) {
+      low = mid + 1;
+    } else {
+      return mid;
+    }
+  }
+
+  return lineStarts.length - 1;
+}
+
+int _lineNumberForOffset({
+  required String sourceContent,
+  required List<int> lineStarts,
+  required int offset,
+}) {
+  return _lineIndexForOffset(
+        sourceContent: sourceContent,
+        lineStarts: lineStarts,
+        offset: offset,
+      ) +
+      1;
+}
+
+String _renderOffsetsWithContext({
+  required Map<String, List<int>> offsetsForKind,
+  required String sourceContent,
+}) {
+  if (offsetsForKind.isEmpty || sourceContent.isEmpty) {
+    return '';
+  }
+
+  final lineStarts = _computeLineStarts(sourceContent);
+
+  String lineAt(int index) {
+    if (index < 0 || index >= lineStarts.length) return '';
+
+    final start = lineStarts[index];
+    final isLast = index == lineStarts.length - 1;
+    final end = isLast ? sourceContent.length : lineStarts[index + 1] - 1;
+
+    if (start >= end) return '';
+    return sourceContent.substring(start, end);
+  }
+
+  final buffer = StringBuffer();
+
+  for (final entry in offsetsForKind.entries) {
+    final kind = entry.key;
+    final kindOffsets = entry.value;
+    if (kindOffsets.isEmpty) continue;
+
+    buffer.writeln('// Offsets for "$kind":');
+    final lineToColumns = <int, List<int>>{};
+
+    for (final rawOffset in kindOffsets) {
+      final safeOffset = rawOffset.clamp(
+        0,
+        sourceContent.isEmpty ? 0 : sourceContent.length - 1,
+      );
+      final lineIndex = _lineIndexForOffset(
+        sourceContent: sourceContent,
+        lineStarts: lineStarts,
+        offset: safeOffset,
+      );
+      final lineStart = lineStarts[lineIndex];
+      final currentLine = lineAt(lineIndex);
+
+      final relativeColumn = (safeOffset - lineStart).clamp(
+        0,
+        currentLine.length,
+      );
+      final columns = lineToColumns[lineIndex] ??= [];
+      columns.add(relativeColumn);
+    }
+
+    final sortedLineIndexes = lineToColumns.keys.toList()..sort();
+    final displayedBlocks = <({int startLineIndex, int endLineIndex})>[];
+
+    for (final lineIndex in sortedLineIndexes) {
+      final currentLine = lineAt(lineIndex);
+      if (currentLine.isEmpty) {
+        continue;
+      }
+
+      final previousLine = lineAt(lineIndex - 1);
+      final nextLine = lineAt(lineIndex + 1);
+
+      var startDisplayedLineIndex = lineIndex;
+      var endDisplayedLineIndex = lineIndex;
+
+      if (previousLine.isNotEmpty) {
+        startDisplayedLineIndex = lineIndex - 1;
+      }
+      if (nextLine.isNotEmpty) {
+        endDisplayedLineIndex = lineIndex + 1;
+      }
+
+      if (displayedBlocks.isNotEmpty &&
+          startDisplayedLineIndex <= displayedBlocks.last.endLineIndex + 1) {
+        final lastBlock = displayedBlocks.removeLast();
+        displayedBlocks.add((
+          startLineIndex: lastBlock.startLineIndex,
+          endLineIndex: endDisplayedLineIndex > lastBlock.endLineIndex
+              ? endDisplayedLineIndex
+              : lastBlock.endLineIndex,
+        ));
+      } else {
+        displayedBlocks.add((
+          startLineIndex: startDisplayedLineIndex,
+          endLineIndex: endDisplayedLineIndex,
+        ));
+      }
+    }
+
+    for (final (blockIndex, block) in displayedBlocks.indexed) {
+      if (blockIndex > 0) {
+        buffer.writeln('//');
+      }
+
+      for (
+        var displayedLineIndex = block.startLineIndex;
+        displayedLineIndex <= block.endLineIndex;
+        displayedLineIndex++
+      ) {
+        final displayedLine = lineAt(displayedLineIndex);
+        if (displayedLine.isEmpty) {
+          continue;
+        }
+
+        final columns = lineToColumns[displayedLineIndex];
+        if (columns == null || columns.isEmpty) {
+          buffer.writeln('// ${displayedLineIndex + 1}: $displayedLine');
+          continue;
+        }
+
+        final sortedColumns = columns.toSet().toList()..sort();
+        final markedLineBuffer = StringBuffer();
+        var lastPos = 0;
+
+        for (final column in sortedColumns) {
+          final col = column.clamp(0, displayedLine.length);
+          if (col < lastPos) {
+            continue;
+          }
+
+          markedLineBuffer.write(displayedLine.substring(lastPos, col));
+          markedLineBuffer.write('<>');
+          lastPos = col;
+        }
+
+        markedLineBuffer.write(displayedLine.substring(lastPos));
+        buffer.writeln(
+          '// ${displayedLineIndex + 1}: ${markedLineBuffer.toString()}',
+        );
+      }
+    }
+  }
+
+  return buffer.toString();
+}
+
+Future<void> _writeProducerResultToFile(
+  Map<({String header, String editedSource}), List<({int offset})>>
+  uniqueSourceOutputs, {
+  required File sourceFile,
+  required String producerId,
+  required String groupName,
+}) async {
+  final goldens = sourceFile.goldensForFile(id: producerId);
+  final sourceContent = sourceFile.readAsStringSync();
+
+  try {
+    await Future.wait(
+      goldens.map((e) => e.delete()),
+    );
+  } on PathNotFoundException {
+    // Silence not-found errors
+  }
+
+  await Future.wait([
+    for (final entry in uniqueSourceOutputs.entries)
+      Future(() async {
+        final lineLabel = _goldenLineLabel(
+          sourceContent: sourceContent,
+          offsets: entry.value.map((e) => e.offset),
+        );
+        final outputFile = sourceFile.goldenFile(
+          id: producerId,
+          groupName: groupName,
+          lineLabel: lineLabel,
+        );
+
+        await outputFile.create(recursive: true);
+
+        await outputFile.writeAsString(
+          _encodeProducerOutput(
+            sourceFile: sourceFile,
+            source: entry.key,
+            goldenFile: outputFile,
+            producerId: producerId,
+            offsets: entry.value.map((e) => e.offset),
+          ),
+        );
+      }),
+  ]);
+}
+
+Stream<File> _findFilesToAnalyze() {
+  return Directory.current
+      .list(recursive: true)
+      .where((e) => e is File)
+      .cast<File>()
+      .where(
+        (e) {
+          switch (e.uri.pathSegments
+              .skipWhile((e) => e != 'riverpod_lint_flutter_test')
+              .skip(1)
+              .toList()) {
+            case ['test', _, _, ...]:
+              return true;
+
+            case _:
+              return false;
+          }
+        },
+      )
+      .where(
+        (e) {
+          return e.path.endsWith('.dart') &&
+              !e.path.endsWith('.g.dart') &&
+              !e.path.endsWith('.freezed.dart') &&
+              !e.path.contains('.assist') &&
+              !e.path.contains('.fix') &&
+              !e.path.contains('.rule');
+        },
+      );
+}
+
+class _VisitAllNodes<AccumulatedT> extends GeneralizingAstVisitor<void> {
+  _VisitAllNodes(this.cb);
+  final AccumulatedT Function(AstNode node) cb;
+
+  final _result = <AccumulatedT>[];
+
+  @override
+  void visitNode(AstNode node) {
+    _result.add(cb(node));
+    super.visitNode(node);
+  }
+}
+
+enum RuleType { lint, warning }
+
+class _PluginRegistry extends PluginRegistry {
+  final List<ProducerGenerator> assists = [];
+  final List<({Object code, ProducerGenerator generator})> fixes = [];
+  final List<(AbstractAnalysisRule, RuleType)> rules = [];
+
+  Iterable<ProducerGenerator> get producers => assists.followedBy(
+    fixes.map((e) => e.generator),
+  );
+
+  Iterable<String> allIds() {
+    final assistIds = assists
+        .map((e) => e(context: StubCorrectionProducerContext.instance))
+        .map((e) => e.assistKind!.id);
+    final fixIds = fixes
+        .map(
+          (e) => e.generator(context: StubCorrectionProducerContext.instance),
+        )
+        .map((e) => e.fixKind!.id);
+    final ruleIds = rules.map((e) => e.$1.name);
+
+    return assistIds.followedBy(fixIds).followedBy(ruleIds);
+  }
+
+  @override
+  void registerAssist(ProducerGenerator generator) {
+    assists.add(generator);
+  }
+
+  @override
+  void registerFixForRule(Object code, ProducerGenerator generator) {
+    fixes.add((code: code, generator: generator));
+  }
+
+  @override
+  void registerLintRule(AbstractAnalysisRule rule) {
+    rules.add((rule, RuleType.lint));
+  }
+
+  @override
+  void registerWarningRule(AbstractAnalysisRule rule) {
+    rules.add((rule, RuleType.warning));
+  }
+
+  @override
+  Iterable<AbstractAnalysisRule> enabled(Map<String, RuleConfig> ruleConfigs) {
+    return rules.map((e) => e.$1);
+  }
+}

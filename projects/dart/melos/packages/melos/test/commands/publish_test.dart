@@ -1,0 +1,436 @@
+import 'dart:io';
+
+import 'package:melos/melos.dart';
+import 'package:melos/src/common/glob.dart';
+import 'package:melos/src/common/topology.dart';
+import 'package:melos/src/lifecycle_hooks/publish.dart';
+import 'package:pub_semver/pub_semver.dart';
+import 'package:pubspec_parse/pubspec_parse.dart';
+import 'package:test/expect.dart';
+import 'package:test/scaffolding.dart';
+
+import '../utils.dart';
+
+void main() {
+  group('publish', () {
+    group('sort packages', () {
+      test('wo/ cyclic dependencies', () {
+        //     b
+        //   /   \
+        // a       d
+        //   \   /
+        //     c
+        //
+        // e  -->  *f (external package)
+        final packages = [
+          _dummyPackage('a', deps: ['b', 'c']),
+          _dummyPackage('b', deps: ['d']),
+          _dummyPackage('c', deps: ['d']),
+          _dummyPackage('d', deps: []),
+          _dummyPackage('e', deps: ['f']),
+        ]..shuffle();
+        final packageNames = packages.map((el) => el.name).toList();
+        sortPackagesForPublishing(packages);
+
+        final published = <String>{};
+        for (final package in packages) {
+          final dependencies = package.dependencies;
+          for (final dependency in dependencies) {
+            final isExternal = !packageNames.contains(dependency);
+            final isPublished = published.contains(dependency);
+            expect(isExternal || isPublished, isTrue);
+          }
+          published.add(package.name);
+        }
+      });
+
+      test('w/ cyclic dependencies', () {
+        final packages = [
+          _dummyPackage('a', deps: ['b']),
+          _dummyPackage('b', deps: ['a']),
+        ];
+        expect(
+          () => sortPackagesForPublishing(packages),
+          returnsNormally,
+        );
+      });
+    });
+
+    group('lifecycle hooks', () {
+      for (final dryRun in [false, true]) {
+        test('are called in the correct order', () async {
+          final logger = TestLogger();
+          final workspaceDir = await createTemporaryWorkspace(
+            configBuilder: (path) => MelosWorkspaceConfig(
+              path: path,
+              name: 'test_workspace',
+              packages: [
+                createGlob('packages/**', currentDirectoryPath: path),
+              ],
+              commands: const CommandConfigs(
+                publish: PublishCommandConfigs(
+                  hooks: PublishLifecycleHooks(
+                    pre: Script(name: 'pre', run: 'echo pre'),
+                    post: Script(name: 'post', run: 'echo post'),
+                  ),
+                ),
+              ),
+            ),
+            workspacePackages: ['a', 'b'],
+          );
+
+          for (final package in ['a', 'b']) {
+            await createProject(
+              workspaceDir,
+              Pubspec(package),
+              path: 'packages',
+            );
+          }
+
+          final config = await MelosWorkspaceConfig.fromWorkspaceRoot(
+            workspaceDir,
+          );
+          final melos = Melos(
+            logger: logger,
+            config: config,
+          );
+
+          await melos.publish(dryRun: dryRun);
+          final order = [
+            'melos publish [pre]',
+            'pre',
+            if (dryRun) 'melos publish --dry-run',
+            if (!dryRun) 'melos publish',
+            'melos publish [post]',
+            'post',
+          ];
+          final output = logger.output.normalizeLines().split('\n');
+          var previousIndex = -1;
+
+          for (final line in order) {
+            final index = output.indexOf(line);
+            expect(index, isNonNegative, reason: 'Line not found: $line');
+            expect(
+              index,
+              greaterThan(previousIndex),
+              reason: 'Line $line is out of order',
+            );
+            previousIndex = index;
+          }
+        });
+      }
+    });
+
+    group('pubServer', () {
+      test(
+        'passes --server flag to dart pub publish when configured',
+        () async {
+          final logger = TestLogger();
+          final workspaceDir = await createTemporaryWorkspace(
+            configBuilder: (path) => MelosWorkspaceConfig(
+              path: path,
+              name: 'test_workspace',
+              packages: [
+                createGlob('packages/**', currentDirectoryPath: path),
+              ],
+              commands: const CommandConfigs(
+                publish: PublishCommandConfigs(
+                  pubServer: 'https://pub.flutter-io.cn',
+                ),
+              ),
+            ),
+            workspacePackages: const ['a'],
+          );
+
+          await createProject(
+            workspaceDir,
+            Pubspec('a', version: Version(1, 2, 3)),
+          );
+
+          final config = await MelosWorkspaceConfig.fromWorkspaceRoot(
+            workspaceDir,
+          );
+          final melos = Melos(logger: logger, config: config);
+
+          await expectLater(melos.publish(force: true), completes);
+
+          expect(
+            logger.output.normalizeLines(),
+            contains('--server https://pub.flutter-io.cn'),
+          );
+        },
+      );
+
+      test(
+        'CLI --server flag takes precedence over config pubServer',
+        () async {
+          final logger = TestLogger();
+          final workspaceDir = await createTemporaryWorkspace(
+            configBuilder: (path) => MelosWorkspaceConfig(
+              path: path,
+              name: 'test_workspace',
+              packages: [
+                createGlob('packages/**', currentDirectoryPath: path),
+              ],
+              commands: const CommandConfigs(
+                publish: PublishCommandConfigs(
+                  pubServer: 'https://pub.flutter-io.cn',
+                ),
+              ),
+            ),
+            workspacePackages: const ['a'],
+          );
+
+          await createProject(
+            workspaceDir,
+            Pubspec('a', version: Version(1, 2, 3)),
+          );
+
+          final config = await MelosWorkspaceConfig.fromWorkspaceRoot(
+            workspaceDir,
+          );
+          final melos = Melos(logger: logger, config: config);
+
+          await expectLater(
+            melos.publish(force: true, pubServer: 'https://pub.dev'),
+            completes,
+          );
+
+          expect(
+            logger.output.normalizeLines(),
+            contains('--server https://pub.dev'),
+          );
+          expect(
+            logger.output.normalizeLines(),
+            isNot(contains('--server https://pub.flutter-io.cn')),
+          );
+        },
+      );
+    });
+
+    group('skipValidation', () {
+      test(
+        'passes --skip-validation flag to dart pub publish when enabled',
+        () async {
+          final logger = TestLogger();
+          final workspaceDir = await createTemporaryWorkspace(
+            configBuilder: (path) => MelosWorkspaceConfig(
+              path: path,
+              name: 'test_workspace',
+              packages: [
+                createGlob('packages/**', currentDirectoryPath: path),
+              ],
+            ),
+            workspacePackages: const ['a'],
+          );
+
+          await createProject(
+            workspaceDir,
+            Pubspec('a', version: Version(1, 2, 3)),
+          );
+
+          final config = await MelosWorkspaceConfig.fromWorkspaceRoot(
+            workspaceDir,
+          );
+          final melos = Melos(logger: logger, config: config);
+
+          await expectLater(
+            melos.publish(force: true, skipValidation: true),
+            completes,
+          );
+
+          expect(
+            logger.output.normalizeLines(),
+            contains('--skip-validation'),
+          );
+        },
+      );
+
+      test(
+        'does not pass --skip-validation flag to dart pub publish by default',
+        () async {
+          final logger = TestLogger();
+          final workspaceDir = await createTemporaryWorkspace(
+            configBuilder: (path) => MelosWorkspaceConfig(
+              path: path,
+              name: 'test_workspace',
+              packages: [
+                createGlob('packages/**', currentDirectoryPath: path),
+              ],
+            ),
+            workspacePackages: const ['a'],
+          );
+
+          await createProject(
+            workspaceDir,
+            Pubspec('a', version: Version(1, 2, 3)),
+          );
+
+          final config = await MelosWorkspaceConfig.fromWorkspaceRoot(
+            workspaceDir,
+          );
+          final melos = Melos(logger: logger, config: config);
+
+          await expectLater(melos.publish(force: true), completes);
+
+          expect(
+            logger.output.normalizeLines(),
+            isNot(contains('--skip-validation')),
+          );
+        },
+      );
+    });
+
+    group('config', () {
+      Future<TestLogger> runPublishWith(
+        PublishCommandConfigs publishConfigs, {
+        bool? skipValidation,
+      }) async {
+        final logger = TestLogger();
+        final workspaceDir = await createTemporaryWorkspace(
+          configBuilder: (path) => MelosWorkspaceConfig(
+            path: path,
+            name: 'test_workspace',
+            packages: [
+              createGlob('packages/**', currentDirectoryPath: path),
+            ],
+            commands: CommandConfigs(publish: publishConfigs),
+          ),
+          workspacePackages: const ['a'],
+        );
+
+        await createProject(
+          workspaceDir,
+          Pubspec('a', version: Version(1, 2, 3)),
+        );
+
+        final config = await MelosWorkspaceConfig.fromWorkspaceRoot(
+          workspaceDir,
+        );
+
+        await expectLater(
+          Melos(
+            logger: logger,
+            config: config,
+          ).publish(skipValidation: skipValidation),
+          completes,
+        );
+
+        return logger;
+      }
+
+      test('uses the configured force and skipValidation', () async {
+        // `force` skips the confirmation prompt, which would otherwise make
+        // this test hang.
+        final logger = await runPublishWith(
+          const PublishCommandConfigs(force: true, skipValidation: true),
+        );
+
+        expect(logger.output.normalizeLines(), contains('--skip-validation'));
+      });
+
+      test('command line options take precedence over the config', () async {
+        final logger = await runPublishWith(
+          const PublishCommandConfigs(force: true, skipValidation: true),
+          skipValidation: false,
+        );
+
+        expect(
+          logger.output.normalizeLines(),
+          isNot(contains('--skip-validation')),
+        );
+      });
+    });
+
+    test(
+      'does not print success when dart pub publish --dry-run fails',
+      () async {
+        final previousExitCode = exitCode;
+        addTearDown(() => exitCode = previousExitCode);
+
+        final logger = TestLogger();
+        final workspaceDir = await createTemporaryWorkspace(
+          configBuilder: (path) => MelosWorkspaceConfig(
+            path: path,
+            name: 'test_workspace',
+            packages: [
+              createGlob('packages/**', currentDirectoryPath: path),
+            ],
+          ),
+          workspacePackages: const ['collection'],
+        );
+
+        // collection is already on pub.dev at a much higher version, so
+        // dart pub publish --dry-run exits 65. Melos used to still print
+        // "validated successfully" because it only treated exitCode == 1
+        // as failure.
+        await createProject(
+          workspaceDir,
+          Pubspec('collection', version: Version(0, 1, 0)),
+        );
+
+        final config = await MelosWorkspaceConfig.fromWorkspaceRoot(
+          workspaceDir,
+        );
+        final melos = Melos(logger: logger, config: config);
+
+        await melos.publish(force: true);
+
+        final output = logger.output.normalizeLines();
+        expect(
+          output,
+          isNot(contains('All packages were validated successfully.')),
+        );
+        expect(exitCode, isNot(0));
+      },
+    );
+
+    test('should support number as pre release version', () async {
+      final logger = TestLogger();
+      final workspaceDir = await createTemporaryWorkspace(
+        configBuilder: (path) => MelosWorkspaceConfig(
+          path: path,
+          name: 'test_workspace',
+          packages: [
+            createGlob('packages/**', currentDirectoryPath: path),
+          ],
+        ),
+
+        workspacePackages: const ['a'],
+      );
+
+      await createProject(
+        workspaceDir,
+        Pubspec('a', version: Version(1, 2, 3, pre: '4')),
+      );
+
+      final config = await MelosWorkspaceConfig.fromWorkspaceRoot(
+        workspaceDir,
+      );
+      final melos = Melos(
+        config: config,
+        logger: logger,
+      );
+
+      await expectLater(melos.publish(force: true), completes);
+      final output = logger.output.normalizeLines().split('\n');
+      expect(output, contains('Publishing a 1.2.3-4 to https://pub.dev:'));
+    });
+  });
+}
+
+Package _dummyPackage(String name, {List<String> deps = const []}) {
+  return Package(
+    devDependencies: [],
+    dependencies: deps,
+    dependencyOverrides: [],
+    packageMap: {},
+    name: name,
+    path: '/',
+    pathRelativeToWorkspace: '',
+    version: Version(1, 0, 0),
+    publishTo: null,
+    pubspec: Pubspec('melos_test'),
+    categories: [],
+  );
+}

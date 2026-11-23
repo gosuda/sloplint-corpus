@@ -1,0 +1,1381 @@
+import 'dart:async';
+
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/misc.dart' show KeepAliveLink;
+import 'package:flutter_riverpod/src/internals.dart' show ProviderScopeState;
+import 'package:flutter_test/flutter_test.dart';
+import 'package:material_ui/material_ui.dart';
+import 'package:riverpod/src/internals.dart'
+    show ContainerReadElement, InternalProviderContainer;
+
+import '../../utils.dart';
+
+void main() {
+  testWidgets('TickerMode + mutation triggers assertion', (tester) async {
+    // Regression test for https://github.com/rrousselGit/riverpod/issues/4709
+    final container = ProviderContainer.test();
+
+    final rootProvider = NotifierProvider(
+      () => DeferredNotifier((ref, self) => 0),
+    );
+    final middle = Provider<int>(
+      name: 'middle',
+      (ref) => ref.watch(rootProvider),
+    );
+    final leaf = Provider<int>(name: 'leaf', (ref) => ref.watch(middle));
+
+    final testWidget = Consumer(
+      builder: (context, ref, _) {
+        ref.watch(middle);
+        ref.watch(leaf);
+
+        return const SizedBox();
+      },
+    );
+
+    Widget app({required bool tickerModeEnabled}) {
+      return TickerMode(
+        enabled: tickerModeEnabled,
+        child: UncontrolledProviderScope(
+          container: container,
+          child: testWidget,
+        ),
+      );
+    }
+
+    // pump with TickerMode disabled
+    await tester.pumpWidget(app(tickerModeEnabled: false));
+
+    // mutate
+    container.read(rootProvider.notifier).state++;
+
+    // pump with TickerMode enabled - asserts
+    await tester.pumpWidget(app(tickerModeEnabled: true));
+  });
+
+  group('Handles TickerMode', () {
+    testWidgets('Does not rebuild widgets when TickerMode changes', (
+      tester,
+    ) async {
+      var buildCount = 0;
+      final consumer = Consumer(
+        builder: (context, ref, child) {
+          buildCount++;
+          return Container();
+        },
+      );
+
+      await tester.pumpWidget(
+        ProviderScope(child: TickerMode(enabled: true, child: consumer)),
+      );
+
+      expect(buildCount, 1);
+
+      await tester.pumpWidget(
+        ProviderScope(child: TickerMode(enabled: false, child: consumer)),
+      );
+
+      expect(buildCount, 1);
+    });
+
+    testWidgets('e2e navigation', (tester) async {
+      final provider = Provider((ref) => 0);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          child: MaterialApp(
+            routes: {'/detail': (_) => const SizedBox()},
+            home: Consumer(
+              builder: (context, ref, child) {
+                ref.watch(provider);
+
+                return Container();
+              },
+            ),
+          ),
+        ),
+      );
+
+      final container = tester.container();
+      final element = container.readProviderElement(provider);
+      final navigator = tester.state<NavigatorState>(find.byType(Navigator));
+
+      expect(
+        element.dependents,
+        everyElement(
+          isA<ProviderSubscription>().having(
+            (e) => e.isPaused,
+            'isPaused',
+            false,
+          ),
+        ),
+      );
+
+      navigator.pushNamed('/detail');
+      await tester.pump();
+
+      expect(
+        element.dependents,
+        everyElement(
+          isA<ProviderSubscription>().having(
+            (e) => e.isPaused,
+            'isPaused',
+            false,
+          ),
+        ),
+      );
+
+      await tester.pumpAndSettle();
+
+      expect(
+        element.dependents,
+        everyElement(
+          isA<ProviderSubscription>().having(
+            (e) => e.isPaused,
+            'isPaused',
+            true,
+          ),
+        ),
+      );
+
+      navigator.pop();
+      await tester.pump();
+
+      expect(
+        element.dependents,
+        everyElement(
+          isA<ProviderSubscription>().having(
+            (e) => e.isPaused,
+            'isPaused',
+            false,
+          ),
+        ),
+      );
+    });
+
+    testWidgets('Pauses subscriptions based on TickerMode', (tester) async {
+      final expectActive = Provider((ref) => 0);
+      final expectPaused = Provider((ref) => 0);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          child: Column(
+            children: [
+              Consumer(
+                builder: (c, ref, _) {
+                  ref.listen(expectActive, (_, _) {});
+                  ref.watch(expectActive);
+                  ref.listenManual(expectActive, (_, _) {});
+
+                  return const SizedBox();
+                },
+              ),
+              TickerMode(
+                enabled: false,
+                child: Consumer(
+                  builder: (c, ref, _) {
+                    ref.listen(expectActive, (_, _) {});
+                    ref.watch(expectPaused);
+                    ref.listenManual(expectActive, (_, _) {});
+
+                    return const SizedBox();
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+
+      final container = tester.container();
+      final activeElement = container.readProviderElement(expectActive);
+      final pausedElement = container.readProviderElement(expectPaused);
+
+      expect(
+        pausedElement.dependents,
+        everyElement(
+          isA<ProviderSubscription>().having(
+            (e) => e.isPaused,
+            'isPaused',
+            true,
+          ),
+        ),
+      );
+      expect(
+        activeElement.dependents,
+        everyElement(
+          isA<ProviderSubscription>().having(
+            (e) => e.isPaused,
+            'isPaused',
+            false,
+          ),
+        ),
+      );
+    });
+
+    testWidgets(
+      'mounting a Consumer that watches a paused provider does not throw',
+      (tester) async {
+        var count = 0;
+        final dep = Provider((ref) => count++);
+        final provider = Provider((ref) => ref.watch(dep));
+
+        await tester.pumpWidget(const ProviderScope(child: SizedBox()));
+
+        final container = tester.container();
+
+        container.read(provider);
+        container.invalidate(dep);
+
+        await tester.pumpWidget(
+          ProviderScope(
+            child: Consumer(
+              builder: (c, ref, _) {
+                ref.watch(provider);
+                return const SizedBox();
+              },
+            ),
+          ),
+        );
+
+        expect(tester.takeException(), isNull);
+      },
+    );
+  });
+
+  testWidgets('Riverpod test', (tester) async {
+    // Regression test for https://github.com/rrousselGit/riverpod/pull/3156
+
+    final streamProvider = StreamProvider.autoDispose((ref) async* {});
+    final provider1 = Provider.autoDispose((ref) {
+      ref.keepAlive();
+
+      ref.watch(streamProvider);
+    });
+
+    await tester.pumpWidget(
+      ProviderScope(
+        child: Consumer(
+          builder: (context, ref, child) {
+            ref.watch(provider1);
+
+            return const SizedBox();
+          },
+        ),
+      ),
+    );
+  });
+
+  testWidgets('Passes key', (tester) async {
+    await tester.pumpWidget(
+      ProviderScope(
+        child: Consumer(
+          key: const Key('42'),
+          builder: (context, ref, _) {
+            return Container();
+          },
+        ),
+      ),
+    );
+
+    expect(find.byKey(const Key('42')), findsOneWidget);
+  });
+
+  testWidgets(
+    'Handles using ref.read inside initState on autoDispose providers',
+    (tester) async {
+      // Regression test for https://github.com/rrousselGit/riverpod/issues/3498
+      // When using autoDispose + ref.read, this could trigger a markNeedsBuild
+      // exception in the ProviderScope.
+      final provider = Provider.autoDispose((ref) => 0);
+
+      final widget = CallbackConsumerWidget(
+        initState: (context, ref) {
+          ref.read(provider);
+        },
+      );
+
+      await tester.pumpWidget(ProviderScope(child: widget));
+
+      // Should not have thrown an exception
+    },
+  );
+
+  testWidgets('Ref is unusable after dispose', (tester) async {
+    final provider = Provider((ref) => 0);
+    late WidgetRef ref;
+    await tester.pumpWidget(
+      ProviderScope(
+        child: Consumer(
+          builder: (context, r, child) {
+            ref = r;
+            return Container();
+          },
+        ),
+      ),
+    );
+
+    await tester.pumpWidget(ProviderScope(child: Container()));
+
+    final throwsDisposeError = throwsA(isStateError);
+
+    expect(() => ref.read(provider), throwsDisposeError);
+    expect(() => ref.watch(provider), throwsDisposeError);
+    expect(() => ref.refresh(provider), throwsDisposeError);
+    expect(() => ref.invalidate(provider), throwsDisposeError);
+    expect(() => ref.listen(provider, (_, _) {}), throwsDisposeError);
+    expect(() => ref.listenManual(provider, (_, _) {}), throwsDisposeError);
+  });
+
+  group('WidgetRef.exists', () {
+    testWidgets('simple use-case', (tester) async {
+      late WidgetRef ref;
+      await tester.pumpWidget(
+        ProviderScope(
+          child: Consumer(
+            builder: (context, r, child) {
+              ref = r;
+              return Container();
+            },
+          ),
+        ),
+      );
+
+      final provider = Provider((ref) => 0);
+
+      expect(ref.exists(provider), false);
+      expect(ref.exists(provider), false);
+
+      ref.read(provider);
+
+      expect(ref.exists(provider), true);
+    });
+  });
+
+  group('WidgetRef.watch errors emitted after build', () {
+    // https://github.com/rrousselGit/riverpod/issues/4432
+    // Such errors rebuild the widget so that `ref.watch` rethrows them,
+    // instead of being sent to the zone's uncaught error handler.
+
+    testWidgets('retry errors can be caught by the widget', (tester) async {
+      var attempt = 0;
+      var buildCount = 0;
+      final provider = Provider<String>((ref) {
+        attempt++;
+        throw Exception('Test error $attempt');
+      });
+
+      await tester.pumpWidget(
+        ProviderScope(
+          child: Consumer(
+            builder: (context, ref, _) {
+              buildCount++;
+              String displayText;
+              try {
+                displayText = ref.watch(provider);
+              } catch (_) {
+                displayText = 'Error caught';
+              }
+              return Text(displayText, textDirection: TextDirection.ltr);
+            },
+          ),
+        ),
+      );
+
+      expect(find.text('Error caught'), findsOneWidget);
+      expect(attempt, 1);
+      expect(buildCount, 1);
+
+      await tester.pump(const Duration(seconds: 30));
+      await tester.pump(const Duration(seconds: 30));
+
+      expect(tester.takeException(), isNull);
+      expect(attempt, greaterThan(1));
+      expect(buildCount, greaterThan(1));
+      expect(find.text('Error caught'), findsOneWidget);
+    });
+  });
+
+  testWidgets('WidgetRef.context exposes the BuildContext', (tester) async {
+    late WidgetRef ref;
+
+    await tester.pumpWidget(
+      CallbackConsumerWidget(
+        key: const Key('initState'),
+        initState: (ctx, r) {
+          ref = r;
+        },
+      ),
+    );
+
+    final consumerElement = tester.element(find.byType(CallbackConsumerWidget));
+
+    expect(ref.context, same(consumerElement));
+  });
+
+  testWidgets('throws if listen is used outside of `build`', (tester) async {
+    final provider = Provider((ref) => 0);
+
+    await tester.pumpWidget(
+      CallbackConsumerWidget(
+        key: const Key('initState'),
+        initState: (ctx, ref) {
+          ref.listen(provider, (prev, value) {});
+        },
+      ),
+    );
+
+    expect(tester.takeException(), isAssertionError);
+  });
+
+  testWidgets('works with providers that returns null', (tester) async {
+    final nullProvider = Provider((ref) => null);
+
+    Consumer(
+      builder: (context, ref, _) {
+        // should compile
+        ref.watch(nullProvider);
+        return Container();
+      },
+    );
+  });
+
+  testWidgets('can use "watch" inside ListView.builder', (tester) async {
+    final provider = Provider((ref) => 'hello world');
+
+    await tester.pumpWidget(
+      ProviderScope(
+        child: Directionality(
+          textDirection: TextDirection.ltr,
+          child: Consumer(
+            builder: (context, ref, _) {
+              return ListView.builder(
+                itemCount: 1,
+                itemBuilder: (context, index) {
+                  return Text(ref.watch(provider));
+                },
+              );
+            },
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('hello world'), findsOneWidget);
+  });
+
+  testWidgets('can extend ConsumerWidget', (tester) async {
+    await tester.pumpWidget(const ProviderScope(child: MyWidget()));
+
+    expect(find.text('hello world'), findsOneWidget);
+  });
+
+  testWidgets('hot-reload forces the widget to refresh', (tester) async {
+    var buildCount = 0;
+    await tester.pumpWidget(
+      ProviderScope(
+        child: Consumer(
+          builder: (context, ref, _) {
+            buildCount++;
+            return Container();
+          },
+        ),
+      ),
+    );
+
+    expect(find.byType(Container), findsOneWidget);
+    expect(buildCount, 1);
+
+    unawaited(tester.binding.reassembleApplication());
+    await tester.pump();
+
+    expect(find.byType(Container), findsOneWidget);
+    expect(buildCount, 2);
+  });
+
+  testWidgets(
+    'Consumer removing one of multiple listeners on a provider still listen to the provider',
+    (tester) async {
+      final stateProvider = NotifierProvider(
+        () => SettableNotifier((ref) => 0),
+        name: 'state',
+      );
+      final notifier0 = TestNotifier();
+      final notifier1 = TestNotifier(42);
+      final provider0 = NotifierProvider<TestNotifier, int>(
+        name: '0',
+        () => notifier0,
+      );
+      final provider1 = NotifierProvider<TestNotifier, int>(
+        name: '1',
+        () => notifier1,
+      );
+      var buildCount = 0;
+
+      await tester.pumpWidget(
+        ProviderScope(
+          child: Consumer(
+            builder: (c, ref, _) {
+              buildCount++;
+              final state = ref.watch(stateProvider);
+              final value = state == 0
+                  ? ref.watch(provider0)
+                  : ref.watch(provider1);
+
+              return Text(
+                '${ref.watch(provider0)} $value',
+                textDirection: TextDirection.ltr,
+              );
+            },
+          ),
+        ),
+      );
+      final container =
+          tester //
+              .state<ProviderScopeState>(find.byType(ProviderScope))
+              .container;
+
+      container.read(provider0);
+      container.read(provider1);
+      final familyState0 = container.getAllProviderElements().firstWhere((p) {
+        return p.provider == provider0;
+      });
+      final familyState1 = container.getAllProviderElements().firstWhere((p) {
+        return p.provider == provider1;
+      });
+
+      expect(buildCount, 1);
+      expect(familyState0.hasNonWeakListeners, true);
+      expect(familyState1.hasNonWeakListeners, false);
+      expect(find.text('0 0'), findsOneWidget);
+
+      notifier0.increment();
+      await tester.pump();
+
+      expect(buildCount, 2);
+      expect(find.text('1 1'), findsOneWidget);
+
+      notifier1.increment();
+      await tester.pump();
+
+      expect(buildCount, 2);
+
+      // changing the provider that computed is subscribed to
+      container.read(stateProvider.notifier).state = 1;
+      await tester.pump();
+
+      expect(buildCount, 3);
+      expect(find.text('1 43'), findsOneWidget);
+      expect(familyState1.hasNonWeakListeners, true);
+      expect(familyState0.hasNonWeakListeners, true);
+
+      notifier1.increment();
+      await tester.pump();
+
+      expect(buildCount, 4);
+      expect(find.text('1 44'), findsOneWidget);
+
+      notifier0.increment();
+      await tester.pump();
+
+      expect(buildCount, 5);
+      expect(find.text('2 44'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'Stops listening to a provider when recomputed but no longer using it',
+    (tester) async {
+      final stateProvider = NotifierProvider(
+        () => SettableNotifier((ref) => 0),
+        name: 'state',
+      );
+      final notifier0 = TestNotifier();
+      final notifier1 = TestNotifier(42);
+      final provider0 = NotifierProvider<TestNotifier, int>(
+        name: '0',
+        () => notifier0,
+      );
+      final provider1 = NotifierProvider<TestNotifier, int>(
+        name: '1',
+        () => notifier1,
+      );
+      var buildCount = 0;
+
+      await tester.pumpWidget(
+        ProviderScope(
+          child: Consumer(
+            builder: (c, ref, _) {
+              buildCount++;
+              final state = ref.watch(stateProvider);
+              final result =
+                  state ==
+                      0 //
+                  ? ref.watch(provider0)
+                  : ref.watch(provider1);
+              return Text('$result', textDirection: TextDirection.ltr);
+            },
+          ),
+        ),
+      );
+      final container =
+          tester //
+              .state<ProviderScopeState>(find.byType(ProviderScope))
+              .container;
+
+      container.read(provider0);
+      container.read(provider1);
+      final familyState0 = container.getAllProviderElements().firstWhere((p) {
+        return p.provider == provider0;
+      });
+      final familyState1 = container.getAllProviderElements().firstWhere((p) {
+        return p.provider == provider1;
+      });
+
+      expect(buildCount, 1);
+      expect(familyState0.hasNonWeakListeners, true);
+      expect(familyState1.hasNonWeakListeners, false);
+      expect(find.text('0'), findsOneWidget);
+
+      notifier0.increment();
+      await tester.pump();
+
+      expect(buildCount, 2);
+      expect(find.text('1'), findsOneWidget);
+
+      notifier1.increment();
+      await tester.pump();
+
+      expect(buildCount, 2);
+
+      // changing the provider that computed is subscribed to
+      container.read(stateProvider.notifier).state = 1;
+      await tester.pump();
+
+      expect(buildCount, 3);
+      expect(find.text('43'), findsOneWidget);
+      expect(familyState1.hasNonWeakListeners, true);
+      expect(familyState0.hasNonWeakListeners, false);
+
+      notifier1.increment();
+      await tester.pump();
+
+      expect(buildCount, 4);
+      expect(find.text('44'), findsOneWidget);
+
+      notifier0.increment();
+      await tester.pump();
+
+      expect(buildCount, 4);
+    },
+  );
+
+  testWidgets('Consumer supports changing the provider', (tester) async {
+    final notifier1 = TestNotifier();
+    final provider1 = NotifierProvider<TestNotifier, int>(() {
+      return notifier1;
+    });
+    final notifier2 = TestNotifier(42);
+    final provider2 = NotifierProvider<TestNotifier, int>(() {
+      return notifier2;
+    });
+    var buildCount = 0;
+
+    Widget build(NotifierProvider<TestNotifier, int> provider) {
+      return ProviderScope(
+        child: Consumer(
+          builder: (c, ref, _) {
+            buildCount++;
+            final value = ref.watch(provider);
+            return Text('$value', textDirection: TextDirection.ltr);
+          },
+        ),
+      );
+    }
+
+    await tester.pumpWidget(build(provider1));
+
+    expect(find.text('0'), findsOneWidget);
+    expect(buildCount, 1);
+
+    await tester.pumpWidget(build(provider2));
+
+    expect(find.text('42'), findsOneWidget);
+    expect(buildCount, 2);
+
+    notifier1.increment();
+    await tester.pump();
+
+    expect(find.text('42'), findsOneWidget);
+    expect(buildCount, 2);
+
+    notifier2.increment();
+    await tester.pump();
+
+    expect(find.text('43'), findsOneWidget);
+    expect(buildCount, 3);
+  });
+
+  testWidgets(
+    'multiple watch, when one of them forces rebuild, all dependencies are still flushed',
+    (tester) async {
+      final notifier = TestNotifier();
+      final provider = NotifierProvider<TestNotifier, int>(() {
+        return notifier;
+      });
+      var callCount = 0;
+      final computed = Provider<int>((ref) {
+        callCount++;
+        return ref.watch(provider);
+      });
+
+      await tester.pumpWidget(
+        ProviderScope(
+          child: Consumer(
+            builder: (context, ref, _) {
+              final first = ref.watch(provider);
+              final second = ref.watch(computed);
+              return Text('$first $second', textDirection: TextDirection.ltr);
+            },
+          ),
+        ),
+      );
+
+      expect(find.text('0 0'), findsOneWidget);
+      expect(callCount, 1);
+
+      notifier.increment();
+      await tester.pump();
+
+      expect(find.text('1 1'), findsOneWidget);
+      expect(callCount, 2);
+    },
+  );
+
+  testWidgets("don't rebuild if Provider ref't actually change", (
+    tester,
+  ) async {
+    final notifier = TestNotifier();
+    final provider = NotifierProvider<TestNotifier, int>(() => notifier);
+    final computed = Provider((ref) => !ref.watch(provider).isNegative);
+    var buildCount = 0;
+    final container = ProviderContainer.test();
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: Consumer(
+          builder: (c, ref, _) {
+            buildCount++;
+            return Text(
+              'isPositive ${ref.watch(computed)}',
+              textDirection: TextDirection.ltr,
+            );
+          },
+        ),
+      ),
+    );
+
+    expect(find.text('isPositive true'), findsOneWidget);
+    expect(buildCount, 1);
+
+    notifier.increment();
+    await tester.pump();
+
+    expect(find.text('isPositive true'), findsOneWidget);
+    expect(buildCount, 1);
+
+    notifier.state = -10;
+    await tester.pump();
+
+    expect(find.text('isPositive false'), findsOneWidget);
+    expect(buildCount, 2);
+
+    notifier.state = -5;
+    await tester.pump();
+
+    expect(find.text('isPositive false'), findsOneWidget);
+    expect(buildCount, 2);
+  });
+
+  testWidgets('remove listener when destroying the consumer', (tester) async {
+    final notifier = TestNotifier();
+    final provider = NotifierProvider<TestNotifier, int>(() => notifier);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        child: Consumer(
+          builder: (context, ref, _) {
+            final value = ref.watch(provider);
+            return Text('$value', textDirection: TextDirection.ltr);
+          },
+        ),
+      ),
+    );
+
+    final container =
+        tester //
+            .firstState<ProviderScopeState>(find.byType(ProviderScope))
+            .container;
+
+    final state = container.getAllProviderElements().firstWhere(
+      (s) => s.provider == provider,
+    );
+
+    expect(state.hasNonWeakListeners, true);
+    expect(find.text('0'), findsOneWidget);
+
+    await tester.pumpWidget(ProviderScope(child: Container()));
+
+    expect(state.hasNonWeakListeners, false);
+  });
+
+  testWidgets('Multiple providers', (tester) async {
+    final notifier = TestNotifier();
+    final firstProvider = NotifierProvider<TestNotifier, int>(() {
+      return notifier;
+    });
+    final notifier2 = TestNotifier();
+    final secondProvider = NotifierProvider<TestNotifier, int>(() {
+      return notifier2;
+    });
+
+    await tester.pumpWidget(
+      ProviderScope(
+        child: Consumer(
+          builder: (context, ref, _) {
+            final first = ref.watch(firstProvider);
+            final second = ref.watch(secondProvider);
+            return Text(
+              'first $first second $second',
+              textDirection: TextDirection.ltr,
+            );
+          },
+        ),
+      ),
+    );
+
+    expect(find.text('first 0 second 0'), findsOneWidget);
+
+    notifier.increment();
+    await tester.pump();
+
+    expect(find.text('first 1 second 0'), findsOneWidget);
+
+    notifier2.increment();
+    notifier2.increment();
+    await tester.pump();
+
+    expect(find.text('first 1 second 2'), findsOneWidget);
+  });
+
+  testWidgets('Consumer', (tester) async {
+    final notifier = TestNotifier();
+    final provider = NotifierProvider<TestNotifier, int>(() => notifier);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        child: Consumer(
+          builder: (context, ref, _) {
+            final count = ref.watch(provider);
+            return Text('$count', textDirection: TextDirection.ltr);
+          },
+        ),
+      ),
+    );
+
+    expect(find.text('0'), findsOneWidget);
+
+    notifier.increment();
+    await tester.pump();
+
+    expect(find.text('1'), findsOneWidget);
+
+    await tester.pumpWidget(ProviderScope(child: Container()));
+
+    notifier.increment();
+    await tester.pump();
+  });
+
+  testWidgets('changing provider', (tester) async {
+    final provider = Provider((_) => 0);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        child: Consumer(
+          builder: (context, ref, _) {
+            final value = ref.watch(provider);
+            return Text('$value', textDirection: TextDirection.ltr);
+          },
+        ),
+      ),
+    );
+
+    expect(find.text('0'), findsOneWidget);
+
+    final provider2 = Provider((_) => 42);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        child: Consumer(
+          builder: (context, ref, _) {
+            final value = ref.watch(provider2);
+            return Text('$value', textDirection: TextDirection.ltr);
+          },
+        ),
+      ),
+    );
+
+    expect(find.text('0'), findsNothing);
+    expect(find.text('42'), findsOneWidget);
+  });
+
+  testWidgets('can read scoped providers', (tester) async {
+    final provider = Provider((_) => 0);
+
+    final child = Consumer(
+      builder: (context, ref, _) {
+        final value = ref.watch(provider);
+        return Text('$value', textDirection: TextDirection.ltr);
+      },
+    );
+
+    await tester.pumpWidget(
+      ProviderScope(overrides: [provider.overrideWithValue(42)], child: child),
+    );
+
+    expect(find.text('42'), findsOneWidget);
+
+    await tester.pumpWidget(
+      ProviderScope(overrides: [provider.overrideWithValue(21)], child: child),
+    );
+
+    expect(find.text('21'), findsOneWidget);
+  });
+
+  testWidgets('Dependencies are closed even if dispose throws', (tester) async {
+    final container = ProviderContainer.test();
+    var show = true;
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: StatefulBuilder(
+          builder: (context, setState) {
+            return Column(
+              children: [
+                if (show) const _ThrowingDisposeConsumer(),
+                GestureDetector(
+                  onTap: () {
+                    setState(() {
+                      show = false;
+                    });
+                  },
+                  child: const Text('Remove', textDirection: TextDirection.ltr),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+
+    // Tap to remove the Consumer, which triggers its dispose()
+    // We expect a FlutterError because of the simulated exception in dispose
+    final exceptions = <dynamic>[];
+    final originalOnError = FlutterError.onError;
+    FlutterError.onError = (details) {
+      exceptions.add(details.exception);
+    };
+
+    await tester.tap(find.text('Remove'));
+    await tester.pump();
+
+    // Restore error handler
+    FlutterError.onError = originalOnError;
+
+    expect(exceptions, isNotEmpty);
+    expect(
+      exceptions.first.toString(),
+      contains('Simulated dispose exception'),
+    );
+
+    // Now modify the provider.
+    // If the subscriptions were not closed because dispose threw,
+    // markNeedsBuild() will be called on the defunct widget, crashing the test.
+    container.read(_counterProvider.notifier).increment();
+
+    // The provider update should succeed without any defunct assertion errors.
+  });
+
+  testWidgets('invalidating an unlistened keepAlive graph then re-watching it '
+      'during build must neither throw nor freeze the scheduler', (
+    tester,
+  ) async {
+    // https://github.com/rrousselGit/riverpod/issues/4812
+    var count = 0;
+    final counterProvider = NotifierProvider<DeferredNotifier<int>, int>(
+      () => DeferredNotifier((ref, self) => count),
+    );
+    final parentProvider = Provider<int>((ref) => ref.watch(counterProvider));
+    final childAProvider = Provider<int>((ref) => ref.watch(parentProvider));
+    final childBProvider = Provider<int>((ref) => ref.watch(parentProvider));
+
+    Widget pageA() {
+      return Consumer(
+        builder: (context, ref, _) {
+          final a = ref.watch(childAProvider);
+          final b = ref.watch(childBProvider);
+          return Text('a=$a b=$b', textDirection: TextDirection.ltr);
+        },
+      );
+    }
+
+    // 1. Mount and activate the graph (a page watches it).
+    await tester.pumpWidget(ProviderScope(child: pageA()));
+    final container = tester.container();
+
+    expect(find.text('a=0 b=0'), findsOneWidget);
+
+    // 2. Navigate away: no listener left -> the keepAlive graph is inactive.
+    await tester.pumpWidget(const ProviderScope(child: SizedBox()));
+
+    // 3. The root dependency changes while the graph is unlistened. The
+    //    refresh task runs, but skips the inactive elements: the graph
+    //    stays dirty.
+    count++;
+    container.invalidate(counterProvider);
+    await tester.pump();
+
+    // 4. Navigate back: PageA.build re-watches the stale graph.
+    await tester.pumpWidget(ProviderScope(child: pageA()));
+    expect(find.text('a=1 b=1'), findsOneWidget);
+
+    // 5. The scheduler must still be functional afterwards.
+    count++;
+    container.invalidate(counterProvider);
+    await tester.pump();
+    await tester.pump();
+
+    expect(container.read(counterProvider), 2);
+    expect(
+      find.text('a=2 b=2'),
+      findsOneWidget,
+      reason:
+          'scheduler is frozen: the providers were invalidated but '
+          'never rebuilt',
+    );
+  });
+
+  testWidgets('closing the KeepAliveLink of a previous element of a provider '
+      'does not close the subscription of a Consumer', (tester) async {
+    // https://github.com/rrousselGit/riverpod/issues/4806
+    final links = <KeepAliveLink>[];
+    final provider = Provider.autoDispose<int>((ref) {
+      links.add(ref.keepAlive());
+      return 0;
+    });
+
+    Widget page(int rebuild) {
+      return Consumer(
+        builder: (context, ref, _) {
+          return Text(
+            '${ref.watch(provider)} $rebuild',
+            textDirection: TextDirection.ltr,
+          );
+        },
+      );
+    }
+
+    await tester.pumpWidget(ProviderScope(child: page(0)));
+    final container = tester.container();
+
+    // Navigate away, then reset the provider while only its link retains it.
+    await tester.pumpWidget(const ProviderScope(child: SizedBox()));
+    container.invalidate(provider);
+    await tester.pump();
+
+    // Navigate back: the provider is mounted again, as a new element.
+    await tester.pumpWidget(ProviderScope(child: page(0)));
+    expect(links, hasLength(2));
+
+    links.first.close();
+    await tester.pump();
+
+    // Rebuild the Consumer without its provider changing.
+    await tester.pumpWidget(ProviderScope(child: page(1)));
+
+    expect(find.text('0 1'), findsOneWidget);
+  });
+
+  testWidgets('flushes the provider', (tester) async {
+    // Regression test for https://github.com/rrousselGit/riverpod/issues/4669
+    final dep = NotifierProvider(() => DeferredNotifier<int>((ref, _) => 0));
+    final provider = Provider((ref) => ref.watch(dep));
+
+    await tester.pumpWidget(
+      ProviderScope(
+        child: MaterialApp(
+          routes: {'/settings': (context) => Container()},
+          home: Consumer(
+            builder: (context, ref, _) {
+              final value = ref.watch(provider);
+              return Text('$value', textDirection: TextDirection.ltr);
+            },
+          ),
+        ),
+      ),
+    );
+
+    final container = tester.container();
+    final navigator = tester.state<NavigatorState>(find.byType(Navigator));
+
+    navigator.pushNamed('/settings');
+    await tester.pumpAndSettle();
+
+    container.read(dep.notifier).state++;
+
+    navigator.maybePop();
+    await tester.pumpAndSettle();
+
+    expect(find.text('1'), findsOneWidget);
+  });
+
+  for (final reverseWatchOrder in <bool>[false, true]) {
+    testWidgets(
+      'resuming a TickerMode consumer with a diamond dependency does not throw '
+      '(${reverseWatchOrder ? 'right first' : 'left first'})',
+      (tester) async {
+        // https://github.com/rrousselGit/riverpod/issues/4882
+        final container = ProviderContainer.test();
+        addTearDown(container.dispose);
+
+        final seed = NotifierProvider<DeferredNotifier<int>, int>(
+          () => DeferredNotifier((ref, self) => 0),
+        );
+        final shared = Provider<int>((ref) => ref.watch(seed));
+        final left = Provider<int>((ref) => ref.watch(shared) + 1);
+        final rightLeaf = Provider<int>((ref) => ref.watch(shared) * 2);
+        final right = Provider<int>((ref) => ref.watch(rightLeaf));
+        final top = Provider<int>((ref) {
+          if (reverseWatchOrder) {
+            final rightValue = ref.watch(right);
+            final leftValue = ref.watch(left);
+            return leftValue + rightValue;
+          }
+
+          final leftValue = ref.watch(left);
+          final rightValue = ref.watch(right);
+          return leftValue + rightValue;
+        });
+
+        Widget app({required bool enabled}) {
+          return UncontrolledProviderScope(
+            container: container,
+            child: TickerMode(
+              enabled: enabled,
+              child: Consumer(
+                builder: (context, ref, _) {
+                  final value = ref.watch(top);
+                  return Text('$value', textDirection: TextDirection.ltr);
+                },
+              ),
+            ),
+          );
+        }
+
+        await tester.pumpWidget(app(enabled: true));
+        expect(find.text('1'), findsOneWidget);
+
+        await tester.pumpWidget(app(enabled: false));
+        container.read(seed.notifier).state++;
+
+        await tester.pumpWidget(app(enabled: true));
+        expect(tester.takeException(), isNull);
+        expect(find.text('4'), findsOneWidget);
+
+        container.read(seed.notifier).state++;
+        await tester.pump();
+        expect(tester.takeException(), isNull);
+        expect(find.text('7'), findsOneWidget);
+      },
+    );
+  }
+
+  testWidgets(
+    'resuming a TickerMode consumer with a diamond dependency does not throw '
+    'when the sibling branch has another active listener',
+    (tester) async {
+      // https://github.com/rrousselGit/riverpod/issues/4882
+      final container = ProviderContainer.test();
+      addTearDown(container.dispose);
+
+      final seed = NotifierProvider<DeferredNotifier<int>, int>(
+        () => DeferredNotifier((ref, self) => 0),
+      );
+      final shared = Provider<int>((ref) => ref.watch(seed));
+      final left = Provider<int>((ref) => ref.watch(shared) + 1);
+      final rightLeaf = Provider<int>((ref) => ref.watch(shared) * 2);
+      final right = Provider<int>((ref) => ref.watch(rightLeaf));
+      final top = Provider<int>((ref) => ref.watch(left) + ref.watch(right));
+
+      Widget app({required bool enabled}) {
+        return UncontrolledProviderScope(
+          container: container,
+          child: Column(
+            textDirection: TextDirection.ltr,
+            children: [
+              TickerMode(
+                enabled: enabled,
+                child: Consumer(
+                  builder: (context, ref, _) => Text(
+                    'top ${ref.watch(top)}',
+                    textDirection: TextDirection.ltr,
+                  ),
+                ),
+              ),
+              // Never paused, so rightLeaf stays active while top is paused.
+              Consumer(
+                builder: (context, ref, _) => Text(
+                  'leaf ${ref.watch(rightLeaf)}',
+                  textDirection: TextDirection.ltr,
+                ),
+              ),
+            ],
+          ),
+        );
+      }
+
+      await tester.pumpWidget(app(enabled: true));
+      expect(find.text('top 1'), findsOneWidget);
+      expect(find.text('leaf 0'), findsOneWidget);
+
+      await tester.pumpWidget(app(enabled: false));
+      container.read(seed.notifier).state++;
+
+      await tester.pumpWidget(app(enabled: true));
+      expect(tester.takeException(), isNull);
+      expect(find.text('top 4'), findsOneWidget);
+      expect(find.text('leaf 2'), findsOneWidget);
+    },
+  );
+}
+
+class TestNotifier extends Notifier<int> {
+  TestNotifier([this._initialState = 0]);
+
+  final int _initialState;
+
+  @override
+  int build() => _initialState;
+
+  void increment() => state++;
+}
+
+final _provider = Provider((ref) => 'hello world');
+
+class MyWidget extends ConsumerWidget {
+  const MyWidget({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return Text(ref.watch(_provider), textDirection: TextDirection.rtl);
+  }
+}
+
+class CallbackConsumerWidget extends ConsumerStatefulWidget {
+  const CallbackConsumerWidget({
+    super.key,
+    this.initState,
+    this.didChangeDependencies,
+    this.dispose,
+    this.didUpdateWidget,
+    this.reassemble,
+  });
+
+  final void Function(BuildContext context, WidgetRef ref)? initState;
+  final void Function(BuildContext context, WidgetRef ref)?
+  didChangeDependencies;
+  final void Function(BuildContext context, WidgetRef ref)? dispose;
+  final void Function(
+    BuildContext context,
+    WidgetRef ref,
+    CallbackConsumerWidget oldWidget,
+  )?
+  didUpdateWidget;
+  final void Function(BuildContext context, WidgetRef ref)? reassemble;
+
+  @override
+  // ignore: library_private_types_in_public_api
+  _CallbackConsumerWidgetState createState() => _CallbackConsumerWidgetState();
+}
+
+class _CallbackConsumerWidgetState
+    extends ConsumerState<CallbackConsumerWidget> {
+  @override
+  void initState() {
+    super.initState();
+    widget.initState?.call(context, ref);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    widget.didChangeDependencies?.call(context, ref);
+  }
+
+  @override
+  void dispose() {
+    super.dispose();
+    widget.dispose?.call(context, ref);
+  }
+
+  @override
+  void reassemble() {
+    super.reassemble();
+    widget.reassemble?.call(context, ref);
+  }
+
+  @override
+  void didUpdateWidget(covariant CallbackConsumerWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    widget.didUpdateWidget?.call(context, ref, oldWidget);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container();
+  }
+}
+
+class _Counter extends Notifier<int> {
+  @override
+  int build() => 0;
+
+  void increment() => state++;
+}
+
+final _counterProvider = NotifierProvider<_Counter, int>(_Counter.new);
+
+class _ThrowingDisposeConsumer extends ConsumerStatefulWidget {
+  const _ThrowingDisposeConsumer({super.key});
+
+  @override
+  _ThrowingDisposeConsumerState createState() =>
+      _ThrowingDisposeConsumerState();
+}
+
+class _ThrowingDisposeConsumerState
+    extends ConsumerState<_ThrowingDisposeConsumer> {
+  @override
+  void dispose() {
+    super.dispose();
+    throw Exception('Simulated dispose exception');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    ref.watch(_counterProvider);
+    return const SizedBox();
+  }
+}

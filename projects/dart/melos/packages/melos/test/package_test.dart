@@ -1,0 +1,1322 @@
+import 'dart:io';
+
+import 'package:glob/glob.dart';
+import 'package:melos/melos.dart';
+import 'package:melos/src/common/glob.dart';
+import 'package:melos/src/common/http.dart';
+import 'package:melos/src/common/pub_credential.dart';
+import 'package:melos/src/package.dart';
+import 'package:path/path.dart' as p;
+import 'package:platform/platform.dart';
+import 'package:pub_semver/pub_semver.dart';
+import 'package:pubspec_parse/pubspec_parse.dart';
+import 'package:test/test.dart';
+
+import 'matchers.dart';
+import 'mock_env.dart';
+import 'utils.dart';
+
+const pubPackageJson = '''
+  {
+    "name": "melos",
+    "versions": [
+      {
+        "version": "1.0.0"
+      }
+    ]
+  }
+''';
+
+void main() {
+  // The `dependencies`/`dev_dependencies`/hosted `version:` rewrite paths
+  // used by `melos version` are now implemented with `YamlEditor` (see
+  // `_rewriteDependencyVersionAtPath` in `commands/version.dart`) instead of
+  // hand-rolled regexes, so they're covered end-to-end via `melos version`
+  // in `test/commands/version_test.dart` rather than as standalone regex
+  // unit tests here. Only the git `ref:` tag rewrite still uses a regex,
+  // since its version is fused into a single tag string rather than being
+  // its own scalar node.
+  group('replace version RegExp', () {
+    const testedVersions = [
+      '0.1.2+3',
+      '1.2.3+4',
+      '1.2.3-dev',
+      '1.2.3-dev.4',
+      '0.1.2',
+      '1.2.3',
+      '10.0.0',
+      '0.10.0',
+      '0.0.10',
+    ];
+
+    group('dependencyTag', () {
+      testedVersions.forEach(testDependencyTagReplaceRegex);
+    });
+  });
+
+  group('MelosPackage', () {
+    late MelosWorkspace workspace;
+
+    setUp(() async {
+      final workspaceDir = await createTemporaryWorkspace(
+        workspacePackages: ['melos'],
+      );
+
+      await createProject(
+        workspaceDir,
+        Pubspec('melos', version: Version(0, 0, 0)),
+      );
+
+      final config = await MelosWorkspaceConfig.fromWorkspaceRoot(workspaceDir);
+      final logger = TestLogger();
+      final melos = Melos(logger: logger, config: config);
+      await melos.bootstrap();
+
+      workspace = await MelosWorkspace.fromConfig(
+        config,
+        logger: logger.toMelosLogger(),
+      );
+    });
+
+    group('When requests published packages', () {
+      final pubCredentialStoreMock = PubCredentialStore([]);
+
+      setUpAll(() {
+        internalPubCredentialStore = pubCredentialStoreMock;
+      });
+
+      tearDownAll(() {
+        internalPubCredentialStore = PubCredentialStore([]);
+      });
+
+      test('Should fetch package from pub.dev by default', () async {
+        final uri = Uri.parse('https://pub.dev/api/packages/melos');
+        internalHttpClient = HttpClientMock(
+          (request) {
+            expect(request.url, uri);
+            return HttpClientMock.parseResponse(pubPackageJson);
+          },
+        );
+
+        final package = workspace.allPackages.values.first;
+        final pubPackage = await package.getPublishedPackage();
+
+        expect(pubPackage?.name, isNotEmpty);
+      });
+
+      test(
+        'Should fetch package from PUB_HOSTED_URL if present',
+        withMockPlatform(
+          () async {
+            final uri = Uri.parse('http://localhost:8080/api/packages/melos');
+            internalHttpClient = HttpClientMock(
+              (request) {
+                expect(request.url, uri);
+                return HttpClientMock.parseResponse(pubPackageJson);
+              },
+            );
+
+            final package = workspace.allPackages.values.first;
+            final pubPackage = await package.getPublishedPackage();
+
+            expect(pubPackage?.name, isNotEmpty);
+          },
+          platform: FakePlatform.fromPlatform(const LocalPlatform())
+            ..environment['PUB_HOSTED_URL'] = 'http://localhost:8080',
+        ),
+      );
+
+      test('Should not fetch versions for private package', () async {
+        final workspaceBuilder = VirtualWorkspaceBuilder('name: test');
+        workspaceBuilder.addPackage('''
+            name: a
+          ''');
+        workspaceBuilder.addPackage('''
+            name: b
+            version: 0.0.0
+            publish_to: none
+          ''');
+        final workspace = workspaceBuilder.build();
+
+        expect(
+          await workspace.allPackages['a']!.getPublishedPackage(),
+          isNull,
+        );
+        expect(
+          await workspace.allPackages['b']!.getPublishedPackage(),
+          isNull,
+        );
+      });
+    });
+
+    group('When requests published packages for private registries', () {
+      final fakeCredential = PubCredential(
+        url: Uri.parse('https://fake.registry'),
+        token: 'fake_token',
+      );
+
+      final pubCredentialStoreMock = PubCredentialStore([fakeCredential]);
+
+      setUpAll(() {
+        internalPubCredentialStore = pubCredentialStoreMock;
+      });
+
+      tearDownAll(() {
+        internalPubCredentialStore = PubCredentialStore([]);
+      });
+
+      test(
+        'Should fetch without credentials',
+        () async {
+          final uri = Uri.parse('https://pub.dev/api/packages/melos');
+          internalHttpClient = HttpClientMock(
+            (request) {
+              expect(request.url, uri);
+              expect(
+                request.headers,
+                isNot(contains(HttpHeaders.authorizationHeader)),
+              );
+              return HttpClientMock.parseResponse(pubPackageJson);
+            },
+          );
+
+          final package = workspace.allPackages.values.first;
+          final pubPackage = await package.getPublishedPackage();
+
+          expect(pubPackage?.name, isNotEmpty);
+        },
+      );
+
+      test(
+        'Should fetch from private registry if present',
+        withMockPlatform(
+          () async {
+            final uri = fakeCredential.url.resolve('api/packages/melos');
+            internalHttpClient = HttpClientMock(
+              (request) {
+                expect(request.url, uri);
+                expect(
+                  request.headers[HttpHeaders.authorizationHeader],
+                  fakeCredential.getAuthHeader(),
+                );
+                return HttpClientMock.parseResponse(pubPackageJson);
+              },
+            );
+
+            final package = workspace.allPackages.values.first;
+            final pubPackage = await package.getPublishedPackage();
+
+            expect(pubPackage?.name, isNotEmpty);
+          },
+          platform: FakePlatform.fromPlatform(const LocalPlatform())
+            ..environment['PUB_HOSTED_URL'] = fakeCredential.url.toString(),
+        ),
+      );
+    });
+  });
+
+  group('Package', () {
+    group('allTransitiveDependenciesInWorkspace', () {
+      test('does not included transitive dev dependencies', () {
+        final workspaceBuilder = VirtualWorkspaceBuilder('name: test');
+        workspaceBuilder.addPackage('''
+            name: a
+          ''');
+        workspaceBuilder.addPackage('''
+            name: b
+            dev_dependencies:
+              a: any
+          ''');
+        workspaceBuilder.addPackage('''
+            name: c
+            dependencies:
+              b: any
+          ''');
+        final workspace = workspaceBuilder.build();
+        final cPackage = workspace.allPackages['c']!;
+        expect(cPackage.allTransitiveDependenciesInWorkspace.keys, ['b']);
+      });
+    });
+
+    group('isFlutterPackage', () {
+      MelosWorkspace buildWorkspace(List<String> pubspecs) {
+        final workspaceBuilder = VirtualWorkspaceBuilder('name: test');
+        pubspecs.forEach(workspaceBuilder.addPackage);
+        return workspaceBuilder.build();
+      }
+
+      test('is false for a package that does not need Flutter', () {
+        final workspace = buildWorkspace([
+          '''
+            name: a
+            dependencies:
+              path: any
+          ''',
+        ]);
+        expect(workspace.allPackages['a']!.isFlutterPackage, isFalse);
+      });
+
+      test('is true for a direct dependency on the Flutter SDK', () {
+        final workspace = buildWorkspace([
+          '''
+            name: a
+            dependencies:
+              flutter:
+                sdk: flutter
+          ''',
+        ]);
+        expect(workspace.allPackages['a']!.isFlutterPackage, isTrue);
+      });
+
+      test('is true for a dev dependency that ships with the Flutter SDK', () {
+        final workspace = buildWorkspace([
+          '''
+            name: a
+            dev_dependencies:
+              flutter_test:
+                sdk: flutter
+          ''',
+        ]);
+        expect(workspace.allPackages['a']!.isFlutterPackage, isTrue);
+      });
+
+      test('is true for the flutter package from another source', () {
+        final workspace = buildWorkspace([
+          '''
+            name: a
+            dependencies:
+              flutter:
+                path: ../flutter/packages/flutter
+          ''',
+        ]);
+        expect(workspace.allPackages['a']!.isFlutterPackage, isTrue);
+      });
+
+      test('is false when only the dev dependencies or the dependency '
+          'overrides of a workspace dependency need Flutter', () {
+        final workspace = buildWorkspace([
+          '''
+            name: a
+            dev_dependencies:
+              flutter_test:
+                sdk: flutter
+            dependency_overrides:
+              flutter:
+                sdk: flutter
+          ''',
+          '''
+            name: b
+            dependencies:
+              a: any
+          ''',
+          '''
+            name: c
+            dev_dependencies:
+              a: any
+          ''',
+        ]);
+        expect(workspace.allPackages['a']!.isFlutterPackage, isTrue);
+        expect(workspace.allPackages['b']!.isFlutterPackage, isFalse);
+        expect(workspace.allPackages['c']!.isFlutterPackage, isFalse);
+      });
+
+      test('is true for a dev dependency on a workspace package that '
+          'requires Flutter', () {
+        final workspace = buildWorkspace([
+          '''
+            name: a
+            dependencies:
+              flutter:
+                sdk: flutter
+          ''',
+          '''
+            name: b
+            dev_dependencies:
+              a: any
+          ''',
+        ]);
+        expect(workspace.allPackages['b']!.isFlutterPackage, isTrue);
+      });
+
+      test('does not make a Dart package with a lib/main.dart an app', () {
+        final workspace = buildWorkspace([
+          '''
+            name: a
+            dependencies:
+              flutter:
+                sdk: flutter
+          ''',
+          '''
+            name: b
+            dependencies:
+              a: any
+          ''',
+        ]);
+        final package = workspace.allPackages['b']!;
+        File(
+          p.join(package.path, 'lib', 'main.dart'),
+        ).createSync(recursive: true);
+
+        expect(package.isFlutterPackage, isTrue);
+        expect(package.isFlutterApp, isFalse);
+        expect(package.type, PackageType.flutterPackage);
+      });
+
+      test('is true for a Flutter SDK constraint in the environment', () {
+        final workspace = buildWorkspace([
+          '''
+            name: a
+            environment:
+              sdk: ^3.0.0
+              flutter: ">=3.0.0"
+          ''',
+        ]);
+        expect(workspace.allPackages['a']!.isFlutterPackage, isTrue);
+      });
+
+      test('is true when a transitive workspace dependency needs Flutter', () {
+        final workspace = buildWorkspace([
+          '''
+            name: a
+            dependencies:
+              flutter:
+                sdk: flutter
+          ''',
+          '''
+            name: b
+            dependencies:
+              a: any
+          ''',
+          '''
+            name: c
+            dependencies:
+              b: any
+          ''',
+          '''
+            name: d
+          ''',
+        ]);
+        expect(workspace.allPackages['b']!.isFlutterPackage, isTrue);
+        expect(workspace.allPackages['c']!.isFlutterPackage, isTrue);
+        expect(workspace.allPackages['d']!.isFlutterPackage, isFalse);
+      });
+
+      test('handles dependency cycles between workspace packages', () {
+        final workspace = buildWorkspace([
+          '''
+            name: a
+            dependencies:
+              b: any
+          ''',
+          '''
+            name: b
+            dependencies:
+              a: any
+              flutter:
+                sdk: flutter
+          ''',
+          '''
+            name: c
+            dependencies:
+              d: any
+          ''',
+          '''
+            name: d
+            dependencies:
+              c: any
+          ''',
+        ]);
+        expect(workspace.allPackages['a']!.isFlutterPackage, isTrue);
+        expect(workspace.allPackages['b']!.isFlutterPackage, isTrue);
+        expect(workspace.allPackages['c']!.isFlutterPackage, isFalse);
+        expect(workspace.allPackages['d']!.isFlutterPackage, isFalse);
+      });
+    });
+
+    group('applying filters', () {
+      test('applyCategory', () {
+        Package createPackage(String name, List<String> category) {
+          return Package(
+            devDependencies: [],
+            dependencies: [],
+            dependencyOverrides: [],
+            packageMap: {},
+            name: name,
+            path: '/test',
+            pathRelativeToWorkspace: 'test',
+            version: Version(1, 0, 0),
+            publishTo: Uri(),
+            pubspec: Pubspec('melos_test'),
+            categories: category,
+          );
+        }
+
+        final packages = [
+          createPackage('package1', ['ab', 'bc']),
+          createPackage('package2', ['bc', 'cd']),
+          createPackage('package3', ['ab', 'cd']),
+        ];
+
+        final result1 = packages.applyCategories(
+          [Glob('ab')],
+        );
+
+        expect(
+          result1,
+          [
+            isA<Package>().having((p) => p.name, 'name', 'package1'),
+            isA<Package>().having((p) => p.name, 'name', 'package3'),
+          ],
+        );
+
+        final result2 = packages.applyCategories(
+          [Glob('*b*')],
+        );
+
+        expect(
+          result2,
+          [
+            isA<Package>().having((p) => p.name, 'name', 'package1'),
+            isA<Package>().having((p) => p.name, 'name', 'package2'),
+            isA<Package>().having((p) => p.name, 'name', 'package3'),
+          ],
+        );
+      });
+    });
+
+    // https://github.com/invertase/melos/issues/164
+    group('isFlutterApp', () {
+      Package buildPackage({
+        required String pubspec,
+        String melosYaml = 'name: test',
+        List<String> entryPointFiles = const [],
+      }) {
+        final workspaceBuilder = VirtualWorkspaceBuilder(melosYaml)
+          ..addPackage(pubspec);
+        final package = workspaceBuilder.build().allPackages['a']!;
+        for (final entryPointFile in entryPointFiles) {
+          File(
+            p.joinAll([package.path, ...p.posix.split(entryPointFile)]),
+          ).createSync(recursive: true);
+        }
+        return package;
+      }
+
+      const flutterPubspec = '''
+        name: a
+        dependencies:
+          flutter:
+            sdk: flutter
+      ''';
+      const melosYamlWithEntryPoint = '''
+        name: test
+        ide:
+          intellij:
+            runArguments:
+              a:
+                - name: development
+                  entryPoint: lib/main_development.dart
+      ''';
+
+      test('is true when the default entry point exists', () {
+        final package = buildPackage(
+          pubspec: flutterPubspec,
+          entryPointFiles: ['lib/main.dart'],
+        );
+        expect(package.isFlutterApp, isTrue);
+        expect(package.type, PackageType.flutterApp);
+      });
+
+      test('is false without any entry point', () {
+        final package = buildPackage(pubspec: flutterPubspec);
+        expect(package.isFlutterApp, isFalse);
+        expect(package.type, PackageType.flutterPackage);
+      });
+
+      test('is false when the configured entry point does not exist', () {
+        final package = buildPackage(
+          pubspec: flutterPubspec,
+          melosYaml: melosYamlWithEntryPoint,
+        );
+        expect(package.isFlutterApp, isFalse);
+        expect(package.type, PackageType.flutterPackage);
+      });
+
+      test('is false for an entry point that is not configured', () {
+        final package = buildPackage(
+          pubspec: flutterPubspec,
+          entryPointFiles: ['lib/main_development.dart'],
+        );
+        expect(package.isFlutterApp, isFalse);
+      });
+
+      test('is true when a configured entry point exists', () {
+        final package = buildPackage(
+          pubspec: flutterPubspec,
+          melosYaml: melosYamlWithEntryPoint,
+          entryPointFiles: ['lib/main_development.dart'],
+        );
+        expect(package.entryPoints, ['lib/main_development.dart']);
+        expect(package.isFlutterApp, isTrue);
+        expect(package.type, PackageType.flutterApp);
+      });
+
+      test('is false for a plugin with a configured entry point', () {
+        final package = buildPackage(
+          pubspec: '''
+            name: a
+            dependencies:
+              flutter:
+                sdk: flutter
+            flutter:
+              plugin:
+                platforms:
+                  android:
+                    package: com.example.a
+                    pluginClass: APlugin
+          ''',
+          melosYaml: melosYamlWithEntryPoint,
+          entryPointFiles: ['lib/main_development.dart'],
+        );
+        expect(package.isFlutterApp, isFalse);
+        expect(package.type, PackageType.flutterPlugin);
+      });
+
+      test('is false for a Dart package with a configured entry point', () {
+        final package = buildPackage(
+          pubspec: 'name: a',
+          melosYaml: melosYamlWithEntryPoint,
+          entryPointFiles: ['lib/main_development.dart'],
+        );
+        expect(package.isFlutterApp, isFalse);
+      });
+
+      test('uses the entry points of the workspace configuration', () async {
+        final workspaceDir = await createTemporaryWorkspace(
+          workspacePackages: ['a'],
+          configBuilder: (path) => MelosWorkspaceConfig(
+            path: path,
+            name: 'test_workspace',
+            packages: [createGlob('packages/**', currentDirectoryPath: path)],
+            ide: const IDEConfigs(
+              intelliJ: IntelliJConfig(
+                runArguments: {
+                  'a': [
+                    IdeRunConfiguration(
+                      name: 'development',
+                      entryPoint: 'lib/main_development.dart',
+                    ),
+                  ],
+                },
+              ),
+            ),
+          ),
+        );
+        final packageDir = await createProject(
+          workspaceDir,
+          Pubspec(
+            'a',
+            dependencies: {'flutter': SdkDependency('flutter')},
+          ),
+        );
+        File(
+          p.join(packageDir.path, 'lib', 'main_development.dart'),
+        ).createSync(recursive: true);
+
+        final config = await MelosWorkspaceConfig.fromWorkspaceRoot(
+          workspaceDir,
+        );
+        final workspace = await MelosWorkspace.fromConfig(
+          config,
+          logger: TestLogger().toMelosLogger(),
+        );
+
+        expect(workspace.allPackages['a']!.isFlutterApp, isTrue);
+      });
+    });
+  });
+
+  group('PackageFilters', () {
+    test('default', () {
+      const filters = PackageFilters();
+
+      expect(filters.dependsOn, isEmpty);
+      expect(filters.noDependsOn, isEmpty);
+      expect(filters.dirExists, isEmpty);
+      expect(filters.fileExists, isEmpty);
+      expect(filters.ignore, isEmpty);
+      expect(filters.scope, isEmpty);
+      expect(filters.categories, isEmpty);
+      expect(filters.includeDependencies, false);
+      expect(filters.includeDependents, false);
+      expect(filters.includePrivatePackages, null);
+      expect(filters.published, null);
+      expect(filters.diff, null);
+    });
+
+    group('copyWithWithDiff', () {
+      test('can assign null', () {
+        const filters = PackageFilters(diff: '123');
+
+        expect(filters.copyWithDiff(null).diff, null);
+      });
+
+      test('clone properties besides diff', () {
+        final filters = PackageFilters(
+          dependsOn: const ['a'],
+          dirExists: const ['a'],
+          fileExists: const ['a'],
+          flutter: true,
+          scope: [Glob('a')],
+          categories: [Glob('a')],
+          ignore: [Glob('a')],
+          includeDependencies: true,
+          includeDependents: true,
+          includePrivatePackages: false,
+          noDependsOn: const ['a'],
+          published: true,
+          diff: '123',
+        );
+
+        final copy = filters.copyWithDiff('456');
+
+        expect(copy.diff, '456');
+        expect(copy.dependsOn, filters.dependsOn);
+        expect(copy.dirExists, filters.dirExists);
+        expect(copy.fileExists, filters.fileExists);
+        expect(copy.scope, filters.scope);
+        expect(copy.categories, filters.categories);
+        expect(copy.ignore, filters.ignore);
+        expect(copy.includeDependencies, filters.includeDependencies);
+        expect(copy.includeDependents, filters.includeDependents);
+        expect(copy.includePrivatePackages, filters.includePrivatePackages);
+        expect(copy.noDependsOn, filters.noDependsOn);
+        expect(copy.published, filters.published);
+      });
+    });
+  });
+
+  group('PackageFilters.fromYaml', () {
+    test('parses postFilters', () {
+      final filters = PackageFilters.fromYaml(
+        const {
+          'scope': 'a',
+          'includeDependencies': true,
+          'postFilters': {
+            'dependsOn': 'build_runner',
+            'flutter': false,
+          },
+        },
+        path: 'scripts/test/packageFilters',
+        workspacePath: '.',
+      );
+
+      expect(filters.includeDependencies, isTrue);
+      expect(
+        filters.postFilters,
+        const PackageFilters(dependsOn: ['build_runner'], flutter: false),
+      );
+    });
+
+    test('serializes category', () {
+      final filters = PackageFilters(
+        scope: [Glob('a')],
+        categories: [Glob('b')],
+      );
+
+      expect(filters.toJson(), {
+        'scope': ['a'],
+        'category': ['b'],
+      });
+    });
+
+    test('serializes postFilters', () {
+      const filters = PackageFilters(
+        includeDependents: true,
+        postFilters: PackageFilters(dirExists: ['test']),
+      );
+
+      expect(
+        PackageFilters.fromYaml(
+          filters.toJson(),
+          path: 'scripts/test/packageFilters',
+          workspacePath: '.',
+        ),
+        filters,
+      );
+    });
+
+    for (final key in [
+      'includeDependents',
+      'includeDependencies',
+    ]) {
+      test('throws when postFilters contains $key', () {
+        expect(
+          () => PackageFilters.fromYaml(
+            {
+              'postFilters': {key: true},
+            },
+            path: 'scripts/test/packageFilters',
+            workspacePath: '.',
+          ),
+          throwsMelosConfigException(),
+        );
+      });
+    }
+
+    test('throws when postFilters contains postFilters', () {
+      expect(
+        () => PackageFilters.fromYaml(
+          const {
+            'postFilters': {
+              'postFilters': {'scope': 'a'},
+            },
+          },
+          path: 'scripts/test/packageFilters',
+          workspacePath: '.',
+        ),
+        throwsMelosConfigException(),
+      );
+    });
+  });
+
+  group('PackageMap.addPackage', () {
+    test('adds package when no name conflict', () async {
+      final logger = TestLogger().toMelosLogger();
+
+      // Create packages map manually
+      final packageA = Package(
+        name: 'package_a',
+        path: '/test/packages/package_a',
+        pathRelativeToWorkspace: 'packages/package_a',
+        version: Version.parse('1.0.0'),
+        publishTo: null,
+        packageMap: {},
+        dependencies: [],
+        devDependencies: [],
+        dependencyOverrides: [],
+        pubspec: Pubspec('package_a'),
+        categories: [],
+      );
+
+      final packageB = Package(
+        name: 'package_b',
+        path: '/test/packages/package_b',
+        pathRelativeToWorkspace: 'packages/package_b',
+        version: Version.parse('1.0.0'),
+        publishTo: null,
+        packageMap: {},
+        dependencies: [],
+        devDependencies: [],
+        dependencyOverrides: [],
+        pubspec: Pubspec('package_b'),
+        categories: [],
+      );
+
+      final originalPackages = PackageMap({
+        'package_a': packageA,
+        'package_b': packageB,
+      }, logger);
+
+      final newPackage = Package(
+        name: 'new_package',
+        path: '/test',
+        pathRelativeToWorkspace: '.',
+        version: Version.parse('1.0.0'),
+        publishTo: null,
+        packageMap: {},
+        dependencies: [],
+        devDependencies: [],
+        dependencyOverrides: [],
+        pubspec: Pubspec('new_package'),
+        categories: [],
+      );
+
+      final combined = originalPackages.addPackage(newPackage);
+
+      expect(combined.length, 3);
+      expect(combined.keys, contains('new_package'));
+      expect(combined.keys, contains('package_a'));
+      expect(combined.keys, contains('package_b'));
+    });
+
+    test('ignores package when name conflicts', () async {
+      final logger = TestLogger().toMelosLogger();
+
+      // Create packages map with conflicting name
+      final conflictingPackage = Package(
+        name: 'conflicting_name',
+        path: '/test/packages/conflicting_name',
+        pathRelativeToWorkspace: 'packages/conflicting_name',
+        version: Version.parse('1.0.0'),
+        publishTo: null,
+        packageMap: {},
+        dependencies: [],
+        devDependencies: [],
+        dependencyOverrides: [],
+        pubspec: Pubspec('conflicting_name'),
+        categories: [],
+      );
+
+      final packageB = Package(
+        name: 'package_b',
+        path: '/test/packages/package_b',
+        pathRelativeToWorkspace: 'packages/package_b',
+        version: Version.parse('1.0.0'),
+        publishTo: null,
+        packageMap: {},
+        dependencies: [],
+        devDependencies: [],
+        dependencyOverrides: [],
+        pubspec: Pubspec('package_b'),
+        categories: [],
+      );
+
+      final originalPackages = PackageMap({
+        'conflicting_name': conflictingPackage,
+        'package_b': packageB,
+      }, logger);
+
+      final newPackage = Package(
+        name: 'conflicting_name',
+        path: '/test',
+        pathRelativeToWorkspace: '.',
+        version: Version.parse('1.0.0'),
+        publishTo: null,
+        packageMap: {},
+        dependencies: [],
+        devDependencies: [],
+        dependencyOverrides: [],
+        pubspec: Pubspec('conflicting_name'),
+        categories: [],
+      );
+
+      final combined = originalPackages.addPackage(newPackage);
+
+      expect(combined.length, 2);
+      expect(combined.keys, contains('conflicting_name'));
+      expect(combined.keys, contains('package_b'));
+      // Ensure the original package is kept, not the new package
+      expect(
+        combined['conflicting_name']!.path,
+        '/test/packages/conflicting_name',
+      );
+    });
+
+    test('preserves categories from added package', () async {
+      final logger = TestLogger().toMelosLogger();
+
+      // Create packages map manually
+      final packageA = Package(
+        name: 'package_a',
+        path: '/test/packages/package_a',
+        pathRelativeToWorkspace: 'packages/package_a',
+        version: Version.parse('1.0.0'),
+        publishTo: null,
+        packageMap: {},
+        dependencies: [],
+        devDependencies: [],
+        dependencyOverrides: [],
+        pubspec: Pubspec('package_a'),
+        categories: ['packages'],
+      );
+
+      final originalPackages = PackageMap({
+        'package_a': packageA,
+      }, logger);
+
+      final newPackage = Package(
+        name: 'new_package',
+        path: '/test',
+        pathRelativeToWorkspace: '.',
+        version: Version.parse('1.0.0'),
+        publishTo: null,
+        packageMap: {},
+        dependencies: [],
+        devDependencies: [],
+        dependencyOverrides: [],
+        pubspec: Pubspec('new_package'),
+        categories: ['app'], // package already has categories
+      );
+
+      final combined = originalPackages.addPackage(newPackage);
+
+      expect(combined.length, 2);
+      expect(combined.keys, contains('new_package'));
+
+      // Check that package categories are preserved
+      final newPkg = combined['new_package']!;
+      expect(newPkg.categories, contains('app'));
+      expect(newPkg.categories, hasLength(1));
+    });
+  });
+
+  group('PackageMap.resolveRootPackage', () {
+    test(
+      'assigns categories to root package based on workspace configuration',
+      () async {
+        final logger = TestLogger().toMelosLogger();
+        final tempDir = await createTemporaryWorkspace(workspacePackages: []);
+
+        // Create a pubspec.yaml for the root package
+        final rootPubspec = File(p.join(tempDir.path, 'pubspec.yaml'));
+        await rootPubspec.writeAsString('''
+name: test_workspace
+environment:
+  sdk: ^3.0.0
+''');
+
+        // Define categories that should match the root package
+        final workspaceCategories = {
+          'app': [Glob('.')],
+          'backend': [Glob('backend/**')],
+          'packages': [Glob('packages/**')],
+        };
+
+        final rootPackage = await PackageMap.resolveRootPackage(
+          workspacePath: tempDir.path,
+          logger: logger,
+          categories: workspaceCategories,
+        );
+
+        expect(rootPackage.name, 'test_workspace');
+        expect(rootPackage.categories, contains('app'));
+        expect(rootPackage.categories, hasLength(1));
+        expect(rootPackage.categories, isNot(contains('backend')));
+        expect(rootPackage.categories, isNot(contains('packages')));
+
+        // Cleanup
+        await tempDir.delete(recursive: true);
+      },
+    );
+  });
+
+  group('PackageMap.resolvePackages - nested workspaces (enabled)', () {
+    test(
+      'discovers packages in nested workspaces',
+      () async {
+        final workspaceDir = await createTemporaryWorkspace(
+          workspacePackages: ['parent'],
+        );
+
+        // Create parent package with workspace configuration
+        await createProject(
+          workspaceDir,
+          Pubspec('parent', workspace: ['child1', 'child2']),
+          path: 'packages/parent',
+        );
+
+        // Create child packages in nested workspace
+        await createProject(
+          workspaceDir,
+          Pubspec('child1'),
+          path: 'packages/parent/child1',
+        );
+        await createProject(
+          workspaceDir,
+          Pubspec('child2'),
+          path: 'packages/parent/child2',
+        );
+
+        final packages = await PackageMap.resolvePackages(
+          workspacePath: workspaceDir.path,
+          packages: [
+            createGlob('packages/**', currentDirectoryPath: workspaceDir.path),
+          ],
+          ignore: [],
+          categories: {},
+          logger: TestLogger().toMelosLogger(),
+          discoverNestedWorkspaces: true,
+        );
+
+        expect(packages.length, 3);
+        expect(packages['parent'], isNotNull);
+        expect(packages['child1'], isNotNull);
+        expect(packages['child2'], isNotNull);
+      },
+    );
+
+    test(
+      'discovers packages in deeply nested workspaces',
+      () async {
+        final workspaceDir = await createTemporaryWorkspace(
+          workspacePackages: ['level1'],
+        );
+
+        // Create level 1 package with workspace
+        await createProject(
+          workspaceDir,
+          Pubspec('level1', workspace: ['level2']),
+          path: 'packages/level1',
+        );
+
+        // Create level 2 package with workspace
+        await createProject(
+          workspaceDir,
+          Pubspec('level2', workspace: ['level3']),
+          path: 'packages/level1/level2',
+        );
+
+        // Create level 3 package
+        await createProject(
+          workspaceDir,
+          Pubspec('level3'),
+          path: 'packages/level1/level2/level3',
+        );
+
+        final packages = await PackageMap.resolvePackages(
+          workspacePath: workspaceDir.path,
+          packages: [
+            createGlob('packages/**', currentDirectoryPath: workspaceDir.path),
+          ],
+          ignore: [],
+          categories: {},
+          logger: TestLogger().toMelosLogger(),
+          discoverNestedWorkspaces: true,
+        );
+
+        expect(packages.length, 3);
+        expect(packages['level1'], isNotNull);
+        expect(packages['level2'], isNotNull);
+        expect(packages['level3'], isNotNull);
+      },
+    );
+
+    test(
+      'discovers packages in nested workspace with example',
+      () async {
+        final workspaceDir = await createTemporaryWorkspace(
+          workspacePackages: ['forui_root'],
+        );
+
+        // Create parent package with workspace and example
+        // (name it differently)
+        await createProject(
+          workspaceDir,
+          Pubspec('forui_root', workspace: ['forui', 'example']),
+          path: 'packages/base/forui',
+        );
+
+        // Create main package in nested workspace
+        await createProject(
+          workspaceDir,
+          Pubspec('forui'),
+          path: 'packages/base/forui/forui',
+        );
+
+        // Create example package in nested workspace
+        await createProject(
+          workspaceDir,
+          Pubspec('forui_example'),
+          path: 'packages/base/forui/forui/example',
+        );
+
+        final packages = await PackageMap.resolvePackages(
+          workspacePath: workspaceDir.path,
+          packages: [
+            createGlob('packages/**', currentDirectoryPath: workspaceDir.path),
+          ],
+          ignore: [],
+          categories: {},
+          logger: TestLogger().toMelosLogger(),
+          discoverNestedWorkspaces: true,
+        );
+
+        expect(packages.length, 3);
+        expect(packages['forui_root'], isNotNull);
+        expect(packages['forui'], isNotNull);
+        expect(packages['forui_example'], isNotNull);
+      },
+    );
+
+    test(
+      'respects ignore patterns for nested workspace packages',
+      () async {
+        final workspaceDir = await createTemporaryWorkspace(
+          workspacePackages: ['parent'],
+        );
+
+        // Create parent package with workspace
+        await createProject(
+          workspaceDir,
+          Pubspec('parent', workspace: ['child1', 'child2']),
+          path: 'packages/parent',
+        );
+
+        // Create child packages
+        await createProject(
+          workspaceDir,
+          Pubspec('child1'),
+          path: 'packages/parent/child1',
+        );
+        await createProject(
+          workspaceDir,
+          Pubspec('child2'),
+          path: 'packages/parent/child2',
+        );
+
+        final packages = await PackageMap.resolvePackages(
+          workspacePath: workspaceDir.path,
+          packages: [
+            createGlob('packages/**', currentDirectoryPath: workspaceDir.path),
+          ],
+          ignore: [
+            createGlob('**/child2', currentDirectoryPath: workspaceDir.path),
+          ],
+          categories: {},
+          logger: TestLogger().toMelosLogger(),
+          discoverNestedWorkspaces: true,
+        );
+
+        expect(packages.length, 2);
+        expect(packages['parent'], isNotNull);
+        expect(packages['child1'], isNotNull);
+        expect(packages['child2'], isNull);
+      },
+    );
+
+    test(
+      'discovers all packages in complex nested workspace structure',
+      () async {
+        final workspaceDir = await createTemporaryWorkspace(
+          workspacePackages: ['forui_root'],
+        );
+
+        // Root workspace package (workspace root with a name)
+        await createProject(
+          workspaceDir,
+          Pubspec(
+            'forui_root',
+            workspace: ['forui', 'forui_assets', 'forui_hooks'],
+          ),
+          path: 'packages/base/forui',
+        );
+
+        // Nested workspace with example (this is also a workspace root)
+        await createProject(
+          workspaceDir,
+          Pubspec('forui_workspace', workspace: ['example']),
+          path: 'packages/base/forui/forui',
+        );
+
+        // Actual packages
+        await createProject(
+          workspaceDir,
+          Pubspec('forui'),
+          path: 'packages/base/forui/forui/forui',
+        );
+        await createProject(
+          workspaceDir,
+          Pubspec('forui_example'),
+          path: 'packages/base/forui/forui/example',
+        );
+        await createProject(
+          workspaceDir,
+          Pubspec('forui_assets'),
+          path: 'packages/base/forui/forui_assets',
+        );
+        await createProject(
+          workspaceDir,
+          Pubspec('forui_hooks'),
+          path: 'packages/base/forui/forui_hooks',
+        );
+
+        final packages = await PackageMap.resolvePackages(
+          workspacePath: workspaceDir.path,
+          packages: [
+            createGlob('packages/**', currentDirectoryPath: workspaceDir.path),
+          ],
+          ignore: [],
+          categories: {},
+          logger: TestLogger().toMelosLogger(),
+          discoverNestedWorkspaces: true,
+        );
+
+        expect(packages.length, 6);
+        expect(packages['forui_root'], isNotNull);
+        expect(packages['forui_workspace'], isNotNull);
+        expect(packages['forui'], isNotNull);
+        expect(packages['forui_example'], isNotNull);
+        expect(packages['forui_assets'], isNotNull);
+        expect(packages['forui_hooks'], isNotNull);
+      },
+    );
+  });
+
+  group('PackageMap.resolvePackages - nested workspaces (disabled)', () {
+    test(
+      'does not discover nested workspace packages when disabled',
+      () async {
+        final workspaceDir = await createTemporaryWorkspace(
+          workspacePackages: ['parent'],
+        );
+
+        // Create parent package with workspace configuration
+        await createProject(
+          workspaceDir,
+          Pubspec('parent', workspace: ['child1', 'child2']),
+          path: 'packages/parent',
+        );
+
+        // Create child packages in nested workspace
+        await createProject(
+          workspaceDir,
+          Pubspec('child1'),
+          path: 'packages/parent/child1',
+        );
+        await createProject(
+          workspaceDir,
+          Pubspec('child2'),
+          path: 'packages/parent/child2',
+        );
+
+        final packages = await PackageMap.resolvePackages(
+          workspacePath: workspaceDir.path,
+          packages: [
+            createGlob(
+              'packages/parent',
+              currentDirectoryPath: workspaceDir.path,
+            ),
+          ],
+          ignore: [],
+          categories: {},
+          logger: TestLogger().toMelosLogger(),
+        );
+
+        // Only the parent package should be discovered
+        expect(packages.length, 1);
+        expect(packages['parent'], isNotNull);
+        expect(packages['child1'], isNull);
+        expect(packages['child2'], isNull);
+      },
+    );
+  });
+}
+
+void testDependencyTagReplaceRegex(String version) {
+  test(version, () {
+    const dependencyName = 'foo';
+    const newVersion = '9.9.9';
+
+    final regExp = dependencyTagReplaceRegex(dependencyName);
+
+    final input =
+        '''
+dependencies:
+  $dependencyName:
+    git:
+      ref: $dependencyName-v$version
+''';
+    final output = input.replaceAllMapped(
+      regExp,
+      (match) => '${match.group(1)}$dependencyName-v$newVersion',
+    );
+
+    expect(output, '''
+dependencies:
+  $dependencyName:
+    git:
+      ref: $dependencyName-v$newVersion
+''');
+  });
+}

@@ -1,0 +1,86 @@
+// GENERATED CODE - DO NOT MODIFY BY HAND
+
+part of 'provider_parameters.dart';
+
+// **************************************************************************
+// RiverpodGenerator
+// **************************************************************************
+
+// GENERATED CODE - DO NOT MODIFY BY HAND
+// ignore_for_file: type=lint, type=warning
+
+@ProviderFor(generator)
+final generatorProvider = GeneratorFamily._();
+
+final class GeneratorProvider extends $FunctionalProvider<int, int, int>
+    with $Provider<int> {
+  GeneratorProvider._({
+    required GeneratorFamily super.from,
+    required Object? super.argument,
+  }) : super(
+         retry: null,
+         name: r'generatorProvider',
+         isAutoDispose: false,
+         dependencies: null,
+         $allTransitiveDependencies: null,
+       );
+
+  @override
+  String debugGetCreateSourceHash() => _$generatorHash();
+
+  @override
+  String toString() {
+    return r'generatorProvider'
+        ''
+        '($argument)';
+  }
+
+  @$internal
+  @override
+  $ProviderElement<int> $createElement($ProviderPointer pointer) =>
+      $ProviderElement(pointer);
+
+  @override
+  int create(Ref ref) {
+    final argument = this.argument as Object?;
+    return generator(ref, value: argument);
+  }
+
+  /// {@macro riverpod.override_with_value}
+  Override overrideWithValue(int value) {
+    return $ProviderOverride(
+      origin: this,
+      providerOverride: $SyncValueProvider<int>(value),
+    );
+  }
+
+  @override
+  bool operator ==(Object other) {
+    return other is GeneratorProvider && other.argument == argument;
+  }
+
+  @override
+  int get hashCode {
+    return argument.hashCode;
+  }
+}
+
+String _$generatorHash() => r'd7d1733f8884b6702f363ddb178ae57797d0034f';
+
+final class GeneratorFamily extends $Family
+    with $FunctionalFamilyOverride<int, Object?> {
+  GeneratorFamily._()
+    : super(
+        retry: null,
+        name: r'generatorProvider',
+        dependencies: null,
+        $allTransitiveDependencies: null,
+        isAutoDispose: false,
+      );
+
+  GeneratorProvider call({Object? value}) =>
+      GeneratorProvider._(argument: value, from: this);
+
+  @override
+  String toString() => r'generatorProvider';
+}
