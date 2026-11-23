@@ -1,0 +1,333 @@
+package org.jetbrains.exposed.v1.r2dbc.statements
+
+import io.r2dbc.spi.Result
+import io.r2dbc.spi.RowMetadata
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.reduce
+import org.jetbrains.exposed.v1.core.*
+import org.jetbrains.exposed.v1.core.statements.BatchInsertStatement
+import org.jetbrains.exposed.v1.core.statements.BatchReplaceStatement
+import org.jetbrains.exposed.v1.core.statements.InsertStatement
+import org.jetbrains.exposed.v1.core.statements.ReplaceStatement
+import org.jetbrains.exposed.v1.core.vendors.*
+import org.jetbrains.exposed.v1.r2dbc.R2dbcTransaction
+import org.jetbrains.exposed.v1.r2dbc.statements.api.R2dbcPreparedStatementApi
+import org.jetbrains.exposed.v1.r2dbc.statements.api.R2dbcResult
+import org.jetbrains.exposed.v1.r2dbc.statements.api.R2dbcRow
+import org.jetbrains.exposed.v1.r2dbc.statements.api.metadata
+import org.jetbrains.exposed.v1.r2dbc.transactions.TransactionManager
+
+/**
+ * Represents the execution logic for an SQL statement that inserts a new row into a table.
+ */
+open class InsertSuspendExecutable<Key : Any, S : InsertStatement<Key>>(
+    override val statement: S
+) : SuspendExecutable<Int, S> {
+    protected open suspend fun R2dbcPreparedStatementApi.execInsertFunction(): Pair<Int?, R2dbcResult?> {
+        val inserted = if (statement.arguments().count() > 1 || isAlwaysBatch) {
+            executeBatch().takeIf { it.isNotEmpty() }?.sum()
+        } else {
+            executeUpdate()
+            null
+        }
+        // According to the `processResults()` method when supportsOnlyIdentifiersInGeneratedKeys is false
+        // all the columns could be taken from result set
+        return if (columnsGeneratedOnDB().isNotEmpty() || !currentDialect.supportsOnlyIdentifiersInGeneratedKeys) {
+            inserted to getResultRow()
+        } else {
+            // since no result will be processed in this case, must apply a terminal operator to collect the flow
+            val count = try {
+                getResultRow()?.rowsUpdated()?.reduce(Int::plus) ?: 0
+            } catch (_: IllegalStateException) { // result already consumed
+                // only case it would have already been consumed is when executeBatch() + (wasGeneratedKeysRequested == false)
+                inserted
+            } catch (_: NoSuchElementException) { // flow might be empty
+                0
+            }
+            count to null
+        }
+    }
+
+    override suspend fun R2dbcPreparedStatementApi.executeInternal(transaction: R2dbcTransaction): Int {
+        val (inserted, rs) = execInsertFunction()
+
+        val returned = rs?.returnedValues()
+        val affectedRowCount = inserted ?: returned?.inserted ?: 0
+        @OptIn(InternalApi::class)
+        statement.resultedValues = processResults(returned, affectedRowCount)
+        statement.insertedCount = affectedRowCount
+        return affectedRowCount
+    }
+
+    override suspend fun prepared(transaction: R2dbcTransaction, sql: String): R2dbcPreparedStatementApi = when {
+        // https://github.com/pgjdbc/pgjdbc/issues/1168
+        // Column names always escaped/quoted in RETURNING clause
+        columnsGeneratedOnDB().isNotEmpty() && currentDialect is PostgreSQLDialect ->
+            transaction.connection().prepareStatement(sql, true)
+
+        autoIncColumns.isNotEmpty() -> {
+            // [MariaDB] r2dbc returnGeneratedValues() does not support adding RETURNING clause to REPLACE statements
+            // see: org.mariadb.r2dbc.util.ClientParser.parameterPartsCheckReturning() switch case 82 -> 114
+            val needsManualReturning = (statement is ReplaceStatement<*> || statement is BatchReplaceStatement) &&
+                currentDialect is MariaDBDialect
+
+            @OptIn(InternalApi::class)
+            val generatedColumns = autoIncColumns.map { it.name.inProperCase() }.toTypedArray()
+
+            if (needsManualReturning) {
+                val replaceReturning = "$sql RETURNING ${generatedColumns.joinToString()}"
+                transaction.connection().prepareStatement(replaceReturning, false)
+            } else {
+                transaction.connection().prepareStatement(sql, generatedColumns)
+            }
+        }
+
+        else -> transaction.connection().prepareStatement(sql, false)
+    }
+
+    protected val autoIncColumns: List<Column<*>>
+        get() {
+            @OptIn(InternalApi::class)
+            val nextValExpressionColumns = statement.values.filterValues { it is NextVal<*> }.keys
+            return statement.targets.flatMap { it.columns }.filter { column ->
+                when {
+                    column.autoIncColumnType?.nextValExpression != null -> currentDialect.supportsSequenceAsGeneratedKeys
+                    column.columnType.isAutoInc -> true
+                    column in nextValExpressionColumns -> currentDialect.supportsSequenceAsGeneratedKeys
+                    else -> false
+                }
+            }
+        }
+
+    private fun processResults(returned: ReturnedValues?, affectedRowCount: Int): List<ResultRow> {
+        val allResultSetsValues = returned?.values
+
+        @Suppress("UNCHECKED_CAST")
+        return statement.arguments!!.insertedOnly(affectedRowCount, returned?.perArgumentSet)
+            .mapIndexed { index, columnValues ->
+                val resultSetValues = allResultSetsValues?.getOrNull(index) ?: hashMapOf()
+                val argumentValues = columnValues.toMap()
+                    // a value that is an expression is rendered into the statement, it is not a value of the row
+                    .filterValues { it !is Expression<*> }
+                    .let { unwrapColumnValues(it) }
+
+                argumentValues + resultSetValues
+            }
+            .map { unwrapColumnValues(defaultAndNullableValues(exceptColumns = it.keys)) + it }
+            .map { ResultRow.createAndFillValues(it as Map<Expression<*>, Any?>) }
+    }
+
+    private class ReturnedValues(
+        val inserted: Int,
+        val perArgumentSet: List<Int>,
+        val values: ArrayList<MutableMap<Column<*>, Any?>>
+    )
+
+    /**
+     * Drops the argument sets that the database skipped instead of inserting.
+     *
+     * Only an `INSERT IGNORE` style batch can skip a row while still succeeding, so anything else keeps all of its
+     * arguments. A single insert keeps them too: its caller is handed the statement itself rather than these rows,
+     * and reads [InsertStatement.insertedCount] to find out whether the row was inserted.
+     *
+     * Dropping the skipped sets also realigns the remaining ones with the returned values, which the database only
+     * sends for the rows it did insert.
+     *
+     * A batch that inserted nothing is recognisable from [inserted] alone. Telling apart which rows of a partly
+     * inserted batch were skipped needs [perArgumentSet], and not every driver reports it: H2 and MariaDB send no
+     * update counts at all, so such a batch keeps all of its arguments.
+     */
+    private fun List<List<Pair<Column<*>, Any?>>>.insertedOnly(
+        inserted: Int,
+        perArgumentSet: List<Int>?
+    ): List<List<Pair<Column<*>, Any?>>> {
+        if (statement !is BatchInsertStatement || !statement.isIgnore) return this
+        if (inserted == 0) return emptyList()
+        val counts = perArgumentSet?.takeIf { it.size == size } ?: return this
+        return filterIndexed { index, _ -> counts[index] != 0 }
+    }
+
+    private fun defaultAndNullableValues(exceptColumns: Collection<Column<*>>): Map<Column<*>, Any?> {
+        return statement.table.columns
+            .filter { column -> !exceptColumns.contains(column) }
+            .mapNotNull { column ->
+                val defaultFn = column.defaultValueFun
+                when {
+                    defaultFn != null -> column to defaultFn()
+                    column.columnType.nullable -> column to null
+                    else -> null
+                }
+            }
+            .toMap()
+    }
+
+    @Suppress("NestedBlockDepth", "TooGenericExceptionCaught", "CyclomaticComplexMethod")
+    private suspend fun R2dbcResult.returnedValues(): ReturnedValues {
+        val resultSetsValues = arrayListOf<MutableMap<Column<*>, Any?>>()
+        val resultSetsCounts = mutableListOf<Int>()
+        var columnIndexesInResultSet: List<Pair<Column<*>, Int>>? = null
+        val firstAutoIncColumn = autoIncColumns.firstOrNull()
+        val dialect = currentDialect
+        val sendsResultsOnFailure = dialect is MysqlDialect && dialect !is MariaDBDialect
+
+        var isSqlServerBatchInsert = false
+
+        mapSegments { segment ->
+            var values: MutableMap<Column<*>, Any?>? = null
+            var count: Int? = null
+
+            // PostgreSQL sends segments separately, but MySQL for example, sends them all together;
+            // So segment can match multiple types, & using a when block would lose part of the result data needed
+            if (segment is Result.UpdateCount) {
+                count = segment.value().toInt()
+            }
+
+            if (segment is Result.RowSegment && !isSQLServerLastRowId(segment, isSqlServerBatchInsert, dialect)) {
+                isSqlServerBatchInsert = isSqlServerBatchInsert || isSQLServerBatchSegment(segment, dialect)
+
+                val row = R2dbcRow(segment.row(), typeMapping)
+
+                if (columnIndexesInResultSet == null) {
+                    columnIndexesInResultSet = row.metadata.returnedColumns()
+                }
+
+                values = if (firstAutoIncColumn == null && !columnIndexesInResultSet.isNotEmpty()) {
+                    null
+                } else {
+                    try {
+                        val returnedValues: MutableMap<Column<*>, Any?> = columnIndexesInResultSet.associateTo(mutableMapOf()) {
+                            it.first to it.first.columnType.readObject(row, it.second)
+                        }
+                        if (returnedValues.isEmpty() && firstAutoIncColumn != null) {
+                            returnedValues[firstAutoIncColumn] = row.getObject(1)
+                        }
+                        returnedValues
+                    } catch (cause: ArrayIndexOutOfBoundsException) {
+                        // EXPOSED-191 Flaky Oracle test on TC build
+                        // this try/catch should help to get information about the flaky test.
+                        // try/catch can be safely removed after the fixing the issue.
+                        // TooGenericExceptionCaught suppress also can be removed
+
+                        val preparedSql = this@InsertSuspendExecutable.statement.prepareSQL(TransactionManager.current(), prepared = true)
+
+                        val returnedColumnsString = columnIndexesInResultSet
+                            .mapIndexed { index, pair ->
+                                "column: ${pair.first.name}, index: ${pair.second} (columns-list-index: $index)"
+                            }
+                            .joinToString(prefix = "[", postfix = "]", separator = ", ")
+
+                        exposedLogger.error(
+                            "ArrayIndexOutOfBoundsException on processResults. " +
+                                "Table: ${this@InsertSuspendExecutable.statement.table.tableName}, " +
+                                "firstAutoIncColumn: ${firstAutoIncColumn?.name}, " +
+                                "returnedColumnsString: $returnedColumnsString. " +
+                                "Failed SQL: $preparedSql",
+                            cause
+                        )
+                        throw cause
+                    }
+                }
+            }
+
+            if (segment is Result.Message) {
+                @Suppress("ThrowingExceptionsWithoutMessageOrCause")
+                throw segment.exception()
+            }
+
+            flowOf(count to values)
+        }.collect { (count, values) ->
+            // MySQL return a result with an id value of 0 if an insert did not occur
+            // which leads to incorrect stored values in the insert statement;
+            // If an insert did not occur, no generated values should be received and stored statement
+            // values should be generated based on user-provided values
+            count?.let { c ->
+                resultSetsCounts.add(c)
+                values.takeIf { sendsResultsOnFailure && c != 0 }?.let { resultSetsValues.add(it) }
+            }
+            values.takeIf { !sendsResultsOnFailure }?.let { resultSetsValues.add(it) }
+        }
+
+        // Some databases, like H2 and MariaDB, aren't returning UpdateCount segments;
+        // The workaround below therefore fails for upsert operations; documented in upsert()
+        val inserted = if (resultSetsCounts.isEmpty()) {
+            resultSetsValues.size
+        } else {
+            resultSetsCounts.sum()
+        }
+
+        if (firstAutoIncColumn != null || columnIndexesInResultSet?.isNotEmpty() == true) {
+            if (inserted > 1 && firstAutoIncColumn != null && resultSetsValues.isNotEmpty() && !currentDialect.supportsMultipleGeneratedKeys) {
+                // H2 only returns one last generated key...
+                (resultSetsValues[0][firstAutoIncColumn] as? Number)?.toLong()?.let {
+                    var id = it
+                    val generatedValues = arrayListOf<MutableMap<Column<*>, Any?>>()
+
+                    while (resultSetsValues.size + generatedValues.size < inserted) {
+                        id -= 1
+                        generatedValues.add(mutableMapOf(firstAutoIncColumn to id))
+                    }
+                    resultSetsValues.addAll(0, generatedValues.asReversed())
+                }
+            }
+
+            check(
+                this@InsertSuspendExecutable.statement.isIgnore || resultSetsValues.isEmpty() || resultSetsValues.size == inserted ||
+                    currentDialect.supportsTernaryAffectedRowValues
+            ) {
+                "Number of autoincs (${resultSetsValues.size}) doesn't match number of batch entries ($inserted)"
+            }
+        }
+
+        return ReturnedValues(inserted, resultSetsCounts, resultSetsValues)
+    }
+
+    private fun RowMetadata?.returnedColumns(): List<Pair<Column<*>, Int>> {
+        val columns = if (currentDialect.supportsOnlyIdentifiersInGeneratedKeys) {
+            autoIncColumns
+        } else {
+            this@InsertSuspendExecutable.statement.table.columns
+        }
+        return columns.mapNotNull { col ->
+            this?.columnMetadatas?.withIndex()?.firstOrNull { it.value.name == col.name }?.let {
+                col to (it.index + 1)
+            }
+        }
+    }
+
+    /* This check is needed for SQLServer batch insert. The problem is that R2DBC driver for SQLServer database
+    returns extra `Result.RowSegment` with the id of the last row. Every insert of batch is returned as
+    a segment with `GENERATED_KEYS` column name in metadata, but after them the one extra segment with `id` name
+    is also returned.
+
+    We can't just filter segments with name `id`, because that name is also returned in general insert for column
+    with name `id`.
+
+    This check is quite optimistic, and we recognize the whole insert as batch insert if there is at least one
+    `GENERATED_KEYS` segment in the whole sequence. */
+    private fun isSQLServerLastRowId(segment: Result.RowSegment, isSqlServerBatchInsert: Boolean, dialect: DatabaseDialect): Boolean {
+        return dialect is SQLServerDialect && isSqlServerBatchInsert && segment.row().metadata.columnMetadatas.let {
+            it.size == 1 && it[0].name != "GENERATED_KEYS"
+        }
+    }
+
+    private fun isSQLServerBatchSegment(segment: Result.RowSegment, dialect: DatabaseDialect): Boolean {
+        return dialect is SQLServerDialect && segment.row().metadata.columnMetadatas.let {
+            it.size == 1 && it[0].name == "GENERATED_KEYS"
+        }
+    }
+
+    /**
+     * Returns all the columns for which value can not be derived without actual request.
+     *
+     * At the current moment it is the auto increment columns and columns with database side generated defaults
+     */
+    @OptIn(InternalApi::class)
+    private fun columnsGeneratedOnDB(): Collection<Column<*>> = (autoIncColumns + statement.columnsWithDatabaseDefaults()).toSet()
+
+    @Suppress("UNCHECKED_CAST")
+    private fun <T : Expression<*>> unwrapColumnValues(values: Map<T, Any?>): Map<T, Any?> = values.mapValues { (col, value) ->
+        if (col !is ExpressionWithColumnType<*>) return@mapValues value
+
+        value?.let { (col.columnType as? ColumnWithTransform<Any, Any>)?.unwrapRecursive(it) } ?: value
+    }
+}

@@ -1,0 +1,333 @@
+/*
+ * Copyright 2014-2026 JetBrains s.r.o and contributors. Use of this source code is governed by the Apache 2.0 license.
+ */
+
+package io.ktor.client.plugins.websocket
+
+import io.ktor.client.*
+import io.ktor.client.call.*
+import io.ktor.client.engine.*
+import io.ktor.client.plugins.*
+import io.ktor.client.request.*
+import io.ktor.client.statement.*
+import io.ktor.http.*
+import io.ktor.serialization.*
+import io.ktor.util.*
+import io.ktor.util.logging.*
+import io.ktor.utils.io.*
+import io.ktor.websocket.*
+import kotlin.coroutines.cancellation.CancellationException
+
+private val REQUEST_EXTENSIONS_KEY = AttributeKey<List<WebSocketExtension<*>>>("Websocket extensions")
+
+@InternalAPI
+public val WEBSOCKETS_KEY: AttributeKey<WebSockets> = AttributeKey<WebSockets>("Websocket plugin config")
+
+internal val LOGGER = KtorSimpleLogger("io.ktor.client.plugins.websocket.WebSockets")
+
+internal const val DEFAULT_MAX_FRAME_SIZE: Long = Int.MAX_VALUE.toLong()
+
+// Marks a call whose failed-handshake response has already been captured, so reading that
+// response's body (via WebSocketHandshakeException.response) doesn't re-enter the handshake handling below.
+private val FAILED_HANDSHAKE_RESPONSE_KEY = AttributeKey<Unit>("WebSocketFailedHandshakeResponse")
+
+/**
+ * Indicates if a client engine supports WebSockets.
+ *
+ * [Report a problem](https://ktor.io/feedback/?fqname=io.ktor.client.plugins.websocket.WebSocketCapability)
+ */
+public data object WebSocketCapability : HttpClientEngineCapability<Unit>
+
+/**
+ * Indicates if a client engine supports extensions for WebSocket plugin.
+ *
+ * [Report a problem](https://ktor.io/feedback/?fqname=io.ktor.client.plugins.websocket.WebSocketExtensionsCapability)
+ */
+public data object WebSocketExtensionsCapability : HttpClientEngineCapability<Unit>
+
+/**
+ * Client WebSocket plugin.
+ *
+ * [Report a problem](https://ktor.io/feedback/?fqname=io.ktor.client.plugins.websocket.WebSockets)
+ *
+ * @property pingIntervalMillis - interval between [FrameType.PING] messages
+ * @property maxFrameSize - max size of a single websocket frame
+ * @property extensionsConfig - extensions configuration
+ * @property contentConverter - converter for serialization/deserialization
+ * @property channelsConfig - configuration for the I/O frame channels
+ */
+public class WebSockets internal constructor(
+    public val pingIntervalMillis: Long,
+    public val maxFrameSize: Long,
+    private val extensionsConfig: WebSocketExtensionsConfig,
+    public val contentConverter: WebsocketContentConverter? = null,
+    public val channelsConfig: WebSocketChannelsConfig = WebSocketChannelsConfig.UNLIMITED,
+) {
+    /**
+     * Client WebSocket plugin.
+     *
+     * [Report a problem](https://ktor.io/feedback/?fqname=io.ktor.client.plugins.websocket.WebSockets.WebSockets)
+     *
+     * @param pingIntervalMillis - interval between [FrameType.PING] messages.
+     * @param maxFrameSize - max size of a single websocket frame.
+     */
+    public constructor(
+        pingIntervalMillis: Long = PINGER_DISABLED,
+        maxFrameSize: Long = DEFAULT_MAX_FRAME_SIZE
+    ) : this(pingIntervalMillis, maxFrameSize, WebSocketExtensionsConfig())
+
+    /**
+     * Client WebSocket plugin.
+     *
+     * [Report a problem](https://ktor.io/feedback/?fqname=io.ktor.client.plugins.websocket.WebSockets.WebSockets)
+     */
+    public constructor() : this(PINGER_DISABLED, DEFAULT_MAX_FRAME_SIZE, WebSocketExtensionsConfig())
+
+    private fun installExtensions(context: HttpRequestBuilder) {
+        val installed = extensionsConfig.build()
+        context.attributes.put(REQUEST_EXTENSIONS_KEY, installed)
+
+        val protocols = installed.flatMap { it.protocols }
+        addNegotiatedProtocols(context, protocols)
+    }
+
+    private fun completeNegotiation(
+        call: HttpClientCall
+    ): List<WebSocketExtension<*>> {
+        val serverExtensions: List<WebSocketExtensionHeader> = call.response
+            .headers[HttpHeaders.SecWebSocketExtensions]
+            ?.let { parseWebSocketExtensions(it) } ?: emptyList()
+
+        val clientExtensions = call.attributes[REQUEST_EXTENSIONS_KEY]
+
+        return clientExtensions.filter { it.clientNegotiation(serverExtensions) }
+    }
+
+    private fun addNegotiatedProtocols(context: HttpRequestBuilder, protocols: List<WebSocketExtensionHeader>) {
+        if (protocols.isEmpty()) return
+
+        val headerValue = protocols.joinToString(",")
+        context.header(HttpHeaders.SecWebSocketExtensions, headerValue)
+    }
+
+    internal fun convertSessionToDefault(session: WebSocketSession): DefaultWebSocketSession {
+        if (session is DefaultWebSocketSession) return session
+
+        val timeoutMillis = (pingIntervalMillis * 2)
+        return DefaultWebSocketSession(session, pingIntervalMillis, timeoutMillis, channelsConfig).also {
+            if (maxFrameSize != DEFAULT_MAX_FRAME_SIZE) {
+                it.maxFrameSize = maxFrameSize
+            }
+        }
+    }
+
+    /**
+     * [WebSockets] configuration.
+     *
+     * [Report a problem](https://ktor.io/feedback/?fqname=io.ktor.client.plugins.websocket.WebSockets.Config)
+     */
+    @KtorDsl
+    public class Config {
+        internal val extensionsConfig = WebSocketExtensionsConfig()
+
+        @OptIn(InternalAPI::class)
+        internal val channelsConfig = WebSocketChannelsConfig()
+
+        /**
+         * Sets interval of sending ping frames.
+         *
+         * Use [PINGER_DISABLED] to disable ping.
+         *
+         * [Report a problem](https://ktor.io/feedback/?fqname=io.ktor.client.plugins.websocket.WebSockets.Config.pingIntervalMillis)
+         */
+        public var pingIntervalMillis: Long = PINGER_DISABLED
+
+        /**
+         * Sets maximum frame size in bytes.
+         *
+         * The limit applies to the incoming data before any possible decompression.
+         *
+         * Engines that can't enforce the limit throw [WebSocketException] when a session is established
+         * with a non-default value.
+         *
+         * [Report a problem](https://ktor.io/feedback/?fqname=io.ktor.client.plugins.websocket.WebSockets.Config.maxFrameSize)
+         */
+        public var maxFrameSize: Long = DEFAULT_MAX_FRAME_SIZE
+
+        /**
+         * A converter for serialization/deserialization
+         *
+         * [Report a problem](https://ktor.io/feedback/?fqname=io.ktor.client.plugins.websocket.WebSockets.Config.contentConverter)
+         */
+        public var contentConverter: WebsocketContentConverter? = null
+
+        /**
+         * Configuration for the incoming and outgoing [Frame] queues.
+         * Both queues are unlimited by default, which may lead to OutOfMemoryError under high backpressure.
+         * Some engines don't support suspending limited-size incoming channels — check compatibility before using them.
+         *
+         * Caution: A bounded incoming channel with [ChannelOverflow.CLOSE] will close on overflow,
+         * possibly causing exceptions for any frames received afterward.
+         *
+         * ```kotlin
+         * channels {
+         *     incoming = unlimited()
+         *     outgoing = bounded(capacity = 512, onOverflow = ChannelOverflow.SUSPEND)
+         * }
+         * ```
+         *
+         * [Report a problem](https://ktor.io/feedback/?fqname=io.ktor.client.plugins.websocket.WebSockets.Config.channels)
+         */
+        public fun channels(block: WebSocketChannelsConfig.() -> Unit) {
+            channelsConfig.apply(block)
+        }
+
+        /**
+         * Configure WebSocket extensions.
+         *
+         * [Report a problem](https://ktor.io/feedback/?fqname=io.ktor.client.plugins.websocket.WebSockets.Config.extensions)
+         */
+        public fun extensions(block: WebSocketExtensionsConfig.() -> Unit) {
+            extensionsConfig.apply(block)
+        }
+    }
+
+    /**
+     * Add WebSockets support for a ktor http client.
+     *
+     * [Report a problem](https://ktor.io/feedback/?fqname=io.ktor.client.plugins.websocket.WebSockets.Plugin)
+     */
+    public companion object Plugin : HttpClientPlugin<Config, WebSockets> {
+        override val key: AttributeKey<WebSockets> = AttributeKey("Websocket")
+
+        override fun prepare(block: Config.() -> Unit): WebSockets {
+            val config = Config().apply(block)
+            return WebSockets(
+                config.pingIntervalMillis,
+                config.maxFrameSize,
+                config.extensionsConfig,
+                config.contentConverter,
+                config.channelsConfig,
+            )
+        }
+
+        @OptIn(InternalAPI::class)
+        override fun install(plugin: WebSockets, scope: HttpClient) {
+            val extensionsSupported = scope.engine.supportedCapabilities.contains(WebSocketExtensionsCapability)
+
+            scope.requestPipeline.intercept(HttpRequestPipeline.Render) {
+                if (!context.url.protocol.isWebsocket()) {
+                    LOGGER.trace { "Skipping WebSocket plugin for non-websocket request: ${context.url}" }
+                    return@intercept
+                }
+
+                LOGGER.trace { "Sending WebSocket request ${context.url}" }
+                context.setCapability(WebSocketCapability, Unit)
+
+                if (extensionsSupported) {
+                    plugin.installExtensions(context)
+                }
+                context.attributes[WEBSOCKETS_KEY] = plugin
+
+                proceedWith(WebSocketContent())
+            }
+
+            scope.responsePipeline.intercept(HttpResponsePipeline.Transform) { (info, session) ->
+                val response = this.context.response
+                val status = response.status
+                val requestContent = response.request.content
+
+                if (requestContent !is WebSocketContent) {
+                    LOGGER.trace { "Skipping non-websocket response from ${context.request.url}: $requestContent" }
+                    return@intercept
+                }
+                if (context.attributes.contains(FAILED_HANDSHAKE_RESPONSE_KEY)) {
+                    // The user reads the body of a saved failed handshake. Let the default transformers handle it.
+                    return@intercept
+                }
+                if (status != HttpStatusCode.SwitchingProtocols) {
+                    var saveFailure: Exception? = null
+                    val failedResponse = try {
+                        // Some engines use platform WebSocket clients that can't read rejected handshake body.
+                        // The response then has an empty body but the Content-Length from the server.
+                        // `allowMissingBody = true` skips Content-Length validation for this case.
+                        context.save(allowMissingBody = true)
+                            .also { it.attributes.put(FAILED_HANDSHAKE_RESPONSE_KEY, Unit) }
+                            .response
+                    } catch (cause: CancellationException) {
+                        throw cause
+                    } catch (cause: Exception) {
+                        saveFailure = cause
+                        null
+                    }
+                    val exception = WebSocketHandshakeException(
+                        "Handshake exception, expected status code ${HttpStatusCode.SwitchingProtocols.value} " +
+                            "but was ${status.value}",
+                        response = failedResponse,
+                    )
+                    saveFailure?.let { exception.addSuppressed(it) }
+                    throw exception
+                }
+                if (session !is WebSocketSession) {
+                    throw WebSocketHandshakeException(
+                        "Handshake exception, expected `WebSocketSession` content but was ${session::class}"
+                    )
+                }
+
+                LOGGER.trace { "Receive websocket session from ${context.request.url}: $session" }
+
+                if (plugin.maxFrameSize != DEFAULT_MAX_FRAME_SIZE) {
+                    session.maxFrameSize = plugin.maxFrameSize
+                }
+
+                val clientSession: ClientWebSocketSession = when (info.type) {
+                    DefaultClientWebSocketSession::class -> {
+                        val defaultSession = plugin.convertSessionToDefault(session)
+                        val clientSession = DefaultClientWebSocketSession(context, defaultSession)
+
+                        val negotiated = if (extensionsSupported) {
+                            plugin.completeNegotiation(context)
+                        } else {
+                            emptyList()
+                        }
+
+                        clientSession.apply {
+                            start(negotiated)
+                        }
+                    }
+
+                    else -> {
+                        DelegatingClientWebSocketSession(context, session)
+                    }
+                }
+
+                proceedWith(HttpResponseContainer(info, clientSession))
+            }
+        }
+    }
+}
+
+/**
+ * This exception is thrown when a WebSocket session fails.
+ *
+ * Failures of the handshake itself are reported as [WebSocketHandshakeException].
+ */
+public open class WebSocketException(message: String, cause: Throwable?) : IllegalStateException(message, cause) {
+    // required for backwards binary compatibility
+    public constructor(message: String) : this(message, cause = null)
+}
+
+/**
+ * This exception is thrown when a WebSocket handshake fails, before session starts.
+ *
+ * @property response the HTTP response of the failed handshake: the status, the headers, and the body from the server.
+ * What is available depends on the engine:
+ * - Some engines give the full response.
+ * - Some engines give the status and the headers only. On these engines, the [HttpResponse.body] is empty.
+ * - Some engines don't give the response. On these engines, [response] is `null`.
+ */
+public class WebSocketHandshakeException(
+    message: String,
+    cause: Throwable? = null,
+    public val response: HttpResponse? = null,
+) : WebSocketException(message, cause)
