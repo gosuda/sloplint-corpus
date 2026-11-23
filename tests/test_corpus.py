@@ -284,6 +284,14 @@ class TestGlobs(unittest.TestCase):
         self.assertTrue(corpus.match_subset("src/net/tcp.rs", ["./src/**"]))
         self.assertFalse(corpus.match_subset("vendor/src/x.rs", ["./src/**"]))
 
+    def test_escaped_star_before_globstar(self):
+        self.assertTrue(corpus.match_subset(
+            "src/*widgets/index.ts", ["src/\\**/*.ts"]))
+        self.assertFalse(corpus.match_subset(
+            "src/widgets/index.ts", ["src/\\**/*.ts"]))
+        self.assertTrue(corpus.match_subset(
+            "src/*named/lib.rs", ["src/\\**/*.rs"]))
+        self.assertTrue(corpus.match_subset("src/a/b.ts", ["src/**/*.ts"]))
 
 class TestExtensions(unittest.TestCase):
     def test_starlark_build_files(self):
