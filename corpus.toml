@@ -2,3 +2,101 @@ schema_version = 1
 
 [corpus]
 mode = "public"
+
+[[project]]
+name = "mathlib-algebra"
+language = "lean"
+url = "https://github.com/leanprover-community/mathlib4"
+rev = "90e6eec9fe53b02d431c90718e4a1d22d67a204e"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["Mathlib/Algebra/**", "Mathlib/Algebra/*/**", "Mathlib/Algebra/*/*/**", "Mathlib/Algebra/*/*/*/**", "Mathlib/Algebra/*/*/*/*/**"]
+tree_hash = "sha256:4034ce5419fea13443f71928ec6508ddd556656021e4dd21c5f1c80ab84dc287"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "Mathlib-style proof corpus, algebra hierarchy (selection slot: research proofs)"
+notice_present_upstream = false
+
+[[project]]
+name = "mathlib-data"
+language = "lean"
+url = "https://github.com/leanprover-community/mathlib4"
+rev = "90e6eec9fe53b02d431c90718e4a1d22d67a204e"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["Mathlib/Data/**", "Mathlib/Data/*/**", "Mathlib/Data/*/*/**", "Mathlib/Data/*/*/*/**"]
+tree_hash = "sha256:930ccf8d7ef6c9082379478a67cbf8782d1fec33ad1298683cd740c27e393754"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "Mathlib-style proof corpus, data structures (selection slot: libraries)"
+notice_present_upstream = false
+
+[[project]]
+name = "mathlib-tactic"
+language = "lean"
+url = "https://github.com/leanprover-community/mathlib4"
+rev = "90e6eec9fe53b02d431c90718e4a1d22d67a204e"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["Mathlib/Tactic/**", "Mathlib/Tactic/*/**", "Mathlib/Tactic/*/*/**", "Mathlib/Tactic/*/*/*/**", "MathlibTest/**", "MathlibTest/*/**", "MathlibTest/*/*/**", "MathlibTest/*/*/*/**", "MathlibTest/*/*/*/*/**"]
+tree_hash = "sha256:2fade1ccfccf2bd231120251b61cd7a274f3c0f5d29f8fb6fa59e2de286eee32"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "tactic framework plus official test suite (selection slot: tactics and tests)"
+notice_present_upstream = false
+
+[[project]]
+name = "batteries"
+language = "lean"
+url = "https://github.com/leanprover-community/batteries"
+rev = "673146e76a6f3a169512321a4a0e2dca578b7616"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:d467a3813e1ac12b242ea83057d8acaecf22897e3820d9842422a7ad408c5890"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "Lean core-library extension, Batteries Included (selection slot: standard library)"
+notice_present_upstream = false
+
+[[project]]
+name = "aesop"
+language = "lean"
+url = "https://github.com/leanprover-community/aesop"
+rev = "637fdbb8689a3387a82568b07355231f892144d7"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:c98f04184200d51e5553cc1fef7d18c1006b18d3ffc8deeb015e63496626bbb5"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "white-box proof automation, tactic-block heavy (selection slot: tactics)"
+notice_present_upstream = false
+
+[[project]]
+name = "cslib"
+language = "lean"
+url = "https://github.com/leanprover/cslib"
+rev = "5d861be63267a0680e6123f6a0e90a56b4c9fc22"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:02e2963d6db1c29bf959ae8412ff9dc8f855bc05a1f253d3d8a04826ecde4c2b"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "computer-science library, algorithm and proof mix (selection slot: libraries)"
+notice_present_upstream = false
+
+[[project]]
+name = "glimpse-of-lean"
+language = "lean"
+url = "https://github.com/PatrickMassot/GlimpseOfLean"
+rev = "7dc816910638406f4232d23977bbcc59a335393c"
+spdx = "Apache-2.0"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:ac2243c6e340502b33251e20be322176dbcc3eef0856b3cdafa46511fe093f43"
+added_by = "CorpusPopC5"
+added_on = "2026-11-23"
+reason = "tutorial style, beginner idioms (selection slot: small programs)"
+notice_present_upstream = false
