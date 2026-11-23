@@ -177,3 +177,60 @@ reason = "Log collector plugin DSL; only Apache-2.0 Ruby project in lane"
 notice_present_upstream = false
 
 
+[[project]]
+name = "nvm"
+language = "bash"
+url = "https://github.com/nvm-sh/nvm"
+rev = "9abb2163671f66767c1426a53827f341bd0a9906"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:16c335f5b91d358c26c36ddc4438b1b1a0633a3a24223dacd7b714aa0c8d4e9b"
+added_by = "CorpusPopC3"
+added_on = "2026-11-23"
+reason = "Version manager; single huge nvm.sh with deep case nesting (extensionless helpers outside adapter)"
+notice_present_upstream = false
+
+[[project]]
+name = "bats-core"
+language = "bash"
+url = "https://github.com/bats-core/bats-core"
+rev = "3a45b53d71cd488dcfc095593ff60398b3894653"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:6d98b7fa7293fe6f07767d9b362a07da31628ea44c529060ca5024e4d9416a88"
+added_by = "CorpusPopC3"
+added_on = "2026-11-23"
+reason = "Test framework; @test syntax and .bats grammar stress; NOTICE.md kept"
+notice_present_upstream = true
+
+[[project]]
+name = "pyenv"
+language = "bash"
+url = "https://github.com/pyenv/pyenv"
+rev = "fc6046ccd0721c0ea258e11c9320515cee13f4d7"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+tree_hash = "sha256:316a0ee5aa28a206b58d42d01b41d20cf906c4e5de9fb0befefdf61f1718e749"
+added_by = "CorpusPopC3"
+added_on = "2026-11-23"
+reason = "Version manager bats suite plus python-build shell; extensionless libexec core outside adapter"
+notice_present_upstream = false
+
+
+[[project]]
+name = "oh-my-bash"
+language = "bash"
+url = "https://github.com/ohmybash/oh-my-bash"
+rev = "94c2977eda06f230aafa9628fcd869123f01896b"
+spdx = "MIT"
+storage = "copied"
+paths = ["**"]
+exclude = ["tools/git-completion.bash", "tools/git-prompt.sh"]
+tree_hash = "sha256:5550e9d134cc108b1306db907faf79185362e487b3f8dd8a04fe8d76f51c7f76"
+added_by = "CorpusPopC3"
+added_on = "2026-11-23"
+reason = "Prompt framework; two git-derived GPL files excluded"
+notice_present_upstream = false
