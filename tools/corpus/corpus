@@ -72,7 +72,7 @@ LICENSE_NAMES = ("LICENSE", "LICENSE.txt", "LICENSE.md", "LICENCE", "LICENCE.txt
                  "COPYING", "COPYING.txt")
 NOTICE_NAMES = ("NOTICE", "NOTICE.txt", "NOTICE.md")
 LICENSE_LIKE_RE = re.compile(r"(?:licen[cs]e|copying|copyright|notice|unlicense)"
-                             r"(?:[-._][A-Za-z0-9.+-]*)?", re.IGNORECASE)
+                             r"(?:[-._][A-Za-z0-9._+-]*)?", re.IGNORECASE)
 SOURCE_SUFFIXES = frozenset(ext for exts in EXTENSIONS.values() for ext in exts)
 
 COPYLEFT_IDS = frozenset({

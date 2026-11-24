@@ -941,7 +941,7 @@ class TestAddLocal(unittest.TestCase):
     @unittest.skipUnless(HAS_GIT, "needs git")
     def test_add_rejects_nested_license_variant_names(self):
         for nested in ("COPYING.LESSER", "LICENSE-MIT", "license.txt", "Licence.md",
-                       "COPYRIGHT", "UNLICENSE"):
+                       "COPYRIGHT", "UNLICENSE", "LICENSE-BSD_3-Clause"):
             with self.subTest(nested=nested):
                 upstream, rev = self._nest_upstream({
                     "LICENSE": MIT_TEXT,
