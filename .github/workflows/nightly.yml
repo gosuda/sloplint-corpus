@@ -9,9 +9,11 @@ permissions:
   contents: read
 
 jobs:
-  measure:
+  prepare:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 30
+    outputs:
+      languages: ${{ steps.languages.outputs.languages }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -32,27 +34,90 @@ jobs:
             exit 0
           fi
           cargo install --git https://github.com/gosuda/sloplint --rev d9d257c83580879f5b742ef7d78a3df202b317f4 --locked
-      - name: Verify committed trees
-        run: python3 tools/corpus/corpus fetch --check
-      - name: Measure every language with projects
+      - name: Upload sloplint binary
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sloplint-bin
+          path: ~/.cargo/bin/sloplint
+          if-no-files-found: error
+          retention-days: 1
+      - name: List measured languages
+        id: languages
         run: |
-          python3 - <<'EOF'
+          set -euo pipefail
+          langs=$(python3 - <<'EOF'
           import json
           import subprocess
           out = subprocess.run(
               ["python3", "tools/corpus/corpus", "stats", "--format", "json"],
               capture_output=True, text=True, check=True)
-          for lang, row in json.loads(out.stdout).items():
-              if row["copied"] > 0:
-                  subprocess.run(
-                      ["python3", "tools/corpus/corpus", "measure", lang],
-                      check=True)
+          print(json.dumps(sorted(
+              lang for lang, row in json.loads(out.stdout).items()
+              if row["copied"] > 0)))
           EOF
+          )
+          echo "languages=${langs}" >> "${GITHUB_OUTPUT}"
+
+  measure:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ${{ fromJson(needs.prepare.outputs.languages) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download sloplint binary
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: sloplint-bin
+          path: /tmp/sloplint-bin
+      - name: Install sloplint binary
+        run: |
+          set -euo pipefail
+          test -x /tmp/sloplint-bin/sloplint
+          install -m 0755 /tmp/sloplint-bin/sloplint "${HOME}/.local/bin/sloplint"
+          "${HOME}/.local/bin/sloplint" --version
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+      - name: Verify committed trees
+        run: python3 tools/corpus/corpus fetch --check --lang ${{ matrix.language }}
+      - name: Measure language
+        run: python3 tools/corpus/corpus measure ${{ matrix.language }}
+      - name: Upload language report
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reports-${{ matrix.language }}
+          path: reports/${{ matrix.language }}.json
+          if-no-files-found: error
+          retention-days: 7
+
+  report:
+    needs: measure
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download language reports
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: reports-*
+          path: reports
+          merge-multiple: true
       - name: Show measurement reports
-        if: always()
         run: |
           shopt -s nullglob
           for report in reports/*.json; do
             echo "--- $report"
             cat "$report"
           done
+      - name: Check nightly verdict
+        run: |
+          set -euo pipefail
+          if [ "${{ needs.measure.result }}" != "success" ]; then
+            echo "nightly: measure result is ${{ needs.measure.result }}"
+            exit 1
+          fi
+          echo "nightly: all language shards passed"
