@@ -3,11 +3,27 @@ name: gate
 on:
   push:
     branches: [main]
+    paths:
+      - 'corpus.toml'
+      - 'projects/**'
+      - 'tools/**'
+      - 'budgets.toml'
+      - '.github/workflows/gate.yml'
   pull_request:
+    paths:
+      - 'corpus.toml'
+      - 'projects/**'
+      - 'tools/**'
+      - 'budgets.toml'
+      - '.github/workflows/gate.yml'
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   verify:
@@ -18,6 +34,15 @@ jobs:
         with:
           persist-credentials: false
       - name: Install askalono 0.5.0
-        run: cargo install askalono-cli --version 0.5.0 --locked
+        run: |
+          set -euo pipefail
+          curl -sfL --max-time 120 -o /tmp/askalono-Linux.zip \
+            https://github.com/jpeddicord/askalono/releases/download/0.5.0/askalono-Linux.zip
+          echo '8a007355b700137b48e7e39aab5d083acb9a0926f20c064ab4476b1624390e52  /tmp/askalono-Linux.zip' | sha256sum -c -
+          mkdir -p /tmp/askalono-bin "${HOME}/.local/bin"
+          python3 -m zipfile -e /tmp/askalono-Linux.zip /tmp/askalono-bin
+          install -m 0755 /tmp/askalono-bin/askalono "${HOME}/.local/bin/askalono"
+          "${HOME}/.local/bin/askalono" --version
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
       - name: Fail-closed license gate
         run: python3 tools/corpus/corpus verify --offline --expect-mode public
