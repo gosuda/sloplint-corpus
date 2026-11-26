@@ -2,7 +2,11 @@ name: gate
 
 on:
   pull_request:
+  merge_group:
+  push:
+    branches: [main]
     paths:
+      - '.gitattributes'
       - 'corpus.toml'
       - 'projects/**'
       - 'tools/**'
