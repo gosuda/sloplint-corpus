@@ -8,18 +8,56 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   measure:
     runs-on: depot-ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install askalono 0.5.0
-        run: cargo install askalono-cli --version 0.5.0 --locked
+        run: |
+          set -euo pipefail
+          curl -sfL --max-time 120 -o /tmp/askalono-Linux.zip \
+            https://github.com/jpeddicord/askalono/releases/download/0.5.0/askalono-Linux.zip
+          echo '8a007355b700137b48e7e39aab5d083acb9a0926f20c064ab4476b1624390e52  /tmp/askalono-Linux.zip' | sha256sum -c -
+          mkdir -p /tmp/askalono-bin "${HOME}/.local/bin"
+          python3 -m zipfile -e /tmp/askalono-Linux.zip /tmp/askalono-bin
+          install -m 0755 /tmp/askalono-bin/askalono "${HOME}/.local/bin/askalono"
+          "${HOME}/.local/bin/askalono" --version
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+      - name: Restore sloplint cargo cache
+        id: sloplint-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/bin/sloplint
+            ~/.cargo/.crates.toml
+            ~/.cargo/.crates2.json
+            ~/.cargo/git
+            ~/.cargo/registry
+          key: sloplint-d9d257c83580879f5b742ef7d78a3df202b317f4-${{ runner.os }}-${{ runner.arch }}
       - name: Install sloplint
-        run: cargo install --git https://github.com/gosuda/sloplint --locked
+        id: sloplint-install
+        run: |
+          set -euo pipefail
+          cargo install --git https://github.com/gosuda/sloplint --rev d9d257c83580879f5b742ef7d78a3df202b317f4 --locked
+      - name: Save the verified sloplint build before measurement
+        if: ${{ !cancelled() && steps.sloplint-install.outcome == 'success' && steps.sloplint-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/bin/sloplint
+            ~/.cargo/.crates.toml
+            ~/.cargo/.crates2.json
+            ~/.cargo/git
+            ~/.cargo/registry
+          key: ${{ steps.sloplint-cache.outputs.cache-primary-key }}
       - name: Verify committed trees
         run: python3 tools/corpus/corpus fetch --check
       - name: Measure every language with projects
@@ -30,11 +68,16 @@ jobs:
           out = subprocess.run(
               ["python3", "tools/corpus/corpus", "stats", "--format", "json"],
               capture_output=True, text=True, check=True)
+          failed: list[str] = []
           for lang, row in json.loads(out.stdout).items():
               if row["copied"] > 0:
-                  subprocess.run(
+                  result = subprocess.run(
                       ["python3", "tools/corpus/corpus", "measure", lang],
-                      check=True)
+                      check=False)
+                  if result.returncode != 0:
+                      failed.append(lang)
+          if failed:
+              raise SystemExit(f"Measurement failed for: {', '.join(failed)}")
           EOF
       - name: Show measurement reports
         if: always()
@@ -44,3 +87,11 @@ jobs:
             echo "--- $report"
             cat "$report"
           done
+      - name: Upload measurement reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reports
+          path: reports/*.json
+          if-no-files-found: error
+          retention-days: 7
