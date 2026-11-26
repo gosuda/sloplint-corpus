@@ -41,12 +41,13 @@ jobs:
             ~/.cargo/.crates2.json
             ~/.cargo/git
             ~/.cargo/registry
-          key: sloplint-d9d257c83580879f5b742ef7d78a3df202b317f4-${{ runner.os }}-${{ runner.arch }}
+          key: sloplint-install-v2-d9d257c83580879f5b742ef7d78a3df202b317f4-${{ runner.os }}-${{ runner.arch }}
       - name: Install sloplint
         id: sloplint-install
         run: |
           set -euo pipefail
           cargo install --git https://github.com/gosuda/sloplint --rev d9d257c83580879f5b742ef7d78a3df202b317f4 --locked
+          "${HOME}/.cargo/bin/sloplint" --version
       - name: Save the verified sloplint build before measurement
         if: ${{ !cancelled() && steps.sloplint-install.outcome == 'success' && steps.sloplint-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -58,8 +59,6 @@ jobs:
             ~/.cargo/git
             ~/.cargo/registry
           key: ${{ steps.sloplint-cache.outputs.cache-primary-key }}
-      - name: Verify committed trees
-        run: python3 tools/corpus/corpus fetch --check
       - name: Measure every language with projects
         run: |
           python3 - <<'EOF'
@@ -71,6 +70,12 @@ jobs:
           failed: list[str] = []
           for lang, row in json.loads(out.stdout).items():
               if row["copied"] > 0:
+                  verified = subprocess.run(
+                      ["python3", "tools/corpus/corpus", "fetch", "--check", "--lang", lang],
+                      check=False)
+                  if verified.returncode != 0:
+                      failed.append(f"{lang} (tree verification)")
+                      continue
                   result = subprocess.run(
                       ["python3", "tools/corpus/corpus", "measure", lang],
                       check=False)
