@@ -893,9 +893,10 @@ class TestAddLocal(unittest.TestCase):
 
     @unittest.skipUnless(HAS_GIT and HAS_ASKALONO, "needs git and askalono")
     def test_add_local_path_through_symlinked_parent(self):
-        real = tempfile.mkdtemp(prefix="corpus-real-")
-        self.addCleanup(shutil.rmtree, real, True)
-        actual = os.path.join(real, "actual")
+        work = tempfile.mkdtemp(prefix="corpus-work-")
+        self.addCleanup(shutil.rmtree, work, True)
+        os.makedirs(os.path.join(work, "team"))
+        actual = os.path.join(work, "demo")
         os.makedirs(os.path.join(actual, "src"))
         write(os.path.join(actual, "src", "lib.rs"), "pub fn f() {}\n")
         write(os.path.join(actual, "LICENSE"), MIT_TEXT)
@@ -909,17 +910,19 @@ class TestAddLocal(unittest.TestCase):
                              timeout=60).stdout.strip()
         linkdir = tempfile.mkdtemp(prefix="corpus-linkdir-")
         self.addCleanup(shutil.rmtree, linkdir, True)
-        os.symlink(real, os.path.join(linkdir, "link"))
+        os.symlink(os.path.join(work, "team"), os.path.join(linkdir, "link"))
         root = make_repo()
         self.addCleanup(shutil.rmtree, root, True)
         proc = run_tool(root, "add", "--url",
-                        os.path.join(linkdir, "link", "..", "actual"),
+                        os.path.join(linkdir, "link", "..", "demo"),
                         "--rev", rev,
                         "--lang", "rust", "--spdx", "MIT", "--name", "link-demo",
                         "--paths", "src/**", "--reason", "symlinked parent fixture")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         projdir = os.path.join(root, "projects", "rust", "link-demo")
         self.assertTrue(os.path.isfile(os.path.join(projdir, "src", "lib.rs")))
+        manifest = open(os.path.join(root, "corpus.toml")).read()
+        self.assertIn('url = "file://%s"' % actual, manifest)
 
     @unittest.skipUnless(HAS_GIT, "needs git")
     def test_add_gpl_refused_public(self):
