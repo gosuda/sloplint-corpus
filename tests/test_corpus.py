@@ -560,6 +560,26 @@ class TestHeaders(unittest.TestCase):
         self.assertTrue(any("ISC" in e and "public allowlist" in e
                             for e in errors), errors)
 
+    def test_classic_isc_grant_fails(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        projdir = add_synthetic_project(root, lang="c", files={
+            "src/inet.c": ("/*\n"
+                           " * Permission to use, copy, modify, and distribute this software\n"
+                           " * for any purpose with or without fee is hereby granted, provided\n"
+                           " * that the above copyright notice and this permission notice appear\n"
+                           " * in all copies.\n"
+                           " *\n"
+                           " * THE SOFTWARE IS PROVIDED \"AS IS\" AND ISC DISCLAIMS ALL\n"
+                           " * WARRANTIES WITH REGARD TO THIS SOFTWARE.\n"
+                           " */\n"
+                           "int inet_pton(void) { return 0; }\n")})
+        errors = []
+        corpus.check_headers(projdir, "c", {"MIT"}, True, errors,
+                             "project demo")
+        self.assertTrue(any("src/inet.c" in e and "ISC" in e and "public allowlist" in e
+                            for e in errors), errors)
+
     def test_generated_declaration_fails(self):
         root = make_repo()
         self.addCleanup(shutil.rmtree, root, True)
