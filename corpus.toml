@@ -1043,11 +1043,11 @@ rev = "f08538cca14f73e30c89625e473fea3f5f55e300"
 spdx = "MIT"
 storage = "copied"
 paths = ["**"]
-exclude = ["include/uv/tree.h"]
-tree_hash = "sha256:3c487eefe149418ca1acaf4e25f958748b5971f80246fc58c23e0f0d5796481b"
+exclude = ["include/uv/tree.h", "src/heap-inl.h", "src/idna.c", "src/idna.h", "src/inet.c", "src/queue.h", "test/test-loop-configure.c", "test/test-pipe-set-non-blocking.c"]
+tree_hash = "sha256:35fcf7f77dea908d7a29cb5be81b65fc36c2ac73db6ba7bb6e47aa0cb1a9d6f9"
 added_by = "CorpusPopC2"
 added_on = "2026-11-23"
-reason = "medium async IO (platform backends), mature, branch v1.x"
+reason = "medium async IO (platform backends), mature, branch v1.x; excludes seven files whose headers carry ISC license text outside the public allowlist"
 notice_present_upstream = false
 
 [[project]]
