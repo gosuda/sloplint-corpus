@@ -293,6 +293,11 @@ class TestGlobs(unittest.TestCase):
             "src/*named/lib.rs", ["src/\\**/*.rs"]))
         self.assertTrue(corpus.match_subset("src/a/b.ts", ["src/**/*.ts"]))
 
+    def test_triple_star_matches_direct_and_nested(self):
+        self.assertTrue(corpus.match_subset("src/lib.rs", ["src/***/lib.rs"]))
+        self.assertTrue(corpus.match_subset("src/sub/lib.rs", ["src/***/lib.rs"]))
+        self.assertFalse(corpus.match_subset("src/sub/other.rs", ["src/***/lib.rs"]))
+
 class TestExtensions(unittest.TestCase):
     def test_starlark_build_files(self):
         self.assertTrue(corpus.extension_ok("starlark", "BUILD"))
@@ -444,6 +449,41 @@ class TestHeaders(unittest.TestCase):
                              "project demo")
         self.assertTrue(any("outside the public allowlist" in e for e in errors), errors)
 
+    def test_crlf_spdx_header_read(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        projdir = add_synthetic_project(root, files={
+            "src/lib.rs": "// SPDX-License-Identifier: GPL-3.0-only\r\n"
+                          "pub fn f() {}\n"})
+        self.assertEqual(corpus.header_spdx_ids(
+            "// SPDX-License-Identifier: GPL-3.0-only\r\n"), {"GPL-3.0-only"})
+        errors = []
+        corpus.check_headers(projdir, "rust", {"MIT"}, True, errors,
+                             "project demo")
+        self.assertTrue(any("outside the public allowlist" in e for e in errors), errors)
+
+    def test_comma_separated_spdx_rejected(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        projdir = add_synthetic_project(root, files={
+            "src/lib.rs": "// SPDX-License-Identifier: MIT, GPL-3.0-only\n"
+                          "pub fn f() {}\n"})
+        errors = []
+        corpus.check_headers(projdir, "rust", {"MIT"}, True, errors,
+                             "project demo")
+        self.assertTrue(any("outside the public allowlist" in e for e in errors), errors)
+
+    def test_slash_separated_spdx_rejected(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        projdir = add_synthetic_project(root, files={
+            "src/lib.rs": "// SPDX-License-Identifier: MIT/GPL-3.0-only\n"
+                          "pub fn f() {}\n"})
+        errors = []
+        corpus.check_headers(projdir, "rust", {"MIT"}, True, errors,
+                             "project demo")
+        self.assertTrue(any("outside the public allowlist" in e for e in errors), errors)
+
     def test_bsd_header_fails_public_without_spdx(self):
         root = make_repo()
         self.addCleanup(shutil.rmtree, root, True)
@@ -455,7 +495,7 @@ class TestHeaders(unittest.TestCase):
         errors = []
         corpus.check_headers(projdir, "rust", {"MIT"}, True, errors,
                              "project demo")
-        self.assertTrue(any("BSD-3-Clause" in e and "public allowlist" in e
+        self.assertTrue(any("BSD" in e and "public allowlist" in e
                             for e in errors), errors)
 
     def test_bsd_reference_headers_fail_public_without_spdx(self):
@@ -492,6 +532,74 @@ class TestHeaders(unittest.TestCase):
                              "project demo")
         self.assertTrue(any("ISC" in e and "public allowlist" in e
                             for e in errors), errors)
+
+    def test_bsd_name_in_test_code_passes(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        projdir = add_synthetic_project(root, files={
+            "src/lib.rs": ('pub fn parse(s: &str) -> bool { !s.is_empty() }\n'
+                           '#[test]\n'
+                           'fn parses() {\n'
+                           '    assert!(parse("BSD-3-Clause").is_ok());\n'
+                           '}\n')})
+        errors = []
+        corpus.check_headers(projdir, "rust", {"MIT"}, True, errors,
+                             "project demo")
+        self.assertEqual(errors, [])
+
+    def test_wrapped_isc_without_title_fails(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        projdir = add_synthetic_project(root, files={
+            "src/lib.rs": ("// Permission to use, copy, modify, and/or distribute\n"
+                           "// this software for any purpose with or without fee.\n"
+                           "pub fn f() {}\n")})
+        errors = []
+        corpus.check_headers(projdir, "rust", {"MIT"}, True, errors,
+                             "project demo")
+        self.assertTrue(any("ISC" in e and "public allowlist" in e
+                            for e in errors), errors)
+
+    def test_classic_isc_grant_fails(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        projdir = add_synthetic_project(root, lang="c", files={
+            "src/inet.c": ("/*\n"
+                           " * Permission to use, copy, modify, and distribute this software\n"
+                           " * for any purpose with or without fee is hereby granted, provided\n"
+                           " * that the above copyright notice and this permission notice appear\n"
+                           " * in all copies.\n"
+                           " *\n"
+                           " * THE SOFTWARE IS PROVIDED \"AS IS\" AND ISC DISCLAIMS ALL\n"
+                           " * WARRANTIES WITH REGARD TO THIS SOFTWARE.\n"
+                           " */\n"
+                           "int inet_pton(void) { return 0; }\n")})
+        errors = []
+        corpus.check_headers(projdir, "c", {"MIT"}, True, errors,
+                             "project demo")
+        self.assertTrue(any("src/inet.c" in e and "ISC" in e and "public allowlist" in e
+                            for e in errors), errors)
+
+    def test_generated_declaration_fails(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        projdir = add_synthetic_project(root, lang="go", files={
+            "pkg/x.go": ("// Code generated by fixture. DO NOT EDIT.\n"
+                         "package x\n")})
+        errors = []
+        corpus.check_project_files(projdir, "go", errors, "project demo")
+        self.assertTrue(any("generated" in e for e in errors), errors)
+
+    def test_generator_template_words_pass(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        projdir = add_synthetic_project(root, files={
+            "src/lib.rs": ("// This build script generates the pool.\n"
+                           "// Do not edit the output by hand; rerun the generator.\n"
+                           "pub fn f() {}\n")})
+        errors = []
+        corpus.check_project_files(projdir, "rust", errors, "project demo")
+        self.assertEqual(errors, [])
 
 
     def test_latin1_header_still_checked(self):
@@ -773,6 +881,68 @@ class TestAddLocal(unittest.TestCase):
         manifest = open(os.path.join(root, "corpus.toml")).read()
         self.assertIn('url = "file://%s"' % upstream, manifest)
         self.assertEqual(run_tool(root, "verify", "--offline").returncode, 0)
+
+    @unittest.skipUnless(HAS_GIT and HAS_ASKALONO, "needs git and askalono")
+    def test_add_local_path_with_percent_sign(self):
+        parent = tempfile.mkdtemp(prefix="corpus-space-")
+        self.addCleanup(shutil.rmtree, parent, True)
+        upstream = os.path.join(parent, "demo%20repo")
+        os.makedirs(os.path.join(upstream, "src"))
+        write(os.path.join(upstream, "src", "lib.rs"),
+              "pub fn add(left: u64, right: u64) -> u64 {\n    left + right\n}\n")
+        write(os.path.join(upstream, "LICENSE"), MIT_TEXT)
+        subprocess.run(["git", "init", "-q", upstream], check=True, timeout=60)
+        subprocess.run(["git", "-C", upstream, "add", "-A"], check=True, timeout=60)
+        subprocess.run(["git", "-C", upstream, "-c", "user.name=t",
+                        "-c", "user.email=t@t", "commit", "-qm", "fixture"],
+                       check=True, timeout=60)
+        rev = subprocess.run(["git", "-C", upstream, "rev-parse", "HEAD"],
+                             capture_output=True, text=True, check=True,
+                             timeout=60).stdout.strip()
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        proc = run_tool(root, "add", "--url", upstream, "--rev", rev,
+                        "--lang", "rust", "--spdx", "MIT", "--name", "pct-demo",
+                        "--paths", "src/**", "--reason", "percent path fixture")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        projdir = os.path.join(root, "projects", "rust", "pct-demo")
+        self.assertTrue(os.path.isfile(os.path.join(projdir, "src", "lib.rs")))
+        manifest = open(os.path.join(root, "corpus.toml")).read()
+        self.assertIn("demo%2520repo", manifest)
+        self.assertNotIn("demo%20repo\"", manifest)
+
+    @unittest.skipUnless(HAS_GIT and HAS_ASKALONO, "needs git and askalono")
+    def test_add_local_path_through_symlinked_parent(self):
+        work = tempfile.mkdtemp(prefix="corpus-work-")
+        self.addCleanup(shutil.rmtree, work, True)
+        os.makedirs(os.path.join(work, "team"))
+        actual = os.path.join(work, "demo")
+        os.makedirs(os.path.join(actual, "src"))
+        write(os.path.join(actual, "src", "lib.rs"), "pub fn f() {}\n")
+        write(os.path.join(actual, "LICENSE"), MIT_TEXT)
+        subprocess.run(["git", "init", "-q", actual], check=True, timeout=60)
+        subprocess.run(["git", "-C", actual, "add", "-A"], check=True, timeout=60)
+        subprocess.run(["git", "-C", actual, "-c", "user.name=t",
+                        "-c", "user.email=t@t", "commit", "-qm", "fixture"],
+                       check=True, timeout=60)
+        rev = subprocess.run(["git", "-C", actual, "rev-parse", "HEAD"],
+                             capture_output=True, text=True, check=True,
+                             timeout=60).stdout.strip()
+        linkdir = tempfile.mkdtemp(prefix="corpus-linkdir-")
+        self.addCleanup(shutil.rmtree, linkdir, True)
+        os.symlink(os.path.join(work, "team"), os.path.join(linkdir, "link"))
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        proc = run_tool(root, "add", "--url",
+                        os.path.join(linkdir, "link", "..", "demo"),
+                        "--rev", rev,
+                        "--lang", "rust", "--spdx", "MIT", "--name", "link-demo",
+                        "--paths", "src/**", "--reason", "symlinked parent fixture")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        projdir = os.path.join(root, "projects", "rust", "link-demo")
+        self.assertTrue(os.path.isfile(os.path.join(projdir, "src", "lib.rs")))
+        manifest = open(os.path.join(root, "corpus.toml")).read()
+        self.assertIn('url = "file://%s"' % actual, manifest)
 
     @unittest.skipUnless(HAS_GIT, "needs git")
     def test_add_gpl_refused_public(self):
@@ -1094,6 +1264,27 @@ class TestAddLocal(unittest.TestCase):
         self.assertIn("PASS fetch --check", check.stdout)
 
     @unittest.skipUnless(HAS_GIT, "needs git")
+    def test_fetch_check_needs_no_consent_for_unlicensed(self):
+        upstream, rev = make_local_git_repo(MIT_TEXT)
+        self.addCleanup(shutil.rmtree, upstream, True)
+        root = make_repo(mode="private")
+        self.addCleanup(shutil.rmtree, root, True)
+        proc = run_tool(root, "add", "--url", upstream, "--rev", rev,
+                        "--lang", "python",
+                        "--spdx", "NOASSERTION",
+                        "--name", "nocheck", "--storage", "pinned",
+                        "--paths", "src/**", "--reason", "unlicensed fixture")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        missing = run_tool(root, "fetch", "--check")
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn("not materialized", missing.stdout)
+        consent = run_tool(root, "fetch", "--lang", "python", "--allow-unlicensed")
+        self.assertEqual(consent.returncode, 0, consent.stdout + consent.stderr)
+        check = run_tool(root, "fetch", "--check")
+        self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
+        self.assertIn("PASS fetch --check", check.stdout)
+
+    @unittest.skipUnless(HAS_GIT, "needs git")
     def test_fetch_lowercase_licenseref_needs_consent(self):
         upstream, rev = make_local_git_repo(MIT_TEXT)
         self.addCleanup(shutil.rmtree, upstream, True)
@@ -1167,6 +1358,35 @@ class TestAddLocal(unittest.TestCase):
         self.assertIn("symlink", proc.stdout)
         self.assertFalse(os.path.exists(
             os.path.join(root, "projects", "rust", "symdemo")))
+
+    @unittest.skipUnless(HAS_GIT, "needs git")
+    def test_add_rejects_symlinked_nested_license(self):
+        upstream = tempfile.mkdtemp(prefix="corpus-upstream-")
+        self.addCleanup(shutil.rmtree, upstream, True)
+        write(os.path.join(upstream, "LICENSE"), MIT_TEXT)
+        write(os.path.join(upstream, "src", "lib.rs"), "pub fn f() {}\n")
+        write(os.path.join(upstream, "src", "vendor", "lib.rs"),
+              "pub fn vendored() {}\n")
+        os.symlink(os.path.join(upstream, "LICENSE"),
+                   os.path.join(upstream, "src", "vendor", "LICENSE"))
+        subprocess.run(["git", "init", "-q", upstream], check=True, timeout=60)
+        subprocess.run(["git", "-C", upstream, "add", "-A"], check=True, timeout=60)
+        subprocess.run(["git", "-C", upstream, "-c", "user.name=t",
+                        "-c", "user.email=t@t", "commit", "-qm", "fixture"],
+                       check=True, timeout=60)
+        rev = subprocess.run(["git", "-C", upstream, "rev-parse", "HEAD"],
+                             capture_output=True, text=True, check=True,
+                             timeout=60).stdout.strip()
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        proc = run_tool(root, "add", "--url", upstream, "--rev", rev,
+                        "--lang", "rust", "--spdx", "MIT",
+                        "--name", "symnest", "--paths", "src/**",
+                        "--reason", "symlinked nested license fixture")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("governed by nested src/vendor/LICENSE", proc.stdout)
+        self.assertFalse(os.path.exists(
+            os.path.join(root, "projects", "rust", "symnest")))
 
     @unittest.skipUnless(HAS_GIT, "needs git")
     def test_add_duplicate_name_rejected_before_clone(self):
@@ -1443,6 +1663,19 @@ class TestMeasureSeeds(unittest.TestCase):
         self.assertEqual(slim.returncode, 0, slim.stdout)
         self.assertEqual(os.listdir(out), [])
         self.assertTrue(os.path.isfile(out + ".corpus-seeds.python.json"))
+
+    def test_seeds_fails_before_writing_when_ledger_blocked(self):
+        root = make_repo()
+        self.addCleanup(shutil.rmtree, root, True)
+        add_synthetic_project(root, lang="python", name="demo", files={
+            "src/a.py": "0123456789"})
+        out = os.path.join(root, "seeds")
+        os.makedirs(out + ".corpus-seeds.python.json")
+        self.addCleanup(shutil.rmtree, out + ".corpus-seeds.python.json", True)
+        proc = run_tool(root, "seeds", "python", "--out", out)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("cannot write ledger", proc.stdout)
+        self.assertEqual(os.listdir(out), [])
 
 class TestStats(unittest.TestCase):
     def test_stats_counts_copied_files(self):
