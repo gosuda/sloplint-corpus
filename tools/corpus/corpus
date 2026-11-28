@@ -725,6 +725,23 @@ def _glob_to_regex(pattern):
         char = pattern[i]
         if char == "\\" and i + 1 < len(pattern):
             out.append(re.escape(pattern[i + 1]))
+            i += 2
+        elif char == "[":
+            end = pattern.find("]", i + 1)
+            if end == -1:
+                out.append(re.escape(char))
+                i += 1
+            else:
+                body = pattern[i + 1:end]
+                if body.startswith("!"):
+                    body = "^" + body[1:]
+                elif body.startswith("^"):
+                    body = "\\^" + body[1:]
+                if not body or body == "^":
+                    out.append(re.escape(pattern[i:end + 1]))
+                else:
+                    out.append("(?!/)[" + body.replace("\\", "\\\\") + "]")
+                i = end + 1
         elif char == "*":
             run = 0
             while i + run < len(pattern) and pattern[i + run] == "*":
@@ -738,6 +755,14 @@ def _glob_to_regex(pattern):
             else:
                 out.append("[^/]*")
                 i += 1
+        elif char == "?":
+            out.append("[^/]")
+            i += 1
+        else:
+            out.append(re.escape(char))
+            i += 1
+    return "".join(out)
+
 
 def check_subset(patterns):
     for pattern in patterns:
